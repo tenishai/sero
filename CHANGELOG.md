@@ -19,5 +19,10 @@ point of view, not a list of commit subjects.
   Commits, hard conventions, and the per-PR definition of done.
 - Versioning policy (`docs/versioning.md`), this changelog, and the pinned
   versions reference (`docs/versions.md`).
+- Conventions lint (`scripts/lint-conventions.sh`) enforcing no em dashes, no
+  company-specific identifiers, no floating version pins, and no committed
+  secret material.
+- CI skeleton (`.github/workflows/ci.yml`) running the static layer on every
+  pull request and push to `main`, with actions pinned by commit SHA.
 
 [Unreleased]: https://github.com/kmgreiner3/ladon/commits/main

@@ -1,0 +1,29 @@
+# Ladon CI - static layer.
+#
+# This is the static/lint layer described in docs/testing.md: it runs on every
+# pull request and push to main with no build and no infrastructure. It is
+# structured to grow: unit and contract jobs are added as the code they test
+# lands, and the gated integration smoke runs in a separate, opt-in workflow.
+#
+# All actions are pinned to a commit SHA (not a moving tag), per the
+# pin-everything rule. See docs/versions.md.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    name: conventions lint
+    runs-on: ubuntu-24.04
+    steps:
+      # actions/checkout v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Run conventions lint
+        run: bash scripts/lint-conventions.sh
