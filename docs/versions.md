@@ -28,8 +28,8 @@ its latest stable is verified.
 
 | Component | Pinned version | Verified against | Date | Notes |
 | --- | --- | --- | --- | --- |
-| OpenBao | 2.5.4 | openbao.org release notes / github.com/openbao/openbao/releases | 2026-06-17 | Server and CLI. Latest stable at design time; chart pin set when the deploy baseline lands. |
-| OpenBao Helm chart | _tbd_ | | | |
+| OpenBao | 2.5.5 | github.com/openbao/openbao-helm/releases (chart 0.28.4 bundles 2.5.5) | 2026-06-17 | Server and CLI. Image tag pinned in deploy/openbao/values/values-base.yaml. |
+| OpenBao Helm chart | 0.28.4 | github.com/openbao/openbao-helm/releases | 2026-06-17 | `openbao/openbao` chart. Apply with `--version 0.28.4`; never a floating chart. |
 | External Secrets Operator | _tbd_ | | | |
 | ESO Helm chart | _tbd_ | | | |
 | cert-manager | _tbd_ | | | If adopted |
@@ -58,6 +58,15 @@ Languages and their toolchains. Populated once the language decision in
 | Runtime | Pinned version | Verified against | Date | Notes |
 | --- | --- | --- | --- | --- |
 | _tbd_ | | | | |
+
+## Tooling and CLIs
+
+Command-line tools the apply layers invoke. Pin the exact version in tooling and
+container images; do not rely on whatever is on the path.
+
+| Tool | Pinned version | Verified against | Date | Notes |
+| --- | --- | --- | --- | --- |
+| Helm | 4.2.1 | github.com/helm/helm/releases/latest | 2026-06-17 | Used for the OpenBao install layer (D3a). |
 
 ## CI: GitHub Actions
 
