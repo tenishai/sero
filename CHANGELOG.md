@@ -46,6 +46,10 @@ point of view, not a list of commit subjects.
   stanza, plus a dev overlay (single node, Shamir unseal) and a README
   describing the dry-run-first `helm upgrade --install` flow.
 
+- CI contract check (`scripts/validate-helm.sh` and a `helm validate` CI job)
+  that renders the pinned OpenBao chart with Ladon's base and dev values, so the
+  install layer stays valid against the pinned chart. Pins `Azure/setup-helm`.
+
 ### Changed
 
 - Apply model refined into three separated, agent-driven layers, each with its
