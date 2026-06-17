@@ -46,6 +46,10 @@ point of view, not a list of commit subjects.
   stanza, plus a dev overlay (single node, Shamir unseal) and a README
   describing the dry-run-first `helm upgrade --install` flow.
 
+- Python project (`pyproject.toml`, `uv.lock`, `src/ladon/`, `tests/`): managed
+  with uv, pinned to Python 3.14, with ruff (lint and format) and pytest. The
+  first module is `ladon.hygiene` (refuse placeholder secret values, mask
+  values), with tests. A `python lint and test` CI job runs ruff and pytest.
 - CI contract check (`scripts/validate-helm.sh` and a `helm validate` CI job)
   that renders the pinned OpenBao chart with Ladon's base and dev values, so the
   install layer stays valid against the pinned chart. Pins `Azure/setup-helm`.
