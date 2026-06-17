@@ -1,0 +1,15 @@
+# Normalize line endings to LF across platforms.
+* text=auto eol=lf
+
+# Treat these as binary (no diff, no EOL normalization).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.tgz binary
+*.gz binary
+
+# Shell scripts are always LF.
+*.sh text eol=lf
