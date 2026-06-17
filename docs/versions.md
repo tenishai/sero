@@ -28,7 +28,7 @@ its latest stable is verified.
 
 | Component | Pinned version | Verified against | Date | Notes |
 | --- | --- | --- | --- | --- |
-| OpenBao | _tbd_ | | | Server and CLI |
+| OpenBao | 2.5.4 | openbao.org release notes / github.com/openbao/openbao/releases | 2026-06-17 | Server and CLI. Latest stable at design time; chart pin set when the deploy baseline lands. |
 | OpenBao Helm chart | _tbd_ | | | |
 | External Secrets Operator | _tbd_ | | | |
 | ESO Helm chart | _tbd_ | | | |

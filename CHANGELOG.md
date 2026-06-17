@@ -24,5 +24,12 @@ point of view, not a list of commit subjects.
   secret material.
 - CI skeleton (`.github/workflows/ci.yml`) running the static layer on every
   pull request and push to `main`, with actions pinned by commit SHA.
+- Architecture and decisions (`docs/design.md`) and the phased plan
+  (`ROADMAP.md`): OpenBao on Integrated Storage (Raft) with KMS auto-unseal,
+  agent-driven apply via Terraform plus Helm and the OpenBao SDK (no GitOps
+  reconciler), ESO for sync to Kubernetes and GCP/AWS secret stores, Kubernetes
+  and OIDC auth, a PostgreSQL backend datastore, an MCP tool surface, a custom
+  Svelte 5 wrapper UI, and a polyglot Python plus TypeScript/Svelte stack. The
+  decisions reflect a read-only review of the two source repositories.
 
 [Unreleased]: https://github.com/kmgreiner3/ladon/commits/main
