@@ -1,0 +1,43 @@
+# OpenBao Helm values: dev overlay.
+#
+# Layered on top of values-base.yaml for a local or development cluster. It
+# trades durability and HA for a fast, cheap, single-node install that is easy
+# to tear down. Not for production.
+#
+# Apply both files, base first:
+#   helm ... -f values-base.yaml -f values-dev.yaml
+
+server:
+  # Single node: no quorum, no anti-affinity needed. Fine for dev, never prod.
+  ha:
+    replicas: 1
+    raft:
+      config: |
+        ui = true
+
+        listener "tcp" {
+          tls_disable = 1
+          address     = "[::]:8200"
+          cluster_address = "[::]:8201"
+        }
+
+        storage "raft" {
+          path = "/openbao/data"
+        }
+
+        # Dev uses Shamir (manual unseal); no cloud KMS dependency.
+
+        service_registration "kubernetes" {}
+
+  # Smaller volumes; use the cluster default storage class.
+  dataStorage:
+    size: 1Gi
+  auditStorage:
+    size: 1Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

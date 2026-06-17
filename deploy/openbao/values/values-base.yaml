@@ -1,0 +1,109 @@
+# OpenBao Helm values: opinionated, generic baseline.
+#
+# These are the defaults Ladon installs OpenBao with: HA on Integrated Storage
+# (Raft), with auto-unseal and storage left to be set per deployment. They carry
+# no company-specific values. The Ladon tooling composes these with an overlay
+# (for example values-dev.yaml) and deployment config before running
+# `helm upgrade --install` (see ../README.md).
+#
+# Chart: openbao/openbao, pinned in docs/versions.md. Apply the matching pinned
+# chart version with --version; do not track a floating chart.
+
+server:
+  image:
+    repository: openbao/openbao
+    # Pinned in docs/versions.md. Never use a floating tag.
+    tag: "2.5.5"
+    pullPolicy: IfNotPresent
+
+  # The built-in OpenBao UI is available to operators alongside the Ladon
+  # wrapper UI. It is enabled; expose it through your own ingress, not a
+  # public LoadBalancer.
+  ui:
+    enabled: true
+
+  # High availability on Integrated Storage (Raft). Three replicas tolerate a
+  # single-node failure; raise to five for two-node tolerance.
+  ha:
+    enabled: true
+    replicas: 3
+    raft:
+      enabled: true
+      setNodeId: true
+      # The server config is HCL. The Ladon tooling injects the seal stanza and
+      # any deployment-specific values; the block below is the generic shape.
+      config: |
+        ui = true
+
+        listener "tcp" {
+          tls_disable     = 0
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file   = "/openbao/userconfig/tls/tls.crt"
+          tls_key_file    = "/openbao/userconfig/tls/tls.key"
+        }
+
+        storage "raft" {
+          path = "/openbao/data"
+        }
+
+        # Auto-unseal: set per deployment. Ladon injects one seal stanza from
+        # config. Example shapes (do not commit real key references here):
+        #
+        #   seal "gcpckms" {
+        #     project    = "<gcp-project-id>"
+        #     region     = "<kms-location>"
+        #     key_ring   = "<kms-keyring>"
+        #     crypto_key = "<kms-key>"
+        #   }
+        #
+        #   seal "awskms" {
+        #     region     = "<aws-region>"
+        #     kms_key_id = "<kms-key-id>"
+        #   }
+        #
+        # With no seal stanza, OpenBao uses Shamir (manual unseal); this is the
+        # dev default, not recommended for production.
+
+        service_registration "kubernetes" {}
+
+  # Persistent storage for Raft data and audit logs. Set storageClass per
+  # deployment; size to your retention needs.
+  dataStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: null
+    accessMode: ReadWriteOnce
+
+  auditStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: null
+    accessMode: ReadWriteOnce
+
+  # Conservative requests; tune per deployment.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  # Spread replicas across nodes so a single node loss does not break quorum.
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ template "openbao.name" . }}
+              app.kubernetes.io/instance: "{{ .Release.Name }}"
+              component: server
+          topologyKey: kubernetes.io/hostname
+
+  # Audit logging is enabled at the OpenBao layer by the config tooling, not
+  # here; this only provisions the volume above.
+
+# The injector is not part of the baseline; Ladon syncs via ESO, not the
+# OpenBao agent injector.
+injector:
+  enabled: false

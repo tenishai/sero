@@ -40,6 +40,12 @@ point of view, not a list of commit subjects.
   (JWT and AppRole optional), KV v2, and a three-part configuration model
   (deployment settings, teams, sync targets) with a minimal-deployment path.
 
+- OpenBao install layer (`deploy/openbao/`): the pinned chart reference and
+  opinionated, generic Helm values for HA on Integrated Storage (Raft) with the
+  built-in UI, persistent data and audit volumes, and a per-deployment seal
+  stanza, plus a dev overlay (single node, Shamir unseal) and a README
+  describing the dry-run-first `helm upgrade --install` flow.
+
 ### Changed
 
 - Apply model refined into three separated, agent-driven layers, each with its
