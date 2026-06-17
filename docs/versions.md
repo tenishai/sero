@@ -76,6 +76,7 @@ when the CI skeleton lands.
 | Action | Pinned SHA | Tag at pin | Verified against | Date |
 | --- | --- | --- | --- | --- |
 | `actions/checkout` | `df4cb1c069e1874edd31b4311f1884172cec0e10` | v6.0.3 | github.com/actions/checkout/releases/latest | 2026-06-17 |
+| `Azure/setup-helm` | `dda3372f752e03dde6b3237bc9431cdc2f7a02a2` | v5.0.0 | github.com/Azure/setup-helm/releases/latest | 2026-06-17 |
 
 The CI runner image is pinned too: workflows use `ubuntu-24.04`, never
 `ubuntu-latest`.
