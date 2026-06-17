@@ -28,8 +28,8 @@ generalize and slim down to a small handful of generic namespaces, policies, and
 auth methods driven by configuration.
 
 - [x] Document each source repo's architecture ([docs/source-review.md](docs/source-review.md))
-- [ ] Design the generic baseline (namespaces, policies, auth methods)
-- [ ] Design the per-deployment customization model
+- [x] Design the generic baseline (namespaces, policies, auth methods) ([docs/baseline.md](docs/baseline.md))
+- [x] Design the per-deployment customization model ([docs/baseline.md](docs/baseline.md))
 - [ ] No feature code until the baseline design is reviewed
 
 ## Phase 2: OpenBao deploy baseline (dev)
@@ -46,12 +46,20 @@ Stand up OpenBao on a single environment with the chosen architecture.
 
 Sync secrets out to the supported targets.
 
-- Pinned install of the External Secrets Operator
+- One agent-driven Helm bootstrap capability that installs the External Secrets
+  Operator on a cluster (pinned chart, CRD-ownership handling, webhook health
+  check), plus a status check. Triggered for the hub cluster at bring-up and per
+  target cluster on demand (D4a). Depends on networking and an ESO auth role, so
+  it follows the deploy baseline.
 - `SecretStore` and `ExternalSecret` rendering for Kubernetes, GCP Secret
   Manager, and AWS Secrets Manager
 - The gated integration smoke test: a dummy secret round-trips from OpenBao
   through ESO to a target and back
 - Terraform for the cloud-side resources (IAM, store access)
+
+Installing ESO onto target clusters from the UI/MCP is surfaced in Phase 4 (the
+UI is a front-end to the same bootstrap capability), once the networking pieces
+are in place.
 
 ## Phase 4: Secrets view and admin UI
 
@@ -59,6 +67,8 @@ The custom wrapper application.
 
 - Secrets view: namespaces, paths, key names (never values), sync status
 - Admin surface: manage namespaces, policies, and sync targets
+- Register a target cluster and bootstrap ESO onto it on demand (front-end to
+  the Phase 3 capability), with ESO status
 - OIDC login, reviewed against the web-design-guidelines skill
 - Never displays secret values
 

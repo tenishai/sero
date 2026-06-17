@@ -34,5 +34,24 @@ point of view, not a list of commit subjects.
 - Source review (`docs/source-review.md`): the architecture of the two source
   repositories, the seams Ladon builds on, the scrub surface (as categories, not
   values), and the direction for the generic baseline.
+- Generic baseline and customization model (`docs/baseline.md`): a minimal
+  platform root plus config-driven team namespaces (OpenBao open-source
+  namespaces), generalized policy templates, baseline OIDC and Kubernetes auth
+  (JWT and AppRole optional), KV v2, and a three-part configuration model
+  (deployment settings, teams, sync targets) with a minimal-deployment path.
+
+### Changed
+
+- Apply model refined into three separated, agent-driven layers, each with its
+  own dry-run: Terraform for the cloud substrate only (D10), a direct Helm
+  install of OpenBao instead of the Terraform Helm provider (D3a), and the
+  OpenBao SDK/API for configuration instead of the Terraform Vault provider
+  (D3b). This decouples the install and configuration lifecycles from
+  infrastructure and avoids configuring Terraform providers from a cluster that
+  does not exist at plan time.
+- ESO installation defined as one agent-driven Helm bootstrap capability (D4a),
+  triggered for the hub cluster at bring-up and per target cluster from the
+  UI/MCP, rather than a static deploy step. Target clusters are registered over
+  time, so ESO is installed on demand once networking and auth are in place.
 
 [Unreleased]: https://github.com/kmgreiner3/ladon/commits/main
