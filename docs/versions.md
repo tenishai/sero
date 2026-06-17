@@ -57,7 +57,10 @@ Languages and their toolchains. Populated once the language decision in
 
 | Runtime | Pinned version | Verified against | Date | Notes |
 | --- | --- | --- | --- | --- |
-| _tbd_ | | | | |
+| Python | 3.14.6 | python.org/downloads | 2026-06-17 | `requires-python >= 3.14`; `.python-version` pins 3.14. |
+| uv | 0.11.21 | github.com/astral-sh/uv/releases/latest | 2026-06-17 | Package and environment manager. |
+| ruff | 0.15.17 | pypi.org/project/ruff | 2026-06-17 | Lint and format. Pinned in pyproject dev group and uv.lock. |
+| pytest | 9.1.0 | pypi.org/project/pytest | 2026-06-17 | Test runner. Pinned in pyproject dev group and uv.lock. |
 
 ## Tooling and CLIs
 
@@ -77,6 +80,7 @@ when the CI skeleton lands.
 | --- | --- | --- | --- | --- |
 | `actions/checkout` | `df4cb1c069e1874edd31b4311f1884172cec0e10` | v6.0.3 | github.com/actions/checkout/releases/latest | 2026-06-17 |
 | `Azure/setup-helm` | `dda3372f752e03dde6b3237bc9431cdc2f7a02a2` | v5.0.0 | github.com/Azure/setup-helm/releases/latest | 2026-06-17 |
+| `astral-sh/setup-uv` | `fac544c07dec837d0ccb6301d7b5580bf5edae39` | v8.2.0 | github.com/astral-sh/setup-uv/releases/latest | 2026-06-17 |
 
 The CI runner image is pinned too: workflows use `ubuntu-24.04`, never
 `ubuntu-latest`.
