@@ -34,5 +34,10 @@ point of view, not a list of commit subjects.
 - Source review (`docs/source-review.md`): the architecture of the two source
   repositories, the seams Ladon builds on, the scrub surface (as categories, not
   values), and the direction for the generic baseline.
+- Generic baseline and customization model (`docs/baseline.md`): a minimal
+  platform root plus config-driven team namespaces (OpenBao open-source
+  namespaces), generalized policy templates, baseline OIDC and Kubernetes auth
+  (JWT and AppRole optional), KV v2, and a three-part configuration model
+  (deployment settings, teams, sync targets) with a minimal-deployment path.
 
 [Unreleased]: https://github.com/kmgreiner3/ladon/commits/main

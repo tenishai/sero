@@ -28,8 +28,8 @@ generalize and slim down to a small handful of generic namespaces, policies, and
 auth methods driven by configuration.
 
 - [x] Document each source repo's architecture ([docs/source-review.md](docs/source-review.md))
-- [ ] Design the generic baseline (namespaces, policies, auth methods)
-- [ ] Design the per-deployment customization model
+- [x] Design the generic baseline (namespaces, policies, auth methods) ([docs/baseline.md](docs/baseline.md))
+- [x] Design the per-deployment customization model ([docs/baseline.md](docs/baseline.md))
 - [ ] No feature code until the baseline design is reviewed
 
 ## Phase 2: OpenBao deploy baseline (dev)
