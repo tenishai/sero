@@ -105,10 +105,14 @@ configuration has three parts:
    secret managers) are enabled, and their per-target parameters. Disabled by
    default; each is opt-in.
 
-This configuration drives the reusable Terraform modules (the OpenBao install,
-the per-team module, KMS, snapshots, monitoring) and the backend. The agent
-applies it with dry-run and a diff first, per the apply model in
-[design.md](design.md).
+This configuration drives the three apply layers from the apply model in
+[design.md](design.md): Terraform for the cloud substrate (cluster, KMS,
+networking, snapshot buckets, monitoring), a direct Helm install of OpenBao, and
+the OpenBao SDK for the per-team namespaces, policies, auth, and KV mounts. The
+agent applies each layer with dry-run and a diff first. Note that the OpenBao
+install is a Helm step, not a Terraform module, and the per-team configuration is
+applied through the SDK, not the Terraform Vault provider, so each layer keeps an
+independent lifecycle.
 
 ### A minimal deployment
 

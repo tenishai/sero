@@ -39,14 +39,16 @@ Each decision records the choice and the reason. Versions are pinned in
 | D1 | Core vault | OpenBao | Open-source, community-driven, Apache-2.0, the OSS path for Vault-compatible secrets management. |
 | D2 | Storage backend | Integrated Storage (Raft) | The recommended production backend. No external dependency, built-in HA, and snapshot backup/restore. Keeps Ladon easy to deploy: nothing to provision but OpenBao itself. |
 | D2a | Seal / unseal | Auto-unseal via a cloud KMS (pluggable) | Auto-unseal removes manual key-share handling and is the practical default for HA. The KMS provider (GCP Cloud KMS, AWS KMS, others) is parameterized per deployment. Manual/Shamir unseal remains supported for deployments without a cloud KMS. |
-| D3 | Apply model | Agent-driven, declarative-then-direct (Terraform + Helm + SDK) | Ladon's agents deploy and maintain state themselves. Terraform is the primary infrastructure-as-code layer (cluster, OpenBao install via the Helm provider, and OpenBao configuration: namespaces, policies, auth methods, KV mounts via the Vault/OpenBao provider). The SDK and `kubectl` handle runtime operations (secret read/write, ESO resource rendering and apply) and day-2 tasks (init, unseal, snapshot, migration). Every write defaults to dry-run with a diff against live state. There is no GitOps reconciler; the agent owns the plan, the diff, and the apply. GitOps is recorded as a considered, rejected alternative below. |
+| D3 | Apply model | Agent-driven, three layers (Terraform, then Helm, then SDK) | Ladon's agents deploy and maintain state themselves, in three separated layers, each with its own dry-run: (1) Terraform for the cloud substrate (D10); (2) a direct Helm install of OpenBao (D3a); (3) the OpenBao SDK/API for configuration and runtime (D3b). The layers have independent lifecycles and pass outputs forward (substrate outputs feed the install; install feeds config). Every write defaults to dry-run with a diff against live state. There is no GitOps reconciler; the agent owns the plan, the diff, and the apply at each layer. GitOps is recorded as a considered, rejected alternative below. |
+| D3a | OpenBao install | Direct Helm (`helm upgrade --install`), not the Terraform Helm provider | Installing OpenBao through `helm_release` couples an in-cluster app lifecycle to the infrastructure apply and hits the Terraform anti-pattern of configuring a provider from a cluster that does not exist at plan time. A direct Helm step (pinned chart, values templated from Terraform outputs) lets OpenBao be installed, upgraded, and rolled back independently of the substrate, with `helm diff` as the dry-run. |
+| D3b | OpenBao configuration | OpenBao SDK/API (agent-driven), not the Terraform Vault provider | Namespaces, policies, auth methods, KV mounts, and ESO resources are rendered from config and applied through the SDK/API with a diff first. This keeps configuration (which changes often) decoupled from infrastructure state, avoids the provider-from-data-source ordering problem, and matches how the source backend already manages this. |
 | D4 | Secret sync | External Secrets Operator | The de facto standard for syncing secrets into Kubernetes and between secret stores. Broad provider support including GCP Secret Manager and AWS Secrets Manager. |
 | D5 | Sync targets | Kubernetes, GCP Secret Manager, AWS Secrets Manager | The three targets the platform must serve. Each is an ESO `SecretStore` / `ClusterSecretStore` provider, parameterized per deployment. |
 | D6 | Auth methods | Baseline Kubernetes and OIDC; JWT and AppRole available | Kubernetes auth for in-cluster workloads and OIDC for human operators are the generic, provider-agnostic baseline. ESO authenticates with a JWT or Kubernetes auth role. AppRole is available for service-to-service automation. The source deployment uses five methods; Ladon's baseline is the two, with the others as documented, optional additions. |
 | D7 | UI | Custom wrapper application, Svelte 5 | A separate UI that spans multiple clusters, ESO sync status, and the cloud secret stores. OpenBao's built-in UI is single-cluster and CRUD-focused and cannot show the cross-cluster and cloud-sync views that are Ladon's reason to exist. Svelte 5 is chosen to reuse and generalize the existing source UI rather than rebuild it; it is a strong fit for an admin/status surface. |
 | D8 | Languages | Polyglot: Python and TypeScript/Svelte | Python for the backend, operational tooling, and the agent/MCP surface (consistent with the sibling repos and a strong fit for Kubernetes and cloud SDKs). TypeScript/Svelte for the wrapper UI (D7). |
 | D9 | TLS / certificates | cert-manager (candidate) | For issuing and rotating OpenBao and ingress certificates. Confirmed and pinned when the deploy baseline lands. |
-| D10 | Infrastructure as code | Terraform with pinned providers | The primary apply mechanism (D3): the GKE/cluster resources, the OpenBao Helm install, OpenBao configuration (namespaces, policies, auth, KV mounts), and the cloud-side resources (IAM, secret stores, networking). Providers pinned in versions.md. |
+| D10 | Infrastructure as code | Terraform with pinned providers, scoped to the cloud substrate | Terraform owns the durable cloud substrate and stops at the cluster boundary: the cluster, KMS key for auto-unseal, IAM and service accounts, networking, snapshot buckets, and DNS. It does not install OpenBao (D3a) or configure it (D3b); it produces outputs those layers consume. Providers pinned in versions.md. |
 | D11 | Backend datastore | PostgreSQL | The backend needs durable state that is not secret material: audit log, MCP token families, step-up reveal grants, and namespace-request workflow. None of it is secret values. PostgreSQL is the conventional, portable choice. |
 | D12 | Agent / MCP surface | MCP server exposing selected operations | Selected OpenBao operations are exposed as MCP tools (OAuth 2.1), with secrets-hygiene behavior baked in (dry-run, names only, refuse placeholders). This is how Ladon fits the agent ecosystem; built with the mcp-builder skill. |
 
@@ -93,9 +95,10 @@ talks to the next through stable interfaces.
                   v                                                       v
         +-------------------------------------------------------+   +-----------+
         |  Ladon backend and tooling (Python)                   |---| Postgres  |  D11
-        |  - Terraform (IaC: cluster, OpenBao install + config) |   | audit,    |
-        |  - Helm / SDK / kubectl (runtime + day-2 ops)         |   | tokens,   |
-        |  - dry-run + diff by default on writes        D3 D10  |   | grants    |
+        |  1 Terraform: cloud substrate            D10          |   | audit,    |
+        |  2 Helm: OpenBao install                 D3a          |   | tokens,   |
+        |  3 SDK/kubectl: config + runtime + day-2 D3b          |   | grants    |
+        |  dry-run + diff by default at each layer  D3          |   |           |
         +-------------------------------------------------------+   +-----------+
                   |                                  |
                   v                                  v
@@ -113,13 +116,13 @@ talks to the next through stable interfaces.
 - **Wrapper UI** is the secrets view and admin surface. It authenticates
   operators (OIDC) and never displays secret values; it shows key names, paths,
   namespaces, and sync status.
-- **Backend and tooling** performs the privileged operations: Terraform for the
-  cluster, the OpenBao Helm install, and OpenBao configuration (namespaces,
-  policies, auth, KV mounts), plus the SDK and `kubectl` for runtime secret
-  operations and ESO resource rendering. Every write defaults to dry-run with a
-  diff and prints namespace, path, and key names (never values) before applying.
-  It persists non-secret state (audit, tokens, grants) in PostgreSQL (D11) and
-  exposes selected operations as MCP tools (D12).
+- **Backend and tooling** performs the privileged operations in three layers:
+  Terraform for the cloud substrate (D10), a direct Helm install of OpenBao
+  (D3a), and the OpenBao SDK plus `kubectl` for configuration, runtime secret
+  operations, and ESO resource rendering (D3b). Every write defaults to dry-run
+  with a diff and prints namespace, path, and key names (never values) before
+  applying. It persists non-secret state (audit, tokens, grants) in PostgreSQL
+  (D11) and exposes selected operations as MCP tools (D12).
 - **OpenBao** is the source of truth for secrets, running HA on Raft with KMS
   auto-unseal.
 - **ESO** reads from OpenBao and writes to the configured targets. It
@@ -133,12 +136,12 @@ talks to the next through stable interfaces.
 - **Configuration** (which namespaces, policies, auth roles, and ESO resources a
   deployment has) is declarative input to Ladon, expressed as parameterized
   config. It contains names, paths, and references, never secret values.
-- **Operational state** under the agent-driven apply model (D3) is the live
-  state of OpenBao and the clusters, plus Terraform state for the
-  infrastructure-as-code layer. Because there is no GitOps reconciler, the
-  Terraform plan and the SDK/`kubectl` dry-run are the diff: they compare the
-  intended config against live before any write. This is how drift stays visible
-  without a reconciler.
+- **Operational state** under the agent-driven apply model (D3) lives across the
+  three layers: Terraform state for the cloud substrate, the Helm release state
+  for the OpenBao install, and live OpenBao state for configuration. Because
+  there is no GitOps reconciler, the per-layer dry-run is the diff: a Terraform
+  plan, a `helm diff`, and an SDK/`kubectl` diff, each comparing intended against
+  live before any write. This is how drift stays visible without a reconciler.
 - **Backend state** (audit log, MCP token families, step-up reveal grants,
   namespace-request workflow) lives in PostgreSQL (D11). It is operational
   metadata, never secret values.
@@ -152,14 +155,16 @@ talks to the next through stable interfaces.
 Agent-driven apply (D3) works like this:
 
 1. A change is expressed as config (parameters) plus the opinionated defaults.
-2. Ladon renders the concrete artifacts: Terraform for the cluster, the OpenBao
-   install, and OpenBao configuration (namespaces, policies, auth, KV mounts);
-   Helm values; and ESO resources.
-3. A dry-run shows what would change: a Terraform plan for infrastructure and
-   config, and an SDK/`kubectl` diff for runtime resources, showing namespace,
-   path, key names, and sync target. No secret values appear.
-4. After explicit confirmation, Ladon applies: `terraform apply` for the IaC
-   layer, and the OpenBao SDK / `kubectl` for runtime secret and ESO operations.
+2. Ladon renders the concrete artifacts for the relevant layer: Terraform for the
+   cloud substrate; pinned Helm chart and values for the OpenBao install; OpenBao
+   policies, namespaces, auth, and ESO resources for the config layer.
+3. A dry-run shows what would change, per layer: a Terraform plan for the
+   substrate, a `helm diff` for the install, and an SDK/`kubectl` diff for config
+   and runtime, showing namespace, path, key names, and sync target. No secret
+   values appear.
+4. After explicit confirmation, Ladon applies the relevant layer: `terraform
+   apply` for the substrate, `helm upgrade --install` for OpenBao, and the
+   OpenBao SDK / `kubectl` for configuration, secret, and ESO operations.
 5. Day-2 operations (init, unseal, snapshot, migration) are explicit, audited
    operations in the tooling, not background reconciliation.
 

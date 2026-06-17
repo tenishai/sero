@@ -40,4 +40,14 @@ point of view, not a list of commit subjects.
   (JWT and AppRole optional), KV v2, and a three-part configuration model
   (deployment settings, teams, sync targets) with a minimal-deployment path.
 
+### Changed
+
+- Apply model refined into three separated, agent-driven layers, each with its
+  own dry-run: Terraform for the cloud substrate only (D10), a direct Helm
+  install of OpenBao instead of the Terraform Helm provider (D3a), and the
+  OpenBao SDK/API for configuration instead of the Terraform Vault provider
+  (D3b). This decouples the install and configuration lifecycles from
+  infrastructure and avoids configuring Terraform providers from a cluster that
+  does not exist at plan time.
+
 [Unreleased]: https://github.com/kmgreiner3/ladon/commits/main
