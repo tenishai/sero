@@ -17,7 +17,7 @@ the architecture in [docs/design.md](docs/design.md) and this roadmap.
 - [x] Versioning policy, changelog, pinned-versions reference
 - [x] Testing philosophy
 - [x] Conventions lint and CI skeleton
-- [ ] Architecture (docs/design.md) and this roadmap
+- [x] Architecture (docs/design.md) and this roadmap
 
 ## Phase 1: Understand the sources, design the baseline
 
@@ -27,10 +27,10 @@ mandates apply to everything brought over: scrub all company branding, and
 generalize and slim down to a small handful of generic namespaces, policies, and
 auth methods driven by configuration.
 
-- Document each source repo's architecture
-- Design the generic baseline (namespaces, policies, auth methods)
-- Design the per-deployment customization model
-- No feature code until the baseline design is reviewed
+- [x] Document each source repo's architecture ([docs/source-review.md](docs/source-review.md))
+- [ ] Design the generic baseline (namespaces, policies, auth methods)
+- [ ] Design the per-deployment customization model
+- [ ] No feature code until the baseline design is reviewed
 
 ## Phase 2: OpenBao deploy baseline (dev)
 

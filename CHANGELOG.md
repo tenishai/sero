@@ -31,5 +31,8 @@ point of view, not a list of commit subjects.
   and OIDC auth, a PostgreSQL backend datastore, an MCP tool surface, a custom
   Svelte 5 wrapper UI, and a polyglot Python plus TypeScript/Svelte stack. The
   decisions reflect a read-only review of the two source repositories.
+- Source review (`docs/source-review.md`): the architecture of the two source
+  repositories, the seams Ladon builds on, the scrub surface (as categories, not
+  values), and the direction for the generic baseline.
 
 [Unreleased]: https://github.com/kmgreiner3/ladon/commits/main
