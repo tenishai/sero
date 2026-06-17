@@ -49,5 +49,9 @@ point of view, not a list of commit subjects.
   (D3b). This decouples the install and configuration lifecycles from
   infrastructure and avoids configuring Terraform providers from a cluster that
   does not exist at plan time.
+- ESO installation defined as one agent-driven Helm bootstrap capability (D4a),
+  triggered for the hub cluster at bring-up and per target cluster from the
+  UI/MCP, rather than a static deploy step. Target clusters are registered over
+  time, so ESO is installed on demand once networking and auth are in place.
 
 [Unreleased]: https://github.com/kmgreiner3/ladon/commits/main
