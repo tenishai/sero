@@ -46,6 +46,11 @@ point of view, not a list of commit subjects.
   stanza, plus a dev overlay (single node, Shamir unseal) and a README
   describing the dry-run-first `helm upgrade --install` flow.
 
+- OpenBao install tooling (`ladon.install`): a pinned `HelmRelease` and an
+  `install()` that adds the pinned chart repo and runs `helm upgrade --install`,
+  dry-run by default (an apply must be requested explicitly), per the apply model
+  in design.md. Command construction is pure and unit-tested without a helm
+  binary.
 - Python project (`pyproject.toml`, `uv.lock`, `src/ladon/`, `tests/`): managed
   with uv, pinned to Python 3.14, with ruff (lint and format) and pytest. The
   first module is `ladon.hygiene` (refuse placeholder secret values, mask
