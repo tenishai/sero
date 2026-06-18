@@ -1,5 +1,14 @@
 """OpenBao configuration layer (D3b): render baseline config from parameters."""
 
+from ladon.config.auth import (
+    DEFAULT_TOKEN_TTL,
+    AuthMethod,
+    AuthRole,
+    kubernetes_auth,
+    kubernetes_role,
+    oidc_auth,
+    oidc_role,
+)
 from ladon.config.loader import (
     DeploymentConfig,
     load_deployment_config,
@@ -18,14 +27,21 @@ from ladon.config.teams import ConfigError, Team, parse_teams
 
 __all__ = [
     "DEFAULT_KV_MOUNT",
+    "DEFAULT_TOKEN_TTL",
+    "AuthMethod",
+    "AuthRole",
     "ConfigError",
     "DeploymentConfig",
     "Policy",
     "Team",
     "baseline_team_policies",
     "external_secrets_read",
+    "kubernetes_auth",
+    "kubernetes_role",
     "load_deployment_config",
     "load_deployment_config_text",
+    "oidc_auth",
+    "oidc_role",
     "parse_deployment_config",
     "parse_teams",
     "team_readonly",
