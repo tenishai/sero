@@ -8,12 +8,16 @@ from ladon.config.policies import (
     team_readonly,
     team_readwrite,
 )
+from ladon.config.teams import ConfigError, Team, parse_teams
 
 __all__ = [
     "DEFAULT_KV_MOUNT",
+    "ConfigError",
     "Policy",
+    "Team",
     "baseline_team_policies",
     "external_secrets_read",
+    "parse_teams",
     "team_readonly",
     "team_readwrite",
 ]

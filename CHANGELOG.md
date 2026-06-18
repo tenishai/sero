@@ -46,6 +46,11 @@ point of view, not a list of commit subjects.
   stanza, plus a dev overlay (single node, Shamir unseal) and a README
   describing the dry-run-first `helm upgrade --install` flow.
 
+- Teams config model (`ladon.config.teams`): parse and validate a deployment's
+  team list (name, namespace, environments, identity-provider groups, access
+  level) into `Team` objects, mapping each to its baseline policies. Rejects
+  invalid namespaces and duplicate namespaces; an empty list is valid. Parses
+  plain dicts, so it stays dependency-free. Tested.
 - OpenBao policy rendering (`ladon.config.policies`): the baseline policy
   templates from baseline.md (`team-readwrite`, `team-readonly`,
   `external-secrets-read`) rendered as OpenBao HCL per namespace from the KV
