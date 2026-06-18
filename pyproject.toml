@@ -4,8 +4,10 @@ version = "0.0.0"
 description = "Open-source secrets and vault management built on OpenBao"
 requires-python = ">=3.14"
 license = "Apache-2.0"
-# No runtime dependencies yet; added (pinned) as the tooling and backend land.
-dependencies = []
+# Runtime dependencies, pinned exactly. Bumps are their own reviewed PR.
+dependencies = [
+  "PyYAML==6.0.3",
+]
 
 [dependency-groups]
 # Dev tooling, pinned exactly. Bumps are their own reviewed PR.

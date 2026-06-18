@@ -1,0 +1,39 @@
+# Example Ladon deployment configuration. Copy this, customize it, and keep it
+# in your own configuration repository. Every value here is a placeholder.
+#
+# This file holds names, paths, and references only. Never put secret values in
+# a Ladon config; secrets live only in OpenBao.
+
+# Platform settings for one deployment. The layers that consume these define
+# their own detailed schemas; the shape below is illustrative.
+deployment:
+  environment: dev
+  oidc:
+    discovery_url: https://id.example.com
+    groups_claim: groups
+  # Auto-unseal via a cloud KMS. A reference only, never key material.
+  kms:
+    provider: gcpckms        # or awskms
+    key_ref: <kms-key-reference>
+
+# Teams. Each becomes a namespace with the baseline policy set. An empty list is
+# valid: the platform still has its root.
+teams:
+  - name: team-a
+    namespace: team-a
+    environments: [dev]
+    groups: [team-a-admins]
+    access: readwrite
+  - name: team-b
+    namespace: team-b
+    environments: [dev, prod]
+    access: readonly
+
+# Sync targets. Disabled by default; enable per deployment.
+sync_targets:
+  kubernetes:
+    enabled: true
+  gcp_secret_manager:
+    enabled: false
+  aws_secrets_manager:
+    enabled: false
