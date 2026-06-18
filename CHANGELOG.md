@@ -46,6 +46,11 @@ point of view, not a list of commit subjects.
   stanza, plus a dev overlay (single node, Shamir unseal) and a README
   describing the dry-run-first `helm upgrade --install` flow.
 
+- OpenBao policy rendering (`ladon.config.policies`): the baseline policy
+  templates from baseline.md (`team-readwrite`, `team-readonly`,
+  `external-secrets-read`) rendered as OpenBao HCL per namespace from the KV
+  mount, with KV v2 data, metadata, and soft-delete paths. Pure rendering;
+  applying to OpenBao is a later SDK step. Tested.
 - OpenBao install tooling (`ladon.install`): a pinned `HelmRelease` and an
   `install()` that adds the pinned chart repo and runs `helm upgrade --install`,
   dry-run by default (an apply must be requested explicitly), per the apply model
