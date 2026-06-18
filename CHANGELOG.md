@@ -46,6 +46,10 @@ point of view, not a list of commit subjects.
   stanza, plus a dev overlay (single node, Shamir unseal) and a README
   describing the dry-run-first `helm upgrade --install` flow.
 
+- Deployment config loader (`ladon.config.loader`, `config/example.yaml`): load
+  a YAML deployment config into a `DeploymentConfig` (validated teams, plus
+  deployment settings and sync targets), with a committed, brand-neutral example.
+  Pins PyYAML.
 - Teams config model (`ladon.config.teams`): parse and validate a deployment's
   team list (name, namespace, environments, identity-provider groups, access
   level) into `Team` objects, mapping each to its baseline policies. Rejects
