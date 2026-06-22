@@ -1,14 +1,18 @@
 """Render the baseline OpenBao auth methods (D3b).
 
-The baseline ships two auth methods (docs/baseline.md): Kubernetes for in-cluster
-workloads and OIDC for human operators. This module renders their configuration
-from parameters into plain data: an ``AuthMethod`` carries the mount-level config
-and its roles as the argument mappings the OpenBao API expects. Rendering is
-pure; enabling the method and writing the config to OpenBao is the SDK layer.
+The baseline ships two auth methods (docs/baseline.md): JWT for in-cluster
+workloads (the External Secrets Operator authenticates with a projected service
+account token) and OIDC for human operators. This module renders their
+configuration from parameters into plain data: an ``AuthMethod`` carries the
+mount-level config and its roles as the argument mappings the OpenBao API
+expects. Rendering is pure; enabling the method and writing the config to OpenBao
+is the SDK layer.
 
 Secret hygiene: nothing here ever holds a secret value. The OIDC client secret is
 carried as a *reference* (a name or path the apply layer resolves), stored under
-an explicit ``oidc_client_secret_ref`` key, never as the secret itself.
+an explicit ``oidc_client_secret_ref`` key, never as the secret itself. JWT
+verification uses the provider's published keys (a discovery URL), so it needs no
+secret at all.
 """
 
 from __future__ import annotations
@@ -44,59 +48,66 @@ class AuthMethod:
     roles: tuple[AuthRole, ...] = ()
 
 
-def kubernetes_role(
+def jwt_role(
     name: str,
     *,
-    service_accounts: list[str],
-    namespaces: list[str],
     policies: list[str],
+    bound_audiences: list[str] | None = None,
+    bound_subject: str | None = None,
+    user_claim: str = "sub",
     ttl: str = DEFAULT_TOKEN_TTL,
 ) -> AuthRole:
-    """A Kubernetes auth role binding service accounts to OpenBao policies.
+    """A JWT auth role binding a workload identity to OpenBao policies.
 
-    Binds the named Kubernetes service accounts in the named Kubernetes
-    namespaces to the given OpenBao policies. All bindings are required; an
-    unbound role would authenticate any workload.
+    The role must constrain who may use it: at least one of ``bound_subject``
+    (e.g. a Kubernetes service account ``system:serviceaccount:ns:name``) or
+    ``bound_audiences`` is required, so an unconstrained role cannot authenticate
+    any token the provider issues.
     """
-    if not service_accounts:
-        raise ConfigError(f"kubernetes role {name!r}: 'service_accounts' must be non-empty")
-    if not namespaces:
-        raise ConfigError(f"kubernetes role {name!r}: 'namespaces' must be non-empty")
     if not policies:
-        raise ConfigError(f"kubernetes role {name!r}: 'policies' must be non-empty")
-    return AuthRole(
-        name=name,
-        data={
-            "bound_service_account_names": list(service_accounts),
-            "bound_service_account_namespaces": list(namespaces),
-            "token_policies": list(policies),
-            "token_ttl": ttl,
-        },
-    )
+        raise ConfigError(f"jwt role {name!r}: 'policies' must be non-empty")
+    if not bound_subject and not bound_audiences:
+        raise ConfigError(
+            f"jwt role {name!r}: set 'bound_subject' or 'bound_audiences'; "
+            "an unbound role authenticates any token"
+        )
+    data: dict = {
+        "role_type": "jwt",
+        "user_claim": user_claim,
+        "token_policies": list(policies),
+        "token_ttl": ttl,
+    }
+    if bound_audiences:
+        data["bound_audiences"] = list(bound_audiences)
+    if bound_subject:
+        data["bound_subject"] = bound_subject
+    return AuthRole(name=name, data=data)
 
 
-def kubernetes_auth(
+def jwt_auth(
     *,
-    host: str,
-    path: str = "kubernetes",
-    ca_cert_ref: str | None = None,
+    discovery_url: str,
+    path: str = "jwt",
+    bound_issuer: str | None = None,
+    default_role: str | None = None,
     roles: list[AuthRole] | None = None,
 ) -> AuthMethod:
-    """The Kubernetes auth method for in-cluster workloads.
+    """The JWT auth method for in-cluster workloads (the baseline ESO path).
 
-    ``host`` is the API server URL. ``ca_cert_ref`` is an optional reference to
-    the cluster CA (a name or path the apply layer resolves), never the cert
-    itself; omit it to use the in-cluster service-account CA. The token reviewer
-    JWT is intentionally not set here: the baseline uses OpenBao's own pod
-    service account as the reviewer, configured at apply time.
+    ``discovery_url`` is the OIDC discovery URL of the token issuer (the cluster
+    in the Kubernetes case); OpenBao fetches the signing keys from it, so no
+    secret is configured. Each cluster gets its own JWT mount (its own ``path``)
+    bound to that cluster's issuer.
     """
-    if not host:
-        raise ConfigError("kubernetes auth requires a non-empty 'host'")
-    config: dict = {"kubernetes_host": host}
-    if ca_cert_ref:
-        config["kubernetes_ca_cert_ref"] = ca_cert_ref
+    if not discovery_url:
+        raise ConfigError("jwt auth requires a non-empty 'discovery_url'")
+    config: dict = {"oidc_discovery_url": discovery_url}
+    if bound_issuer:
+        config["bound_issuer"] = bound_issuer
+    if default_role:
+        config["default_role"] = default_role
     return AuthMethod(
-        type="kubernetes",
+        type="jwt",
         path=path,
         config=config,
         roles=tuple(roles or ()),

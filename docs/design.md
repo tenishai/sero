@@ -45,7 +45,7 @@ Each decision records the choice and the reason. Versions are pinned in
 | D4 | Secret sync | External Secrets Operator | The de facto standard for syncing secrets into Kubernetes and between secret stores. Broad provider support including GCP Secret Manager and AWS Secrets Manager. |
 | D4a | ESO install | One agent-driven Helm bootstrap capability, triggered for the hub cluster at platform bring-up and per target cluster from the UI/MCP | Target clusters are registered over time and cannot be pre-provisioned at deploy time, so ESO is installed on demand (pinned chart, CRD-ownership handling, webhook health check), generalized from the source backend's bootstrap. The same capability installs ESO on the hub cluster during bring-up (replacing the source's GitOps path, since Ladon has no reconciler). It is the D3a Helm layer applied per cluster, so it shares one mechanism and one `helm diff` dry-run. It depends on network reachability to OpenBao and an ESO auth role (D6), so it sequences after the deploy baseline, the backend, and networking. |
 | D5 | Sync targets | Kubernetes, GCP Secret Manager, AWS Secrets Manager | The three targets the platform must serve. Each is an ESO `SecretStore` / `ClusterSecretStore` provider, parameterized per deployment. |
-| D6 | Auth methods | Baseline Kubernetes and OIDC; JWT and AppRole available | Kubernetes auth for in-cluster workloads and OIDC for human operators are the generic, provider-agnostic baseline. ESO authenticates with a JWT or Kubernetes auth role. AppRole is available for service-to-service automation. The source deployment uses five methods; Ladon's baseline is the two, with the others as documented, optional additions. |
+| D6 | Auth methods | Baseline JWT and OIDC; AppRole available | JWT for in-cluster workloads and OIDC for human operators are the generic, provider-agnostic baseline. ESO authenticates with a JWT role (a projected service account token verified against the cluster's published keys, so no secret is stored), with a JWT mount per cluster covering the cross-cluster case. AppRole is available for service-to-service automation without a workload identity. The source deployment uses several methods and is migrating workloads off Kubernetes auth to JWT; Ladon starts where that migration lands, so Kubernetes auth is not in the baseline. |
 | D7 | UI | Custom wrapper application, Svelte 5 | A separate UI that spans multiple clusters, ESO sync status, and the cloud secret stores. OpenBao's built-in UI is single-cluster and CRUD-focused and cannot show the cross-cluster and cloud-sync views that are Ladon's reason to exist. Svelte 5 is chosen to reuse and generalize the existing source UI rather than rebuild it; it is a strong fit for an admin/status surface. |
 | D8 | Languages | Polyglot: Python and TypeScript/Svelte | Python for the backend, operational tooling, and the agent/MCP surface (consistent with the sibling repos and a strong fit for Kubernetes and cloud SDKs). TypeScript/Svelte for the wrapper UI (D7). |
 | D9 | TLS / certificates | cert-manager (candidate) | For issuing and rotating OpenBao and ingress certificates. Confirmed and pinned when the deploy baseline lands. |
@@ -87,7 +87,7 @@ talks to the next through stable interfaces.
 
 ```
        operators (humans)            workloads (in cluster)        agents (MCP)
-             |  OIDC                        |  Kubernetes auth           |  OAuth 2.1
+             |  OIDC                        |  JWT auth                  |  OAuth 2.1
              v                              v                            v
         +-------------------------------------------------------+   +-----------+
         |  Ladon wrapper UI / admin surface (Svelte 5)          |   | MCP tools |  D12
@@ -127,7 +127,7 @@ talks to the next through stable interfaces.
 - **OpenBao** is the source of truth for secrets, running HA on Raft with KMS
   auto-unseal.
 - **ESO** reads from OpenBao and writes to the configured targets. It
-  authenticates to OpenBao with a JWT or Kubernetes auth role.
+  authenticates to OpenBao with a JWT auth role.
 
 ## Data and state model
 
@@ -183,7 +183,7 @@ These are first-class and pervade the design:
 - Placeholder values are refused.
 - Least privilege: the baseline policies grant the narrowest access that works,
   and per-deployment policies extend from there explicitly.
-- Auth is OIDC for humans and Kubernetes for workloads (D6); no shared static
+- Auth is OIDC for humans and JWT for workloads (D6); no shared static
   tokens for routine use.
 
 The generic baseline of namespaces, policies, and auth methods, and the

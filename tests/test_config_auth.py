@@ -1,68 +1,69 @@
-"""Tests for the baseline auth-method rendering."""
+"""Tests for the baseline auth-method rendering (JWT workloads + OIDC humans)."""
 
 import pytest
 
 from ladon.config import (
     ConfigError,
-    kubernetes_auth,
-    kubernetes_role,
+    jwt_auth,
+    jwt_role,
     oidc_auth,
     oidc_role,
 )
 
 
-def test_kubernetes_auth_minimal():
-    method = kubernetes_auth(host="https://kube.example.com")
-    assert method.type == "kubernetes"
-    assert method.path == "kubernetes"
-    assert method.config == {"kubernetes_host": "https://kube.example.com"}
+def test_jwt_auth_minimal_needs_no_secret():
+    method = jwt_auth(discovery_url="https://kube.example.com")
+    assert method.type == "jwt"
+    assert method.path == "jwt"
+    assert method.config == {"oidc_discovery_url": "https://kube.example.com"}
     assert method.roles == ()
+    # JWT verifies via the provider's published keys: no secret is configured.
+    assert not any("secret" in k for k in method.config)
 
 
-def test_kubernetes_auth_ca_cert_is_a_reference_not_a_value():
-    method = kubernetes_auth(
-        host="https://kube.example.com",
-        ca_cert_ref="cluster-ca",
+def test_jwt_auth_optional_issuer_and_default_role():
+    method = jwt_auth(
+        discovery_url="https://kube.example.com",
+        bound_issuer="https://kube.example.com",
+        default_role="external-secrets",
     )
-    # The CA is carried as a reference key, never an inline cert.
-    assert method.config["kubernetes_ca_cert_ref"] == "cluster-ca"
-    assert "kubernetes_ca_cert" not in method.config
+    assert method.config["bound_issuer"] == "https://kube.example.com"
+    assert method.config["default_role"] == "external-secrets"
 
 
-def test_kubernetes_auth_requires_host():
-    with pytest.raises(ConfigError, match="host"):
-        kubernetes_auth(host="")
+def test_jwt_auth_requires_discovery_url():
+    with pytest.raises(ConfigError, match="discovery_url"):
+        jwt_auth(discovery_url="")
 
 
-def test_kubernetes_role_binds_all_three():
-    role = kubernetes_role(
-        "team-a",
-        service_accounts=["sa-a"],
-        namespaces=["ns-a"],
-        policies=["team-readwrite"],
+def test_jwt_role_binds_eso_service_account_subject():
+    role = jwt_role(
+        "external-secrets",
+        policies=["external-secrets-readonly"],
+        bound_subject="system:serviceaccount:external-secrets:external-secrets",
+        bound_audiences=["bao"],
     )
-    assert role.data["bound_service_account_names"] == ["sa-a"]
-    assert role.data["bound_service_account_namespaces"] == ["ns-a"]
-    assert role.data["token_policies"] == ["team-readwrite"]
+    assert role.data["role_type"] == "jwt"
+    assert role.data["token_policies"] == ["external-secrets-readonly"]
+    assert role.data["bound_subject"] == ("system:serviceaccount:external-secrets:external-secrets")
+    assert role.data["bound_audiences"] == ["bao"]
     assert role.data["token_ttl"] == "1h"
 
 
-@pytest.mark.parametrize(
-    ("sa", "ns", "pol"),
-    [
-        ([], ["ns"], ["p"]),
-        (["sa"], [], ["p"]),
-        (["sa"], ["ns"], []),
-    ],
-)
-def test_kubernetes_role_rejects_empty_bindings(sa, ns, pol):
-    with pytest.raises(ConfigError):
-        kubernetes_role("r", service_accounts=sa, namespaces=ns, policies=pol)
+def test_jwt_role_requires_a_binding():
+    # No bound_subject and no bound_audiences: must fail closed.
+    with pytest.raises(ConfigError, match="unbound role"):
+        jwt_role("open", policies=["p"])
 
 
-def test_kubernetes_auth_carries_roles():
-    role = kubernetes_role("team-a", service_accounts=["sa"], namespaces=["ns"], policies=["p"])
-    method = kubernetes_auth(host="https://k", roles=[role])
+def test_jwt_role_requires_policies():
+    with pytest.raises(ConfigError, match="policies"):
+        jwt_role("r", policies=[], bound_subject="system:serviceaccount:ns:sa")
+
+
+def test_jwt_auth_carries_roles():
+    role = jwt_role("eso", policies=["p"], bound_subject="system:serviceaccount:ns:sa")
+    method = jwt_auth(discovery_url="https://k", roles=[role])
     assert method.roles == (role,)
 
 

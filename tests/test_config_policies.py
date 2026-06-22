@@ -3,6 +3,7 @@
 from ladon.config import (
     baseline_team_policies,
     external_secrets_read,
+    external_secrets_root,
     team_readonly,
     team_readwrite,
 )
@@ -36,6 +37,17 @@ def test_external_secrets_read_is_read_only_data():
     assert p.name == "external-secrets-read"
     assert 'path "kv/data/*"' in p.hcl
     assert '"create"' not in p.hcl and '"update"' not in p.hcl
+
+
+def test_external_secrets_root_reads_across_namespaces():
+    p = external_secrets_root()
+    assert p.name == "external-secrets-root"
+    # The "+" matches one namespace segment: read across all team namespaces.
+    assert 'path "+/kv/data/*"' in p.hcl
+    assert 'path "+/kv/metadata/*"' in p.hcl
+    # Read-only: no write capabilities anywhere.
+    for cap in ("create", "update", "delete"):
+        assert f'"{cap}"' not in p.hcl
 
 
 def test_custom_mount_is_respected():

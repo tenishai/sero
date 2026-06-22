@@ -67,6 +67,22 @@ def external_secrets_read(mount: str = DEFAULT_KV_MOUNT) -> Policy:
     return Policy(name="external-secrets-read", hcl="\n\n".join(blocks) + "\n")
 
 
+def external_secrets_root(mount: str = DEFAULT_KV_MOUNT) -> Policy:
+    """Cross-namespace read for a centralized ESO that pushes to cloud SMs.
+
+    The centralized External Secrets Operator runs in the platform root and reads
+    secrets out of every team namespace to push them to GCP Secret Manager or AWS
+    Secrets Manager. The ``+`` matches exactly one namespace segment, so this
+    grants read across all team namespaces without granting anything else. Enable
+    it only when cloud secret-manager sync is turned on.
+    """
+    blocks = [
+        _block(f"+/{mount}/data/*", ["read"]),
+        _block(f"+/{mount}/metadata/*", ["read", "list"]),
+    ]
+    return Policy(name="external-secrets-root", hcl="\n\n".join(blocks) + "\n")
+
+
 def baseline_team_policies(mount: str = DEFAULT_KV_MOUNT) -> list[Policy]:
     """The per-team baseline policies rendered for one namespace's KV mount."""
     return [team_readwrite(mount), team_readonly(mount)]
