@@ -26,13 +26,21 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
-from ladon.config.auth import AuthMethod
-from ladon.config.policies import DEFAULT_KV_MOUNT, Policy
+from ladon.config.auth import AuthMethod, jwt_auth, jwt_role
+from ladon.config.policies import DEFAULT_KV_MOUNT, Policy, external_secrets_read
 from ladon.config.teams import ConfigError
 
 # KV version 2 is the baseline (docs/baseline.md); the mount is enabled with the
 # version pinned so an upgrade-in-place can never silently change the engine.
 KV_VERSION = "2"
+
+# Per-team ESO onboarding defaults, matching the source platform's convention
+# (one JWT mount per cluster, a single open role bound by audience). These are
+# parameters on the builder, not hardcoded behavior, so a deployment can override
+# any of them; the defaults just keep the common case faithful to the source.
+DEFAULT_ESO_POLICY = "external-secrets-readonly"
+DEFAULT_ESO_ROLE = "external-secrets-root"
+DEFAULT_ESO_AUDIENCE = "bao"
 
 
 @dataclass(frozen=True)
@@ -169,6 +177,62 @@ def root_config_plan(
     ops += policy_ops(policies)
     for method in auth_methods:
         ops += auth_method_ops(method)
+    return Plan(ops=tuple(ops))
+
+
+def team_onboarding_plan(
+    *,
+    cluster: str,
+    oidc_discovery_url: str,
+    kv_mount: str = DEFAULT_KV_MOUNT,
+    policy_name: str = DEFAULT_ESO_POLICY,
+    role_name: str = DEFAULT_ESO_ROLE,
+    audience: str = DEFAULT_ESO_AUDIENCE,
+) -> Plan:
+    """Plan the phase-10 per-team ESO onboarding inside an existing namespace.
+
+    Faithful to the source platform: enable a JWT auth mount named
+    ``jwt-<cluster>`` (one per cluster), configure it with the cluster's OIDC
+    discovery URL (also used as the bound issuer) and a default role, write the
+    ESO read-only policy, then write a JWT role bound by audience to that policy.
+
+    The team's OpenBao namespace is assumed to already exist (created at root
+    config / namespace request time); this plan operates within it and does not
+    create it. The client applying the plan is expected to be scoped to that
+    namespace. Ordering puts the policy before the role that references it, as
+    OpenBao requires.
+    """
+    if not cluster:
+        raise ConfigError("team onboarding requires a non-empty 'cluster'")
+
+    mount = f"jwt-{cluster}"
+
+    method = jwt_auth(
+        discovery_url=oidc_discovery_url,
+        path=mount,
+        bound_issuer=oidc_discovery_url,
+        default_role=role_name,
+    )
+    role = jwt_role(
+        role_name,
+        policies=[policy_name],
+        bound_audiences=[audience],
+    )
+    # Reuse the baseline ESO read policy's HCL, named to the onboarding
+    # convention so policies.py stays the single source of truth for the grant.
+    base = external_secrets_read(kv_mount)
+    policy = Policy(name=policy_name, hcl=base.hcl)
+
+    ops: list[WriteOp] = [
+        _enable_auth_method_op(method),
+        _configure_auth_op(method),
+        _write_policy_op(policy),
+        WriteOp(
+            kind="write-auth-role",
+            path=f"auth/{mount}/role/{role.name}",
+            data=dict(role.data),
+        ),
+    ]
     return Plan(ops=tuple(ops))
 
 
