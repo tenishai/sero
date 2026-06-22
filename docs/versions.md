@@ -62,6 +62,7 @@ Languages and their toolchains. Populated once the language decision in
 | ruff | 0.15.17 | pypi.org/project/ruff | 2026-06-17 | Lint and format. Pinned in pyproject dev group and uv.lock. |
 | pytest | 9.1.0 | pypi.org/project/pytest | 2026-06-17 | Test runner. Pinned in pyproject dev group and uv.lock. |
 | PyYAML | 6.0.3 | pypi.org/project/PyYAML | 2026-06-17 | Runtime dependency: parse deployment config. Pinned in pyproject and uv.lock. |
+| hvac | 2.4.0 | pypi.org/project/hvac | 2026-06-22 | Runtime dependency: OpenBao API client for the SDK apply layer (D3b). The pure plan layer landed first; the client wrapper follows. Pinned in pyproject and uv.lock. |
 
 ## Tooling and CLIs
 

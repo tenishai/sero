@@ -7,6 +7,7 @@ license = "Apache-2.0"
 # Runtime dependencies, pinned exactly. Bumps are their own reviewed PR.
 dependencies = [
   "PyYAML==6.0.3",
+  "hvac==2.4.0",
 ]
 
 [dependency-groups]
