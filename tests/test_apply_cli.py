@@ -181,6 +181,133 @@ def test_no_subcommand_errors():
 def test_build_plan_unknown_phase_raises():
     import argparse
 
-    ns = argparse.Namespace(phase="bogus")
+    ns = argparse.Namespace(phase="bogus", config=None)
     with pytest.raises(ConfigError):
         cli.build_plan(ns)
+
+
+CONFIG_YAML = """
+deployment:
+  kv_mount: team-kv
+teams:
+  - name: team-a
+    namespace: ns-a
+    environments: [dev]
+"""
+
+
+def write_config(tmp_path):
+    path = tmp_path / "deployment.yaml"
+    path.write_text(CONFIG_YAML)
+    return str(path)
+
+
+def test_root_config_kv_mount_from_config(tmp_path):
+    cfg = write_config(tmp_path)
+    code, text = run(
+        ["plan", "--phase", "root-config", "--jwt-discovery-url", ISSUER, "--config", cfg]
+    )
+    assert code == 0
+    assert "enable-secrets-engine sys/mounts/team-kv" in text
+
+
+def test_explicit_kv_mount_overrides_config(tmp_path):
+    cfg = write_config(tmp_path)
+    code, text = run(
+        [
+            "plan",
+            "--phase",
+            "root-config",
+            "--jwt-discovery-url",
+            ISSUER,
+            "--config",
+            cfg,
+            "--kv-mount",
+            "override-kv",
+        ]
+    )
+    assert code == 0
+    assert "sys/mounts/override-kv" in text
+
+
+def test_team_onboarding_namespace_resolved_from_config(tmp_path, monkeypatch):
+    cfg = write_config(tmp_path)
+    seen = {}
+
+    def fake_connect(conn, credential, **k):
+        seen["namespace"] = conn.namespace
+        return "C"
+
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", fake_connect)
+    monkeypatch.setattr(cli, "apply_plan", lambda plan, **k: ApplyResult(applied=(), dry_run=False))
+
+    code, _ = run(
+        [
+            "apply",
+            "--phase",
+            "team-onboarding",
+            "--cluster",
+            "team-a",
+            "--oidc-discovery-url",
+            ISSUER,
+            "--config",
+            cfg,
+            "--team",
+            "team-a",
+            "--apply",
+        ]
+    )
+    assert code == 0
+    assert seen["namespace"] == "ns-a"
+
+
+def test_team_flag_without_config_errors(monkeypatch):
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    code, _ = run(
+        [
+            "apply",
+            "--phase",
+            "team-onboarding",
+            "--cluster",
+            "team-a",
+            "--oidc-discovery-url",
+            ISSUER,
+            "--team",
+            "team-a",
+            "--apply",
+        ]
+    )
+    assert code == 2  # --team requires --config
+
+
+def test_explicit_namespace_beats_team_resolution(tmp_path, monkeypatch):
+    cfg = write_config(tmp_path)
+    seen = {}
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(
+        cli, "connect", lambda conn, cred, **k: seen.setdefault("ns", conn.namespace) or "C"
+    )
+    monkeypatch.setattr(cli, "apply_plan", lambda plan, **k: ApplyResult(applied=(), dry_run=False))
+    run(
+        [
+            "apply",
+            "--phase",
+            "team-onboarding",
+            "--cluster",
+            "team-a",
+            "--oidc-discovery-url",
+            ISSUER,
+            "--config",
+            cfg,
+            "--team",
+            "team-a",
+            "--namespace",
+            "explicit-ns",
+            "--apply",
+        ]
+    )
+    assert seen["ns"] == "explicit-ns"

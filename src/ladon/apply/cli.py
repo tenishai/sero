@@ -11,9 +11,10 @@ runnable end to end. Two subcommands:
   ``--apply`` is required to write.
 
 Run as ``python -m ladon plan ...`` / ``python -m ladon apply ...``. Inputs are
-explicit flags per phase; deriving a plan from a deployment config file is a
-separate concern. Built on the standard library only (argparse), so the CLI adds
-no dependency.
+explicit flags per phase. A ``--config`` deployment file supplies the parts it
+already models (the KV mount, and a team's namespace via ``--team``); auth inputs
+stay explicit flags. Built on the standard library only (argparse), so the CLI
+adds no dependency.
 """
 
 from __future__ import annotations
@@ -30,7 +31,9 @@ from ladon.apply.plan import (
     root_config_plan,
     team_onboarding_plan,
 )
+from ladon.config import derive
 from ladon.config.auth import jwt_auth, oidc_auth
+from ladon.config.loader import DeploymentConfig, load_deployment_config
 from ladon.config.policies import baseline_team_policies, external_secrets_read
 from ladon.config.teams import ConfigError
 
@@ -71,9 +74,25 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
         help="Which plan to build.",
     )
     p.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Path to a deployment config file. Supplies the KV mount and, for "
+            "team-onboarding, the team's namespace (via --team). Auth inputs "
+            "stay explicit flags."
+        ),
+    )
+    p.add_argument(
         "--kv-mount",
-        default=DEFAULT_KV_MOUNT,
-        help=f"KV v2 mount path (default: {DEFAULT_KV_MOUNT}).",
+        default=None,
+        help=(
+            f"KV v2 mount path. Overrides the config; defaults to {DEFAULT_KV_MOUNT} "
+            "when neither is given."
+        ),
+    )
+    p.add_argument(
+        "--team",
+        help="team-onboarding: team name; its namespace is resolved from --config.",
     )
     # root-config inputs
     p.add_argument(
@@ -96,20 +115,38 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cluster", help="team-onboarding: cluster name; mount is jwt-<cluster>.")
 
 
+def _load_config(args: argparse.Namespace) -> DeploymentConfig | None:
+    """Load the deployment config if ``--config`` was given, else None."""
+    if not args.config:
+        return None
+    return load_deployment_config(args.config)
+
+
+def _resolve_kv_mount(args: argparse.Namespace, config: DeploymentConfig | None) -> str:
+    """The KV mount: an explicit ``--kv-mount`` wins, then config, then default."""
+    if args.kv_mount:
+        return args.kv_mount
+    if config is not None:
+        return derive.kv_mount(config)
+    return DEFAULT_KV_MOUNT
+
+
 def build_plan(args: argparse.Namespace) -> Plan:
-    """Build the plan selected by ``--phase`` from the parsed flags."""
+    """Build the plan selected by ``--phase`` from the flags and optional config."""
+    config = _load_config(args)
     if args.phase == "root-config":
-        return _build_root_config_plan(args)
+        return _build_root_config_plan(args, config)
     if args.phase == "team-onboarding":
-        return _build_team_onboarding_plan(args)
+        return _build_team_onboarding_plan(args, config)
     raise ConfigError(f"unknown phase {args.phase!r}")  # pragma: no cover - argparse guards
 
 
-def _build_root_config_plan(args: argparse.Namespace) -> Plan:
+def _build_root_config_plan(args: argparse.Namespace, config: DeploymentConfig | None) -> Plan:
     if not args.jwt_discovery_url:
         raise ConfigError("root-config requires --jwt-discovery-url")
 
-    policies = [*baseline_team_policies(args.kv_mount), external_secrets_read(args.kv_mount)]
+    mount = _resolve_kv_mount(args, config)
+    policies = [*baseline_team_policies(mount), external_secrets_read(mount)]
 
     auth_methods = [jwt_auth(discovery_url=args.jwt_discovery_url)]
     if args.oidc_discovery_url:
@@ -134,11 +171,11 @@ def _build_root_config_plan(args: argparse.Namespace) -> Plan:
     return root_config_plan(
         policies=policies,
         auth_methods=auth_methods,
-        kv_mount=args.kv_mount,
+        kv_mount=mount,
     )
 
 
-def _build_team_onboarding_plan(args: argparse.Namespace) -> Plan:
+def _build_team_onboarding_plan(args: argparse.Namespace, config: DeploymentConfig | None) -> Plan:
     if not args.cluster:
         raise ConfigError("team-onboarding requires --cluster")
     if not args.oidc_discovery_url:
@@ -146,8 +183,26 @@ def _build_team_onboarding_plan(args: argparse.Namespace) -> Plan:
     return team_onboarding_plan(
         cluster=args.cluster,
         oidc_discovery_url=args.oidc_discovery_url,
-        kv_mount=args.kv_mount,
+        kv_mount=_resolve_kv_mount(args, config),
     )
+
+
+def resolve_namespace(args: argparse.Namespace) -> str | None:
+    """The namespace to scope the apply client to.
+
+    An explicit ``--namespace`` wins. Otherwise, for team-onboarding with a
+    ``--team`` and a ``--config``, the team's namespace is resolved from the
+    config so it comes from the one place it is defined.
+    """
+    explicit = getattr(args, "namespace", None)
+    if explicit:
+        return explicit
+    if args.phase == "team-onboarding" and getattr(args, "team", None):
+        config = _load_config(args)
+        if config is None:
+            raise ConfigError("--team requires --config to resolve the namespace")
+        return derive.team_namespace(config, args.team)
+    return None
 
 
 def _run_plan(args: argparse.Namespace, out) -> int:
@@ -168,7 +223,7 @@ def _run_apply(args: argparse.Namespace, out) -> int:
         print("\nRe-run with --apply to write to OpenBao.", file=out)
         return 0
 
-    namespace = getattr(args, "namespace", None)
+    namespace = resolve_namespace(args)
     conn = BaoConnection.from_env(namespace=namespace)
     client = connect(conn, TokenAuth.from_env())
     result = apply_plan(plan, client=client, apply=True)

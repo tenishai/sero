@@ -196,3 +196,17 @@ scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
 For an apply, the OpenBao address and token come from the environment
 (`BAO_ADDR`/`VAULT_ADDR` and `BAO_TOKEN`/`VAULT_TOKEN`). The token is never
 logged, and a placeholder value is refused.
+
+A `--config` deployment file can supply the parts it already models, so they do
+not have to be repeated as flags: the KV mount, and a team's namespace (resolved
+from `--team`). Auth inputs stay explicit flags. An explicit `--kv-mount` or
+`--namespace` overrides the config.
+
+```
+# KV mount taken from deployment.kv_mount in the config:
+scripts/ladon plan --phase root-config --jwt-discovery-url URL --config deployment.yaml
+
+# Team namespace resolved from the config's team list:
+scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
+  --oidc-discovery-url URL --config deployment.yaml --team TEAM --apply
+```
