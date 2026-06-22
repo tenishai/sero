@@ -20,9 +20,11 @@ def test_loads_committed_example():
     assert {t.namespace for t in cfg.teams} == {"team-a", "team-b"}
     assert cfg.settings["environment"] == "dev"
     assert cfg.sync_targets["kubernetes"]["enabled"] is True
-    # The example must never carry secret material.
-    assert "key_ref" in cfg.settings["kms"]
-    assert cfg.settings["kms"]["key_ref"].startswith("<")
+    # The example must never carry secret material: the kms block names a
+    # provider and uses placeholder references, not real key material.
+    kms = cfg.settings["kms"]
+    assert kms["provider"] == "gcpckms"
+    assert kms["crypto_key"].startswith("<")
 
 
 def test_empty_config_is_valid():
