@@ -49,13 +49,12 @@ the source; the bindings come from config.
 | --- | --- | --- |
 | `team-readwrite` | one team namespace | create/read/update/delete/list on the namespace's KV mount, plus manage the namespace's own policies and workload auth roles |
 | `team-readonly` | one team namespace | read/list on the namespace's KV mount |
-| `external-secrets-read` | root, cross-namespace | read on the KV data paths the sync layer needs, nothing else |
-| `audit-reader` | root | read access to audit information for operational tooling |
-| `secrets-syncer` | root | read on the KV paths a sync workflow consumes |
+| `external-secrets-read` | one team namespace | read/list on the namespace's KV data and metadata, nothing else: the per-team ESO read role |
+| `external-secrets-root` | root, cross-namespace | read/list on the KV data and metadata of every team namespace, for a centralized ESO that pushes to cloud secret managers |
 
-The first two are the per-team baseline. The last three are platform-level and
-optional, enabled when the matching capability (ESO sync, audit tooling) is
-turned on.
+The first two are the per-team baseline. `external-secrets-read` is the per-team
+ESO read policy; `external-secrets-root` is the platform-level cross-namespace
+read used only when cloud secret-manager sync is turned on. Both are read-only.
 
 Policies grant the narrowest access that works (least privilege, per
 [../CONTRIBUTING.md](../CONTRIBUTING.md)). Per-deployment policies extend from
@@ -65,19 +64,26 @@ these templates explicitly; the templates themselves are not edited per team.
 
 Baseline:
 
+- **JWT** for in-cluster workloads. This is the primary workload auth: the
+  External Secrets Operator authenticates with a projected service account token,
+  and OpenBao verifies it against the cluster's published keys (a discovery URL),
+  so no secret is configured. Each cluster gets its own JWT mount bound to its
+  issuer, which covers the cross-cluster case in the baseline rather than as an
+  add-on.
 - **OIDC** for human operators, against a generic, parameterized OIDC provider
   (discovery URL, client, group claim, and the group-to-namespace mapping all
   come from config). The source's specific identity provider becomes one
   possible value, not a hardcoded assumption.
-- **Kubernetes** for in-cluster workloads.
 
 Optional, documented but not enabled by default:
 
-- **JWT** for the External Secrets Operator, including the cross-cluster case.
-- **AppRole** for service-to-service automation.
+- **AppRole** for service-to-service automation that has no workload identity.
 
 A deployment that only needs operator and workload access runs with the two
-baseline methods; the others are turned on through configuration when needed.
+baseline methods; AppRole is turned on through configuration when needed.
+Kubernetes auth is intentionally not in the baseline: the source treats it as
+legacy and is moving workloads to JWT, so Ladon starts where that migration
+lands.
 
 ## Secret engine
 
