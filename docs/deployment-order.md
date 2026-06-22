@@ -173,3 +173,26 @@ Ladon's contribution is to make the order a first-class, dry-run-first plan: eac
 phase states its prerequisites, Ladon checks them against live state, shows the
 diff, and applies only on confirmation. The sequence above is the backbone the
 apply layers hang from.
+
+## Running the apply CLI
+
+The SDK config phases (4 and 10) are runnable from a checkout with the `ladon`
+CLI wrapper. It builds a plan and either renders it or applies it; every apply is
+a dry-run unless `--apply` is passed.
+
+```
+# Render a plan, no connection made:
+scripts/ladon plan --phase root-config --jwt-discovery-url URL
+
+# Phase 4 root config (dry-run, then apply):
+scripts/ladon apply --phase root-config --jwt-discovery-url URL
+scripts/ladon apply --phase root-config --jwt-discovery-url URL --apply
+
+# Phase 10 per-team onboarding, scoped to the team namespace:
+scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
+  --oidc-discovery-url URL --namespace TEAM --apply
+```
+
+For an apply, the OpenBao address and token come from the environment
+(`BAO_ADDR`/`VAULT_ADDR` and `BAO_TOKEN`/`VAULT_TOKEN`). The token is never
+logged, and a placeholder value is refused.
