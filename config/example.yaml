@@ -8,6 +8,8 @@
 # their own detailed schemas; the shape below is illustrative.
 deployment:
   environment: dev
+  # KV v2 mount path the deployment uses. Optional; defaults to "kv".
+  kv_mount: kv
   oidc:
     discovery_url: https://id.example.com
     groups_claim: groups

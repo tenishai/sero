@@ -1,0 +1,49 @@
+"""Derive apply-plan inputs from a loaded deployment configuration.
+
+The loader (``ladon.config.loader``) parses a config file into a
+``DeploymentConfig`` (typed teams plus raw ``settings`` / ``sync_targets``
+mappings). This module reads the parts a plan needs out of that config: the KV
+mount path the deployment uses, and the OpenBao namespace for a named team.
+
+It deliberately does not derive auth-method inputs (workload JWT discovery URL,
+OIDC client id and secret reference): the baseline config does not model those,
+and adding that schema is a separate decision. Those stay explicit CLI inputs;
+this module supplies only what the config already carries.
+
+Pure: it reads an in-memory ``DeploymentConfig`` and returns values, touching no
+files and no OpenBao.
+"""
+
+from __future__ import annotations
+
+from ladon.config.loader import DeploymentConfig
+from ladon.config.policies import DEFAULT_KV_MOUNT
+from ladon.config.teams import ConfigError
+
+
+def kv_mount(config: DeploymentConfig) -> str:
+    """The deployment's KV mount path, or the baseline default if unset.
+
+    Read from ``deployment.kv_mount`` when present. The value must be a non-empty
+    string; anything else is a config error rather than a silent fallback.
+    """
+    value = config.settings.get("kv_mount")
+    if value is None:
+        return DEFAULT_KV_MOUNT
+    if not isinstance(value, str) or not value:
+        raise ConfigError("deployment.kv_mount must be a non-empty string")
+    return value
+
+
+def team_namespace(config: DeploymentConfig, team_name: str) -> str:
+    """The OpenBao namespace for the named team.
+
+    Resolves a team by ``name`` to its configured ``namespace``, so a caller can
+    name a team and have the namespace come from the one place it is defined,
+    rather than passing it separately and risking a mismatch.
+    """
+    for team in config.teams:
+        if team.name == team_name:
+            return team.namespace
+    known = ", ".join(sorted(t.name for t in config.teams)) or "(none)"
+    raise ConfigError(f"no team named {team_name!r} in config; known teams: {known}")
