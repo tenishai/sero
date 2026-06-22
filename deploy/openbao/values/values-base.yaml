@@ -47,8 +47,10 @@ server:
           path = "/openbao/data"
         }
 
-        # Auto-unseal: set per deployment. Ladon injects one seal stanza from
-        # config. Example shapes (do not commit real key references here):
+        # Auto-unseal: set per deployment. Ladon renders one seal stanza from the
+        # deployment.kms config (see src/ladon/config/seal.py) and injects it
+        # here. The provider is pluggable across clouds. Example shapes (do not
+        # commit real key references here):
         #
         #   seal "gcpckms" {
         #     project    = "<gcp-project-id>"
@@ -60,6 +62,14 @@ server:
         #   seal "awskms" {
         #     region     = "<aws-region>"
         #     kms_key_id = "<kms-key-id>"
+        #   }
+        #
+        #   seal "azurekeyvault" {
+        #     tenant_id  = "<azure-tenant-id>"
+        #     vault_name = "<key-vault-name>"
+        #     key_name   = "<unseal-key-name>"
+        #     # Prefer a managed identity. If a client_id is set, OpenBao reads
+        #     # the secret from AZURE_CLIENT_SECRET; never put it here.
         #   }
         #
         # With no seal stanza, OpenBao uses Shamir (manual unseal); this is the
