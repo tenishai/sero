@@ -186,7 +186,7 @@ def connect(conn: BaoConnection, credential: Credential, *, check: bool = True) 
     client = _build_client(conn)
     try:
         credential.authenticate(client)
-    except (BaoConnectionError, PlaceholderSecretError):
+    except BaoConnectionError, PlaceholderSecretError:
         # A placeholder refusal is a hygiene failure, not a connection failure;
         # let it propagate unchanged so callers can tell them apart.
         raise
