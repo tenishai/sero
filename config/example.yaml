@@ -13,10 +13,23 @@ deployment:
   oidc:
     discovery_url: https://id.example.com
     groups_claim: groups
-  # Auto-unseal via a cloud KMS. A reference only, never key material.
+  # Auto-unseal. Pluggable across clouds; references only, never key material.
+  # Pick one provider and give its fields. Omit this block (or use
+  # provider: shamir) for manual unseal with no cloud dependency.
   kms:
-    provider: gcpckms        # or awskms
-    key_ref: <kms-key-reference>
+    provider: gcpckms        # gcpckms | awskms | azurekeyvault | shamir
+    # gcpckms (authenticates via workload identity):
+    project: <gcp-project-id>
+    region: <kms-location>
+    key_ring: <kms-keyring>
+    crypto_key: <kms-key>
+    # awskms (authenticates via instance/IRSA role):
+    #   region: <aws-region>
+    #   kms_key_id: <kms-key-id>
+    # azurekeyvault (prefer a managed identity; omit client_id):
+    #   tenant_id: <azure-tenant-id>
+    #   vault_name: <key-vault-name>
+    #   key_name: <unseal-key-name>
 
 # Teams. Each becomes a namespace with the baseline policy set. An empty list is
 # valid: the platform still has its root.
