@@ -146,12 +146,23 @@ talks to the next through stable interfaces.
 - **Backend state** (audit log, MCP token families, step-up reveal grants,
   namespace-request workflow) lives in PostgreSQL (D11). It is operational
   metadata, never secret values.
+- **Fleet and sync inventory** (which clusters are registered, their ESO install
+  status, and which namespaces sync to which targets) is also operational
+  metadata and lives in PostgreSQL (D11). The source scattered this across
+  object-store blobs separate from its database, which made it a single point of
+  failure with no audit trail; Ladon keeps it in the one backend datastore
+  alongside the rest of the operational state. It is derived state, rebuildable
+  by re-querying the fleet and clusters, never the source of truth for secrets.
 - **Rendered artifacts** (Terraform plans, Helm values, OpenBao policies, ESO
   `ExternalSecret` and `(Cluster)SecretStore` manifests) are produced from config
   and the opinionated defaults, and are covered by the contract tests in
   [testing.md](testing.md).
 
 ## Apply model in detail
+
+The order in which the layers are brought up, with the prerequisites between
+phases, is its own document: [deployment-order.md](deployment-order.md). This
+section describes how a single apply works within that order.
 
 Agent-driven apply (D3) works like this:
 
