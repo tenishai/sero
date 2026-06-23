@@ -93,6 +93,7 @@ when the CI skeleton lands.
 | `actions/checkout` | `df4cb1c069e1874edd31b4311f1884172cec0e10` | v6.0.3 | github.com/actions/checkout/releases/latest | 2026-06-17 |
 | `Azure/setup-helm` | `dda3372f752e03dde6b3237bc9431cdc2f7a02a2` | v5.0.0 | github.com/Azure/setup-helm/releases/latest | 2026-06-17 |
 | `astral-sh/setup-uv` | `fac544c07dec837d0ccb6301d7b5580bf5edae39` | v8.2.0 | github.com/astral-sh/setup-uv/releases/latest | 2026-06-17 |
+| `hashicorp/setup-terraform` | `dfe3c3f87815947d99a8997f908cb6525fc44e9e` | v4.0.1 | github.com/hashicorp/setup-terraform/releases/latest | 2026-06-23 |
 
 The CI runner image is pinned too: workflows use `ubuntu-24.04`, never
 `ubuntu-latest`.
