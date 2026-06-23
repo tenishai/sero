@@ -87,4 +87,4 @@ point of view, not a list of commit subjects.
   UI/MCP, rather than a static deploy step. Target clusters are registered over
   time, so ESO is installed on demand once networking and auth are in place.
 
-[Unreleased]: https://github.com/kmgreiner3/ladon/commits/main
+[Unreleased]: https://github.com/tenishai/ladon/commits/main
