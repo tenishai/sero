@@ -30,8 +30,8 @@ its latest stable is verified.
 | --- | --- | --- | --- | --- |
 | OpenBao | 2.5.5 | github.com/openbao/openbao-helm/releases (chart 0.28.4 bundles 2.5.5) | 2026-06-17 | Server and CLI. Image tag pinned in deploy/openbao/values/values-base.yaml. |
 | OpenBao Helm chart | 0.28.4 | github.com/openbao/openbao-helm/releases | 2026-06-17 | `openbao/openbao` chart. Apply with `--version 0.28.4`; never a floating chart. |
-| External Secrets Operator | _tbd_ | | | |
-| ESO Helm chart | _tbd_ | | | |
+| External Secrets Operator | 2.6.0 | github.com/external-secrets/external-secrets/releases (chart 2.6.0 bundles app v2.6.0) | 2026-06-23 | Image `ghcr.io/external-secrets/external-secrets:v2.6.0`. Installed via the chart (D4a). |
+| ESO Helm chart | 2.6.0 | github.com/external-secrets/external-secrets/releases | 2026-06-23 | `external-secrets/external-secrets` chart from `https://charts.external-secrets.io`. Apply with `--version 2.6.0`; never a floating chart. Pinned in src/ladon/install/eso.py. |
 | cert-manager | _tbd_ | | | If adopted |
 
 ## Infrastructure providers
