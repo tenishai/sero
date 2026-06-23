@@ -210,3 +210,30 @@ scripts/ladon plan --phase root-config --jwt-discovery-url URL --config deployme
 scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
   --oidc-discovery-url URL --config deployment.yaml --team TEAM --apply
 ```
+
+## Terraform apply flow (substrate, D10)
+
+The cloud substrate is Terraform, and Terraform has a failure mode the config
+layers do not: a clean `plan` does not guarantee a clean `apply`. Quota, IAM
+propagation, state locks, drift, and provider bugs all surface only at apply.
+So the substrate is never merged on the strength of a plan alone. The rule is
+**apply first, prove it landed, then merge**, so the `main` branch only ever
+holds Terraform that has actually been applied.
+
+What runs where:
+
+- **CI (every Terraform change, credential-free):** `terraform fmt -check` and,
+  per module, `init -backend=false` + `validate`. This is `scripts/validate-terraform.sh`,
+  the `terraform validate` job. It proves the configuration is well-formed; it
+  does not need cloud credentials and does not run `plan` or `apply`.
+- **The agent (with credentials and state):** runs `terraform plan` for review,
+  then `terraform apply`. Consistent with the agent-driven, dry-run-first apply
+  model (see [design.md](design.md) D3), there is no GitOps reconciler and no CI
+  job that auto-applies or auto-merges. The agent owns the apply.
+- **Merge:** a substrate change is merged only after its apply has succeeded
+  against the target environment. The safety property (never merge an unproven
+  apply) is held by this process, not by an auto-merge step.
+
+`plan` and `apply` in CI, against a real project and remote state backend, are a
+later step that depends on provisioning those cloud credentials; until then the
+agent runs them out of band and CI covers the static checks.
