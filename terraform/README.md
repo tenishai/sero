@@ -1,11 +1,21 @@
-# Terraform: the cloud substrate (D10)
+# Terraform: Ladon's OpenBao substrate (D10)
 
-Terraform owns Ladon's durable cloud substrate and stops at the cluster
-boundary: the Kubernetes cluster, the KMS key for auto-unseal, IAM and service
-accounts, networking, snapshot storage, and DNS. It does not install OpenBao
-(that is the Helm layer, D3a) or configure it (that is the SDK layer, D3b); it
-produces outputs those layers consume. See [docs/design.md](../docs/design.md)
-(D10) and [docs/deployment-order.md](../docs/deployment-order.md).
+Terraform here owns only the cloud resources that are specific to running
+OpenBao, on a cluster that already exists. Cluster creation, networking, CIDR
+planning, and project/account setup are NOT Ladon's job: a separate foundation
+(landing-zone) repo owns those and creates the cluster to best practices, the
+way an org-level platform repo does. Ladon, like a deploy platform that registers
+an existing cluster, runs on top of what the foundation provides.
+
+So this layer is deliberately small. It produces the OpenBao-specific substrate
+the install (D3a) and config (D3b) layers consume:
+
+- the cloud KMS key for auto-unseal, and the IAM grant to use it;
+- (future) node pools for OpenBao under a foundation-created cluster.
+
+It does not install OpenBao (Helm, D3a) or configure it (SDK, D3b). See
+[docs/design.md](../docs/design.md) (D10) and
+[docs/deployment-order.md](../docs/deployment-order.md).
 
 ## Conventions
 
@@ -27,5 +37,6 @@ produces outputs those layers consume. See [docs/design.md](../docs/design.md)
 | --- | --- | --- |
 | [`modules/unseal-key`](modules/unseal-key) | Cloud KMS key for OpenBao auto-unseal (D2a), plus the key-use IAM grant. | GCP implemented; AWS/Azure planned. |
 
-Cluster, networking, and snapshot-storage modules follow as the substrate layer
-grows.
+A node-pool module (OpenBao node pools under a foundation-created cluster) may
+follow. Cluster, network, and project provisioning are out of scope here; they
+belong to the foundation repo.
