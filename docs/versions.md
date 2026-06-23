@@ -36,11 +36,21 @@ its latest stable is verified.
 
 ## Infrastructure providers
 
-Terraform providers and similar. Populated as infrastructure code lands.
+Terraform and its providers. Populated as the substrate layer (D10) lands.
 
 | Provider | Pinned version | Verified against | Date | Notes |
 | --- | --- | --- | --- | --- |
-| _none yet_ | | | | |
+| Terraform | 1.15.6 | developer.hashicorp.com/terraform/install | 2026-06-23 | `required_version >= 1.15.6` in the substrate modules. |
+| hashicorp/google | 7.37.0 | registry.terraform.io/providers/hashicorp/google | 2026-06-23 | Substrate (D10). Pinned exactly in module `versions.tf`. |
+
+## Terraform modules
+
+Official cloud-provider registry modules, preferred over hand-rolled resource
+blocks. Pin each exactly; module bumps are their own reviewed PRs.
+
+| Module | Pinned version | Verified against | Date | Notes |
+| --- | --- | --- | --- | --- |
+| terraform-google-modules/kms/google | 4.1.2 | registry.terraform.io/modules/terraform-google-modules/kms/google | 2026-06-23 | OpenBao auto-unseal key (D2a), `terraform/modules/unseal-key/gcp`. Keyring, key, and encrypter/decrypter IAM. |
 
 ## Container images
 
