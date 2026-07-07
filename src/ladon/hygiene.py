@@ -1,11 +1,15 @@
 """Secrets-hygiene primitives shared across Ladon.
 
-These enforce rules from CONTRIBUTING.md: refuse placeholder secret values, and
-never expose a full secret value (mask to a few characters at most). Keep this
-module dependency-free so every layer can rely on it.
+These enforce rules from CONTRIBUTING.md: refuse placeholder secret values, never
+expose a full secret value (mask to a few characters at most), and redact secret
+material out of structured data before it is stored or logged (the audit trail).
+Keep this module dependency-free so every layer can rely on it.
 """
 
 from __future__ import annotations
+
+import re
+from typing import Any
 
 # Values that almost always indicate a mistake rather than a real secret.
 # Compared case-insensitively after stripping surrounding whitespace.
@@ -61,3 +65,73 @@ def mask(value: str, *, shown: int = 3) -> str:
     if len(value) <= shown:
         return "*" * len(value)
     return value[:shown] + "*" * (len(value) - shown)
+
+
+REDACTED = "<redacted>"
+
+# Keys whose values are secret material and are always redacted, regardless of
+# the value's shape. Matched case-insensitively.
+_REDACT_KEYS = frozenset(
+    {
+        "data",
+        "secret_values",
+        "secret_keys",
+        "password",
+        "passwd",
+        "value",
+        "values",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "key",
+        "api_key",
+        "apikey",
+        "private_key",
+        "client_secret",
+        "secret",
+    }
+)
+
+# A value that "looks like a secret" even under a benign key: long and drawn from
+# the base64/token character set, with mixed character classes (so prose and
+# slugs are left alone).
+_HIGH_ENTROPY_LEN = 40
+_HIGH_ENTROPY_PATTERN = re.compile(r"^[A-Za-z0-9_\-+/=]+$")
+
+
+def _looks_high_entropy(s: str) -> bool:
+    if len(s) < _HIGH_ENTROPY_LEN or not _HIGH_ENTROPY_PATTERN.match(s):
+        return False
+    has_upper = any(c.isupper() for c in s)
+    has_lower = any(c.islower() for c in s)
+    has_digit = any(c.isdigit() for c in s)
+    return (has_upper and has_lower) or (has_digit and (has_upper or has_lower))
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return REDACTED if _looks_high_entropy(value) else value
+    if isinstance(value, dict):
+        return redact(value)
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    return value
+
+
+def redact(args: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``args`` with secret material removed.
+
+    A value under a key in ``_REDACT_KEYS`` (matched case-insensitively) is
+    replaced with ``"<redacted>"``; any string value that looks high-entropy is
+    also redacted, even under a benign key. Nested dicts and lists are walked.
+    Use before storing arguments in the audit trail or otherwise logging them, so
+    a secret never reaches durable state.
+    """
+    out: dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(key, str) and key.lower() in _REDACT_KEYS:
+            out[key] = REDACTED
+        else:
+            out[key] = _redact_value(value)
+    return out
