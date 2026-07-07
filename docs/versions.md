@@ -76,6 +76,7 @@ Languages and their toolchains. Populated once the language decision in
 | SQLAlchemy | 2.0.51 | pypi.org/project/SQLAlchemy | 2026-07-06 | Runtime dependency: ORM/schema for the backend datastore (D11). Pinned in pyproject and uv.lock. |
 | alembic | 1.18.5 | pypi.org/project/alembic | 2026-07-06 | Runtime dependency: datastore migrations (D11). Pinned in pyproject and uv.lock. |
 | mcp | 1.28.1 | pypi.org/project/mcp | 2026-07-06 | Runtime dependency: MCP server (FastMCP) for the agent surface (D12). v1.x is the recommended production line (2.0 is prerelease). Pinned in pyproject and uv.lock. |
+| PyJWT | 2.13.0 | pypi.org/project/PyJWT | 2026-07-06 | Runtime dependency: verify MCP OAuth 2.1 bearer access tokens (D12). Also a transitive dep of mcp; pinned directly since Ladon imports it. Pinned in pyproject and uv.lock. |
 
 ## Tooling and CLIs
 
