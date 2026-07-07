@@ -104,6 +104,50 @@ test("requestNamespace posts the request and returns the pending result", async 
   });
 });
 
+test("listNamespaceRequests filters by status and unwraps the list", async () => {
+  const { transport, calls } = fakeTransport(() => ({
+    body: { requests: [{ id: 1, team_name: "t", status: "pending" }] },
+  }));
+  const client = new ApiClient(transport);
+  const reqs = await client.listNamespaceRequests("pending");
+  assert.equal(reqs[0].team_name, "t");
+  assert.deepEqual(calls, ["/api/admin/namespace-requests?status=pending"]);
+});
+
+test("approve/reject post to the request action endpoints", async () => {
+  const seen: string[] = [];
+  const transport: Transport = async (path, init) => {
+    seen.push(`${init?.method} ${path}`);
+    return new Response(JSON.stringify({ id: 5, status: "submitted" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  };
+  const client = new ApiClient(transport);
+  await client.approveNamespaceRequest(5);
+  await client.rejectNamespaceRequest(5, "nope");
+  assert.deepEqual(seen, [
+    "POST /api/admin/namespace-requests/5/approve",
+    "POST /api/admin/namespace-requests/5/reject",
+  ]);
+});
+
+test("allow-list add posts and remove deletes", async () => {
+  const seen: string[] = [];
+  const transport: Transport = async (path, init) => {
+    seen.push(`${init?.method ?? "GET"} ${path}`);
+    return new Response(JSON.stringify({ email: "x@example.com" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  };
+  const client = new ApiClient(transport);
+  await client.addToAllowList("x@example.com", "note");
+  await client.removeFromAllowList("x@example.com");
+  assert.deepEqual(seen, [
+    "POST /api/admin/allow-list",
+    "DELETE /api/admin/allow-list/x%40example.com",
+  ]);
+});
+
 test("a non-ok response raises ApiError with the detail message", async () => {
   const { transport } = fakeTransport(() => ({ status: 403, body: { detail: "forbidden" } }));
   const client = new ApiClient(transport);

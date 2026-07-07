@@ -8,7 +8,14 @@
  */
 
 import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-import { ApiClient, api, type NamespaceRequestResult, type WriteSummary } from "./api";
+import {
+  ApiClient,
+  api,
+  type AllowListEntry,
+  type NamespaceRequestResult,
+  type NamespaceRequestRow,
+  type WriteSummary,
+} from "./api";
 
 let client: ApiClient = api;
 
@@ -94,6 +101,56 @@ export function requestNamespaceMutation() {
   return createMutation(() => ({
     mutationFn: (v: NamespaceRequestVars): Promise<NamespaceRequestResult> =>
       client.requestNamespace(v.teamName, v.environments, v.members, v.description),
+  }));
+}
+
+// ── Admin ──────────────────────────────────────────────────────────────
+
+export function pendingRequestsQuery() {
+  return createQuery(() => ({
+    queryKey: ["admin", "namespace-requests", "pending"],
+    queryFn: (): Promise<NamespaceRequestRow[]> => client.listNamespaceRequests("pending"),
+  }));
+}
+
+export function allowListQuery() {
+  return createQuery(() => ({
+    queryKey: ["admin", "allow-list"],
+    queryFn: (): Promise<AllowListEntry[]> => client.listAllowList(),
+  }));
+}
+
+export function approveRequestMutation() {
+  const qc = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (id: number) => client.approveNamespaceRequest(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "namespace-requests"] }),
+  }));
+}
+
+export function rejectRequestMutation() {
+  const qc = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (v: { id: number; reason: string }) =>
+      client.rejectNamespaceRequest(v.id, v.reason),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "namespace-requests"] }),
+  }));
+}
+
+export function addAllowMutation() {
+  const qc = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (v: { email: string; notes?: string }) =>
+      client.addToAllowList(v.email, v.notes),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "allow-list"] }),
+  }));
+}
+
+export function removeAllowMutation() {
+  const qc = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (email: string) => client.removeFromAllowList(email),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "allow-list"] }),
   }));
 }
 

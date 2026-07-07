@@ -23,6 +23,24 @@ interface MockSecret {
 // "admin" badge shows in the preview.
 const NAMESPACES = ["platform-admin", "team-payments", "team-web"];
 
+const MOCK_REQUESTS = [
+  {
+    id: 42, requester_email: "newlead@example.com", team_name: "team-mobile",
+    environments: ["dev", "qa", "prod"], members: ["newlead@example.com", "dev2@example.com"],
+    description: "Secrets for the new mobile backend.", status: "pending", created_at: "2026-07-07",
+  },
+  {
+    id: 43, requester_email: "data@example.com", team_name: "team-analytics",
+    environments: ["dev"], members: ["data@example.com"], description: null,
+    status: "pending", created_at: "2026-07-07",
+  },
+];
+
+const MOCK_ALLOW = [
+  { email: "you@example.com", added_by: "bootstrap", added_at: "2026-06-01", notes: "platform admin" },
+  { email: "agent-bot@example.com", added_by: "you@example.com", added_at: "2026-07-01", notes: "CI agent" },
+];
+
 const SECRETS: Record<string, Record<string, MockSecret>> = {
   "team-payments": {
     "app/gateway": {
@@ -60,6 +78,25 @@ export const devMockTransport: Transport = async (path, init) => {
   if (p === "/namespace-requests" && method === "POST") {
     const body = JSON.parse(String(init?.body ?? "{}"));
     return json({ request_id: 101, status: "pending", team_name: body.team_name ?? "" });
+  }
+
+  // Admin routes.
+  if (p === "/admin/namespace-requests") {
+    return json({ requests: MOCK_REQUESTS });
+  }
+  const reqAction = p.match(/^\/admin\/namespace-requests\/(\d+)\/(approve|reject)$/);
+  if (reqAction && method === "POST") {
+    return json({ ...MOCK_REQUESTS[0], id: Number(reqAction[1]), status: reqAction[2] });
+  }
+  if (p === "/admin/allow-list") {
+    if (method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return json({ email: body.email, added_by: "you@example.com", added_at: "now", notes: body.notes ?? null });
+    }
+    return json({ entries: MOCK_ALLOW });
+  }
+  if (p.startsWith("/admin/allow-list/") && method === "DELETE") {
+    return new Response(null, { status: 204 });
   }
 
   const listMatch = p.match(/^\/namespaces\/([^/]+)\/secrets$/);

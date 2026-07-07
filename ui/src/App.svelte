@@ -8,12 +8,26 @@
   import Secrets from "$views/Secrets.svelte";
   import SecretDetail from "$views/SecretDetail.svelte";
   import RequestNamespace from "$views/RequestNamespace.svelte";
+  import Admin from "$views/Admin.svelte";
+  import { meQuery } from "$lib/queries";
+  import { isAdmin } from "$lib/access";
 
-  const nav = [
+  const me = meQuery();
+
+  // Admin nav appears only to admins (the seam from the user-context work). The
+  // Admin view guards again, and the backend enforces regardless.
+  const nav = $derived([
     { label: "Namespaces", route: { name: "namespaces" } as const },
     { label: "Request namespace", route: { name: "request" } as const },
-  ];
-  const activeTop = $derived(router.current.name === "request" ? "request" : "namespaces");
+    ...(isAdmin(me.data) ? [{ label: "Admin", route: { name: "admin" } as const }] : []),
+  ]);
+  const activeTop = $derived(
+    router.current.name === "request"
+      ? "request"
+      : router.current.name === "admin"
+        ? "admin"
+        : "namespaces",
+  );
 
   // The app shell: identity from branding.ts, routing from the hash router, and
   // a QueryClient for the server-state layer. Rebranding never edits this file.
@@ -64,6 +78,8 @@
         <Namespaces />
       {:else if router.current.name === "request"}
         <RequestNamespace />
+      {:else if router.current.name === "admin"}
+        <Admin />
       {:else if router.current.name === "secrets"}
         <Secrets namespace={router.current.namespace} />
       {:else if router.current.name === "secret"}

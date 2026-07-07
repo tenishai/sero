@@ -83,6 +83,26 @@ export interface NamespaceRequestResult {
   team_name: string;
 }
 
+/** A namespace request row, as an admin sees it in the review queue. */
+export interface NamespaceRequestRow {
+  id: number;
+  requester_email: string;
+  team_name: string;
+  environments: string[];
+  members: string[];
+  description: string | null;
+  status: string;
+  created_at: string;
+}
+
+/** An MCP allow-list entry: an identity permitted to use the agent surface. */
+export interface AllowListEntry {
+  email: string;
+  added_by: string;
+  added_at: string;
+  notes: string | null;
+}
+
 const DEFAULT_BASE = "/api";
 
 export class ApiClient {
@@ -170,6 +190,44 @@ export class ApiClient {
     });
   }
 
+  // ── Admin ──────────────────────────────────────────────────────────────
+
+  /** List namespace requests, optionally filtered by status (e.g. "pending"). */
+  listNamespaceRequests(status?: string): Promise<NamespaceRequestRow[]> {
+    const q = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.get<{ requests: NamespaceRequestRow[] }>(`/admin/namespace-requests${q}`).then(
+      (r) => r.requests,
+    );
+  }
+
+  /** Approve a request (mark it submitted for provisioning). */
+  approveNamespaceRequest(id: number): Promise<NamespaceRequestRow> {
+    return this.send<NamespaceRequestRow>(
+      "POST",
+      `/admin/namespace-requests/${id}/approve`,
+      {},
+    );
+  }
+
+  /** Reject a request with a reason. */
+  rejectNamespaceRequest(id: number, reason: string): Promise<NamespaceRequestRow> {
+    return this.send<NamespaceRequestRow>("POST", `/admin/namespace-requests/${id}/reject`, {
+      reason,
+    });
+  }
+
+  listAllowList(): Promise<AllowListEntry[]> {
+    return this.get<{ entries: AllowListEntry[] }>("/admin/allow-list").then((r) => r.entries);
+  }
+
+  addToAllowList(email: string, notes?: string): Promise<AllowListEntry> {
+    return this.send<AllowListEntry>("POST", "/admin/allow-list", { email, notes });
+  }
+
+  removeFromAllowList(email: string): Promise<void> {
+    return this.del(`/admin/allow-list/${encodeURIComponent(email)}`);
+  }
+
   private async get<T>(path: string): Promise<T> {
     const resp = await this.transport(`${this.base}${path}`, {
       headers: { Accept: "application/json" },
@@ -190,6 +248,13 @@ export class ApiClient {
       throw new ApiError(resp.status, await this.errorText(resp));
     }
     return (await resp.json()) as T;
+  }
+
+  private async del(path: string): Promise<void> {
+    const resp = await this.transport(`${this.base}${path}`, { method: "DELETE" });
+    if (!resp.ok) {
+      throw new ApiError(resp.status, await this.errorText(resp));
+    }
   }
 
   private async errorText(resp: Response): Promise<string> {
