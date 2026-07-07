@@ -3,6 +3,7 @@ import "./app.css";
 import { branding } from "./branding";
 import { theme } from "$lib/theme.svelte";
 import { router } from "$lib/router.svelte";
+import { reveal } from "$lib/reveal.svelte";
 import { ApiClient } from "$lib/api";
 import { setApiClient } from "$lib/queries";
 import App from "./App.svelte";
@@ -15,9 +16,14 @@ if (import.meta.env.DEV) {
     new URLSearchParams(location.search).has("mock") || import.meta.env.VITE_MOCK === "1";
   if (wantMock) {
     const { devMockTransport } = await import("$lib/devMock");
-    setApiClient(new ApiClient(devMockTransport));
+    const mockClient = new ApiClient(devMockTransport);
+    setApiClient(mockClient);
+    reveal.configure({ client: mockClient });
   }
 }
+
+// Hydrate the reveal grant state (default gate: always allowed).
+void reveal.hydrate();
 
 // Reflect the configured product name into the document title, so the title is
 // driven by branding.ts too (index.html carries a static fallback for first

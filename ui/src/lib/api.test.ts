@@ -148,6 +148,14 @@ test("allow-list add posts and remove deletes", async () => {
   ]);
 });
 
+test("revealValue fetches one key's plaintext at the reveal endpoint", async () => {
+  const { transport, calls } = fakeTransport(() => ({ body: { value: "s3cr3t-plain" } }));
+  const client = new ApiClient(transport);
+  const value = await client.revealValue("team-a", "app/gw", "dev", "API_KEY");
+  assert.equal(value, "s3cr3t-plain");
+  assert.equal(calls[0], "/api/namespaces/team-a/secrets/app%2Fgw/reveal?env=dev&key=API_KEY");
+});
+
 test("a non-ok response raises ApiError with the detail message", async () => {
   const { transport } = fakeTransport(() => ({ status: 403, body: { detail: "forbidden" } }));
   const client = new ApiClient(transport);
