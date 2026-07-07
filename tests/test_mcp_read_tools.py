@@ -134,4 +134,26 @@ def test_build_server_registers_read_tools():
 
     server = build_server(FakeReader(), sessionmaker(engine))
     tool_names = {t.name for t in server._tool_manager.list_tools()}
-    assert {"list_my_namespaces", "list_secrets", "get_secret"} <= tool_names
+    # Read tools plus request_namespace are always present; write tools appear
+    # only when a writer is supplied.
+    assert {"list_my_namespaces", "list_secrets", "get_secret", "request_namespace"} <= tool_names
+    assert "create_secret" not in tool_names
+
+
+def test_build_server_with_writer_registers_write_tools():
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    from ladon.mcp.server import build_server
+
+    class FakeWriter:
+        def create_secret(self, *a, **k):  # pragma: no cover - registration only
+            raise NotImplementedError
+
+        def update_secret(self, *a, **k):  # pragma: no cover - registration only
+            raise NotImplementedError
+
+    server = build_server(FakeReader(), sessionmaker(engine), writer=FakeWriter())
+    tool_names = {t.name for t in server._tool_manager.list_tools()}
+    assert {"create_secret", "update_secret"} <= tool_names
