@@ -8,6 +8,8 @@ license = "Apache-2.0"
 dependencies = [
   "PyYAML==6.0.3",
   "hvac==2.4.0",
+  "SQLAlchemy==2.0.51",
+  "alembic==1.18.5",
 ]
 
 [dependency-groups]
@@ -26,6 +28,10 @@ package = false
 target-version = "py314"
 line-length = 100
 src = ["src", "tests"]
+# Alembic writes migration scripts in its own style (long create_table lines,
+# unsorted imports). They are generated, not hand-maintained, so exclude them
+# from lint/format. migrations/env.py and the template are still linted.
+extend-exclude = ["migrations/versions"]
 
 [tool.ruff.lint]
 # A sensible, strict-but-quiet default set; expand as the code grows.
