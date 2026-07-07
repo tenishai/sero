@@ -3,6 +3,7 @@
   import { branding } from "./branding";
   import { router } from "$lib/router.svelte";
   import ThemeToggle from "$components/ThemeToggle.svelte";
+  import UserContext from "$components/UserContext.svelte";
   import Namespaces from "$views/Namespaces.svelte";
   import Secrets from "$views/Secrets.svelte";
   import SecretDetail from "$views/SecretDetail.svelte";
@@ -30,7 +31,8 @@
         {/if}
       </button>
 
-      <div class="mt-auto pt-4">
+      <div class="mt-auto flex flex-col gap-3 pt-4">
+        <UserContext />
         <ThemeToggle />
       </div>
     </aside>

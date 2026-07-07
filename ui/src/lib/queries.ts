@@ -20,6 +20,14 @@ export function setApiClient(next: ApiClient): void {
 // createQuery takes an Accessor (a function returning options) in the Svelte 5
 // runes API, and returns a reactive result accessed directly (query.data,
 // query.isPending), not a store.
+export function meQuery() {
+  return createQuery(() => ({
+    queryKey: ["me"],
+    queryFn: () => client.getMe(),
+    staleTime: 5 * 60_000, // identity rarely changes within a session
+  }));
+}
+
 export function namespacesQuery() {
   return createQuery(() => ({
     queryKey: ["namespaces"],

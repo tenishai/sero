@@ -25,6 +25,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The signed-in user, as surfaced by the backend from the reverse proxy's
+ * trusted identity header (see the auth model: no login form, the proxy owns
+ * login). `namespaces` are those the user may access. Admin-ness is not a flag
+ * here; the UI derives it from whether the configured admin namespace is present.
+ */
+export interface Me {
+  email: string;
+  namespaces: string[];
+}
+
 export interface NamespacesResponse {
   namespaces: string[];
 }
@@ -74,6 +85,11 @@ export class ApiClient {
   constructor(transport: Transport = fetch.bind(globalThis), base: string = DEFAULT_BASE) {
     this.transport = transport;
     this.base = base;
+  }
+
+  /** The signed-in user, from the proxy-supplied identity the backend exposes. */
+  getMe(): Promise<Me> {
+    return this.get<Me>("/me");
   }
 
   async listNamespaces(): Promise<string[]> {
