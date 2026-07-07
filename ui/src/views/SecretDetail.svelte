@@ -3,6 +3,7 @@
   import { secretQuery } from "$lib/queries";
   import { router } from "$lib/router.svelte";
   import Spinner from "$components/Spinner.svelte";
+  import SecretEditor from "$views/SecretEditor.svelte";
 
   let { namespace, path }: { namespace: string; path: string } = $props();
 
@@ -10,6 +11,7 @@
   // preview only; a plaintext value is never shown here. Revealing a value is a
   // separate, explicit action (a later slice).
   let env = $state(branding.environments[0]);
+  let editing = $state(false);
   const query = $derived(secretQuery(namespace, path, env));
 </script>
 
@@ -33,7 +35,10 @@
         class:bg-[var(--color-accent)]={env === e}
         class:text-[var(--color-on-accent)]={env === e}
         class:text-[var(--color-ink-muted)]={env !== e}
-        onclick={() => (env = e)}
+        onclick={() => {
+          env = e;
+          editing = false;
+        }}
       >
         {e}
       </button>
@@ -77,5 +82,31 @@
       Values are masked. Revealing a value is an explicit action, coming in a
       later release.
     </p>
+  {/if}
+
+  {#if !query.isPending && !query.isError}
+    <div class="mt-4">
+      {#if editing}
+        {#key env}
+          <SecretEditor
+            {namespace}
+            {path}
+            {env}
+            mode={query.data.exists ? "update" : "create"}
+            existingKeys={Object.keys(query.data.masked_keys)}
+            ondone={() => (editing = false)}
+          />
+        {/key}
+      {:else}
+        <button
+          type="button"
+          class="rounded border border-[var(--color-border)] px-3 py-1.5 text-xs
+                 text-[var(--color-ink)] hover:border-[var(--color-accent)]"
+          onclick={() => (editing = true)}
+        >
+          {query.data.exists ? "Edit" : "Create in this environment"}
+        </button>
+      {/if}
+    </div>
   {/if}
 </section>

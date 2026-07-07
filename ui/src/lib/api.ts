@@ -50,6 +50,21 @@ export interface SecretDetail {
   masked_keys: Record<string, string>;
 }
 
+/**
+ * The value-free result of a write (create or update), matching the backend
+ * write tools. `applied` is false for a dry-run (a preview of what would change)
+ * and true once committed. Only key names appear, never a value.
+ */
+export interface WriteSummary {
+  applied: boolean;
+  action: "create" | "update";
+  namespace: string;
+  path: string;
+  env: string;
+  written_keys: string[];
+  removed_keys: string[];
+}
+
 const DEFAULT_BASE = "/api";
 
 export class ApiClient {
@@ -80,9 +95,58 @@ export class ApiClient {
     );
   }
 
+  /**
+   * Create a secret path. `apply=false` (the default) is a dry-run: the backend
+   * returns a value-free summary of what would change and writes nothing.
+   */
+  createSecret(
+    namespace: string,
+    path: string,
+    env: string,
+    values: Record<string, string>,
+    apply = false,
+  ): Promise<WriteSummary> {
+    return this.send<WriteSummary>(
+      "POST",
+      `/namespaces/${encodeURIComponent(namespace)}/secrets`,
+      { path, env, values, apply },
+    );
+  }
+
+  /**
+   * Update a secret path. Merges: keys in `values` are written, keys in
+   * `remove_keys` deleted, others left untouched. `apply=false` is a dry-run.
+   */
+  updateSecret(
+    namespace: string,
+    path: string,
+    env: string,
+    values: Record<string, string>,
+    removeKeys: string[],
+    apply = false,
+  ): Promise<WriteSummary> {
+    return this.send<WriteSummary>(
+      "PATCH",
+      `/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(path)}`,
+      { env, values, remove_keys: removeKeys, apply },
+    );
+  }
+
   private async get<T>(path: string): Promise<T> {
     const resp = await this.transport(`${this.base}${path}`, {
       headers: { Accept: "application/json" },
+    });
+    if (!resp.ok) {
+      throw new ApiError(resp.status, await this.errorText(resp));
+    }
+    return (await resp.json()) as T;
+  }
+
+  private async send<T>(method: "POST" | "PATCH", path: string, body: unknown): Promise<T> {
+    const resp = await this.transport(`${this.base}${path}`, {
+      method,
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
       throw new ApiError(resp.status, await this.errorText(resp));
