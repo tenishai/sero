@@ -94,3 +94,5 @@ jobs:
         run: npm ci
       - name: Type-check and build
         run: npm run build
+      - name: Test
+        run: npm test
