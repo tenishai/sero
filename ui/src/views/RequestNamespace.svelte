@@ -7,8 +7,11 @@
   // Self-service onboarding: request a new team namespace. This records a pending
   // request the platform admins action; it does not create the namespace itself.
   let teamName = $state("");
+  // All environments checked by default: a team usually wants its namespace
+  // across every environment, so this is the common one-submit case. The user
+  // can uncheck any they do not want.
   let chosenEnvs = $state<Record<string, boolean>>(
-    Object.fromEntries(branding.environments.map((e) => [e, e === branding.environments[0]])),
+    Object.fromEntries(branding.environments.map((e) => [e, true])),
   );
   let membersText = $state("");
   let description = $state("");
