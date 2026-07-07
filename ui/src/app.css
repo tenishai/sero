@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/*
+ * Ladon UI theme: the single source of truth for palette, fonts, and radii.
+ * Rebranding the look is editing THIS file (and text/identity in branding.ts).
+ * Components reference these tokens (bg-surface, text-ink, text-accent, ...) and
+ * never hardcode a color, so a rebrand never touches a component.
+ *
+ * The palette is deliberately neutral and unbranded: a slate-and-blue baseline a
+ * client is expected to replace with their own. Dark is the default; the light
+ * overrides live under `html.theme-light`.
+ */
+
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  /* Surfaces, from the page background inward. */
+  --color-surface: #0b0e14;
+  --color-panel: #121722;
+  --color-card: #1a212e;
+  --color-border: #2a3342;
+
+  /* Text, from primary to faint. */
+  --color-ink: #e6eaf0;
+  --color-ink-muted: #9aa6b8;
+  --color-ink-faint: #5f6b7d;
+
+  /* Accent (the one brand-forward color a client most wants to change). */
+  --color-accent: #4f8cff;
+  --color-accent-strong: #6ea1ff;
+  --color-on-accent: #0b0e14;
+
+  /* Status. */
+  --color-success: #3fb970;
+  --color-warning: #d9a441;
+  --color-danger: #e5615e;
+}
+
+/* Light theme: same token names, overridden. Toggled by adding
+ * `theme-light` to <html> (see lib/theme). */
+html.theme-light {
+  --color-surface: #f7f8fa;
+  --color-panel: #ffffff;
+  --color-card: #ffffff;
+  --color-border: #dde2ea;
+
+  --color-ink: #1a212e;
+  --color-ink-muted: #55607a;
+  --color-ink-faint: #8a94a8;
+
+  --color-accent: #2f6fe0;
+  --color-accent-strong: #2559bd;
+  --color-on-accent: #ffffff;
+
+  --color-success: #2f9e5c;
+  --color-warning: #b9822a;
+  --color-danger: #cc4b48;
+}
+
+html,
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Suppress theme-transition flashes while the theme class is being swapped. */
+html.theme-switching * {
+  transition: none !important;
+}

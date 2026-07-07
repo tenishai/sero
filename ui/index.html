@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Title and favicon are rebrand touch-points; keep in sync with branding.ts. -->
+    <title>Ladon</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!--
+      Pre-paint theme script: set the theme class before first paint to avoid a
+      flash. It duplicates a little of lib/theme by necessity (it runs before any
+      module loads). The storage key must match branding.storagePrefix + ":theme".
+    -->
+    <script>
+      (function () {
+        try {
+          var key = "ladon:theme";
+          var stored = localStorage.getItem(key);
+          var theme =
+            stored === "dark" || stored === "light"
+              ? stored
+              : matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          if (theme === "light") document.documentElement.classList.add("theme-light");
+        } catch (e) {
+          /* no-op: default dark */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

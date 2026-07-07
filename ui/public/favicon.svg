@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Neutral placeholder mark. A rebrand replaces this file. Uses currentColor
+       via a fixed neutral so it reads on light and dark tabs. -->
+  <rect width="32" height="32" rx="7" fill="#4f8cff" />
+  <path d="M10 21V11h4.2a3 3 0 0 1 0 6H10m0-6h3.6a2.6 2.6 0 0 1 0 5.2H10"
+        fill="none" stroke="#0b0e14" stroke-width="2" stroke-linejoin="round" />
+</svg>
