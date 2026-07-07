@@ -12,7 +12,9 @@ def test_redacts_by_key_name_case_insensitive():
 
 
 def test_redacts_high_entropy_value_under_benign_key():
-    secret = "AKIA1234567890ABCDEFghijklmnopqrstuvwx99"  # long, mixed classes
+    # A synthetic high-entropy value: >=40 chars, token charset, mixed classes.
+    # Not shaped like any real cloud credential, to keep the secret scanner quiet.
+    secret = "Zx7Qw2Ne8Rt5Yu1Op3As6Df9Gh0Jk4Lm7Bv2Cx5N"
     out = redact({"note": secret, "short": "hello"})
     assert out["note"] == REDACTED
     assert out["short"] == "hello"
