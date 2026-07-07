@@ -95,6 +95,7 @@ is dev tooling.
 | svelte-check | 4.7.1 | npmjs.com/package/svelte-check | 2026-07-06 | Type-check in `npm run build`. |
 | @tsconfig/svelte | 5.0.8 | npmjs.com/package/@tsconfig/svelte | 2026-07-06 | Base tsconfig. |
 | @types/node | 26.1.0 | npmjs.com/package/@types/node | 2026-07-07 | Types for the node:test API-client tests (run via Node type-stripping, no test framework). |
+| @playwright/test | 1.61.1 | npmjs.com/package/@playwright/test | 2026-07-07 | Render smoke test (e2e/): loads the app in a headless browser to catch render-time failures CI's build/type-check miss. |
 | @tanstack/svelte-query | 6.1.36 | npmjs.com/package/@tanstack/svelte-query | 2026-07-06 | The one runtime dependency: server-state/query layer. |
 
 ## Tooling and CLIs
