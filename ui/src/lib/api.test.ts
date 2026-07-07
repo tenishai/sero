@@ -85,6 +85,25 @@ test("path segments are URL-encoded", async () => {
   assert.equal(calls[0], "/api/namespaces/team%20a/secrets/a%2Fb?env=dev");
 });
 
+test("requestNamespace posts the request and returns the pending result", async () => {
+  const bodies: unknown[] = [];
+  const transport: Transport = async (path, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    assert.equal(init?.method, "POST");
+    assert.equal(path, "/api/namespace-requests");
+    return new Response(
+      JSON.stringify({ request_id: 7, status: "pending", team_name: "team-x" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const client = new ApiClient(transport);
+  const result = await client.requestNamespace("team-x", ["dev"], ["a@example.com"], "why");
+  assert.equal(result.status, "pending");
+  assert.deepEqual(bodies[0], {
+    team_name: "team-x", environments: ["dev"], members: ["a@example.com"], description: "why",
+  });
+});
+
 test("a non-ok response raises ApiError with the detail message", async () => {
   const { transport } = fakeTransport(() => ({ status: 403, body: { detail: "forbidden" } }));
   const client = new ApiClient(transport);

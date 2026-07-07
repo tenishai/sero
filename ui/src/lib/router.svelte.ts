@@ -8,12 +8,16 @@
 
 export type Route =
   | { name: "namespaces" }
+  | { name: "request" }
   | { name: "secrets"; namespace: string }
   | { name: "secret"; namespace: string; path: string };
 
 function parse(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
   const parts = raw.split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts[0] === "request") {
+    return { name: "request" };
+  }
   if (parts[0] === "ns" && parts[1]) {
     if (parts[2] === "secret" && parts[3]) {
       return { name: "secret", namespace: parts[1], path: parts.slice(3).join("/") };
@@ -27,6 +31,8 @@ export function toHash(route: Route): string {
   switch (route.name) {
     case "namespaces":
       return "#/";
+    case "request":
+      return "#/request";
     case "secrets":
       return `#/ns/${encodeURIComponent(route.namespace)}`;
     case "secret":

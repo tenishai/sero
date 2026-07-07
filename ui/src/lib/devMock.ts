@@ -57,6 +57,11 @@ export const devMockTransport: Transport = async (path, init) => {
     return json({ namespaces: NAMESPACES });
   }
 
+  if (p === "/namespace-requests" && method === "POST") {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    return json({ request_id: 101, status: "pending", team_name: body.team_name ?? "" });
+  }
+
   const listMatch = p.match(/^\/namespaces\/([^/]+)\/secrets$/);
   if (listMatch) {
     const ns = decodeURIComponent(listMatch[1]);

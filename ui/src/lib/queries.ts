@@ -8,7 +8,7 @@
  */
 
 import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-import { ApiClient, api, type WriteSummary } from "./api";
+import { ApiClient, api, type NamespaceRequestResult, type WriteSummary } from "./api";
 
 let client: ApiClient = api;
 
@@ -80,6 +80,20 @@ export function updateSecretMutation() {
     onSuccess: (result, v) => {
       if (result.applied) invalidateSecret(qc, v);
     },
+  }));
+}
+
+export interface NamespaceRequestVars {
+  teamName: string;
+  environments: string[];
+  members: string[];
+  description?: string;
+}
+
+export function requestNamespaceMutation() {
+  return createMutation(() => ({
+    mutationFn: (v: NamespaceRequestVars): Promise<NamespaceRequestResult> =>
+      client.requestNamespace(v.teamName, v.environments, v.members, v.description),
   }));
 }
 
