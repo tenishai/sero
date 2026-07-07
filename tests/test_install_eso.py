@@ -6,7 +6,7 @@ Pure argv builders need no kubectl/helm. The execution path is exercised with
 
 import pytest
 
-from ladon.install import eso
+from ladon.install import eso, helm
 from ladon.install.eso import (
     ESO_CHART,
     ESO_CHART_VERSION,
@@ -15,6 +15,17 @@ from ladon.install.eso import (
     install_eso,
 )
 from ladon.install.helm import HelmError
+
+
+def patch_run(monkeypatch, fn):
+    """Patch the execution seam wherever it is reached.
+
+    The install flow runs through ``helm.run`` (via the shared ``install``); the
+    webhook wait runs through the ``run`` imported into the eso module. Patch both
+    so nothing shells out to a real cluster.
+    """
+    monkeypatch.setattr(helm, "run", fn)
+    monkeypatch.setattr(eso, "run", fn)
 
 
 def test_upgrade_argv_dry_run_by_default():
@@ -55,7 +66,7 @@ def test_webhook_wait_argv():
 
 def test_install_defaults_to_dry_run_and_skips_webhook(monkeypatch):
     calls = []
-    monkeypatch.setattr(eso, "run", lambda argv: calls.append(argv) or _ok(argv))
+    patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
     install_eso()
     # repo add, repo update, upgrade (dry-run). No webhook wait on a dry-run.
     assert len(calls) == 3
@@ -65,7 +76,7 @@ def test_install_defaults_to_dry_run_and_skips_webhook(monkeypatch):
 
 def test_apply_runs_install_then_waits_for_webhook(monkeypatch):
     calls = []
-    monkeypatch.setattr(eso, "run", lambda argv: calls.append(argv) or _ok(argv))
+    patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
     install_eso(apply=True)
     assert len(calls) == 4
     assert "--dry-run" not in calls[2]
@@ -75,7 +86,7 @@ def test_apply_runs_install_then_waits_for_webhook(monkeypatch):
 
 def test_apply_can_skip_webhook_wait(monkeypatch):
     calls = []
-    monkeypatch.setattr(eso, "run", lambda argv: calls.append(argv) or _ok(argv))
+    patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
     install_eso(apply=True, wait_for_webhook=False)
     assert len(calls) == 3
     assert not any(c[0] == "kubectl" for c in calls)
@@ -87,7 +98,7 @@ def test_webhook_failure_is_reframed(monkeypatch):
             raise HelmError("timed out waiting for the condition")
         return _ok(argv)
 
-    monkeypatch.setattr(eso, "run", fake_run)
+    patch_run(monkeypatch, fake_run)
     with pytest.raises(HelmError, match="webhook did not become ready"):
         install_eso(apply=True)
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ladon.config.teams import ConfigError
+from ladon.config.validate import require_all
 
 # Provider keys accepted in config. "shamir" means no auto-unseal stanza.
 GCP_CKMS = "gcpckms"
@@ -57,26 +58,21 @@ def _stanza(seal_type: str, fields: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _require(params: dict, *names: str, provider: str) -> dict:
-    """Return the named params, raising if any is missing or empty."""
-    out: dict = {}
-    for name in names:
-        value = params.get(name)
-        if not value or not isinstance(value, str):
-            raise ConfigError(f"{provider} seal requires a non-empty {name!r}")
-        out[name] = value
-    return out
+def _seal_context(provider: str) -> str:
+    return f"{provider} seal"
 
 
 def gcpckms_seal(params: dict) -> SealConfig:
     """GCP Cloud KMS auto-unseal. Authenticates via workload identity (no secret)."""
-    fields = _require(params, "project", "region", "key_ring", "crypto_key", provider=GCP_CKMS)
+    fields = require_all(
+        params, "project", "region", "key_ring", "crypto_key", context=_seal_context(GCP_CKMS)
+    )
     return SealConfig(GCP_CKMS, _stanza(GCP_CKMS, fields), fields)
 
 
 def awskms_seal(params: dict) -> SealConfig:
     """AWS KMS auto-unseal. Authenticates via an instance/IRSA role (no secret)."""
-    fields = _require(params, "region", "kms_key_id", provider=AWS_KMS)
+    fields = require_all(params, "region", "kms_key_id", context=_seal_context(AWS_KMS))
     return SealConfig(AWS_KMS, _stanza(AWS_KMS, fields), fields)
 
 
@@ -90,7 +86,9 @@ def azurekeyvault_seal(params: dict) -> SealConfig:
     so no secret passes through this rendering. Optional ``environment`` and
     ``resource`` are passed through when set.
     """
-    fields = _require(params, "tenant_id", "vault_name", "key_name", provider=AZURE_KEY_VAULT)
+    fields = require_all(
+        params, "tenant_id", "vault_name", "key_name", context=_seal_context(AZURE_KEY_VAULT)
+    )
 
     client_id = params.get("client_id")
     if client_id:
