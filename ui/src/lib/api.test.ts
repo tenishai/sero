@@ -26,6 +26,16 @@ function fakeTransport(
   return { transport, calls };
 }
 
+test("getMe returns the signed-in user from /api/me", async () => {
+  const { transport, calls } = fakeTransport(() => ({
+    body: { email: "op@example.com", namespaces: ["team-a"] },
+  }));
+  const client = new ApiClient(transport);
+  const me = await client.getMe();
+  assert.equal(me.email, "op@example.com");
+  assert.deepEqual(calls, ["/api/me"]);
+});
+
 test("listNamespaces returns the namespaces array", async () => {
   const { transport, calls } = fakeTransport(() => ({
     body: { namespaces: ["team-a", "team-b"] },

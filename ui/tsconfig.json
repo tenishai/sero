@@ -9,6 +9,8 @@
     "strict": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "skipLibCheck": true,
     "paths": {
       "$lib/*": ["./src/lib/*"],
