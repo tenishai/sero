@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <img alt="Status: foundations" src="https://img.shields.io/badge/status-foundations-orange.svg">
+  <img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-yellow.svg">
 </p>
 
 <p align="center">
@@ -40,15 +40,21 @@ it never stores secret values.
 
 ## Stack
 
-The concrete versions and the storage, auth, and apply-model decisions are being
-worked out in the design phase. See [docs/design.md](docs/design.md) (in
-progress) and the pinned versions in [docs/versions.md](docs/versions.md).
+OpenBao on Integrated Storage (Raft) with cloud-KMS auto-unseal; a pinned Helm
+install; configuration and runtime driven through the OpenBao API; the External
+Secrets Operator for sync. The architecture and the decisions behind it are in
+[docs/design.md](docs/design.md); every pinned version is in
+[docs/versions.md](docs/versions.md).
 
 ## Status
 
-Foundations. No feature code yet. The repo is being bootstrapped: process docs,
-architecture, conventions lint, and a CI skeleton land before any application
-code. See [ROADMAP.md](ROADMAP.md).
+In development. The backend layers are implemented and unit-tested: the OpenBao
+Helm install, the configuration and apply layer (policies, teams, auth, and a
+dry-run-first plan/apply engine with a `ladon` CLI), auto-unseal seal rendering
+for GCP, AWS, and Azure, the Terraform module for the auto-unseal key, and the
+External Secrets Operator install and resource rendering. Still to come: the
+admin UI, the agent (MCP) surface, and a live end-to-end run against a real
+cluster. See [ROADMAP.md](ROADMAP.md).
 
 ## Docs
 

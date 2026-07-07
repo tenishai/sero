@@ -27,8 +27,8 @@ point of view, not a list of commit subjects.
 - Architecture and decisions (`docs/design.md`) and the phased plan
   (`ROADMAP.md`): OpenBao on Integrated Storage (Raft) with KMS auto-unseal,
   agent-driven apply via Terraform plus Helm and the OpenBao SDK (no GitOps
-  reconciler), ESO for sync to Kubernetes and GCP/AWS secret stores, Kubernetes
-  and OIDC auth, a PostgreSQL backend datastore, an MCP tool surface, a custom
+  reconciler), ESO for sync to Kubernetes and GCP/AWS secret stores, JWT and
+  OIDC auth, a PostgreSQL backend datastore, an MCP tool surface, a custom
   Svelte 5 wrapper UI, and a polyglot Python plus TypeScript/Svelte stack. The
   decisions reflect a read-only review of the two source repositories.
 - Source review (`docs/source-review.md`): the architecture of the two source
@@ -36,8 +36,9 @@ point of view, not a list of commit subjects.
   values), and the direction for the generic baseline.
 - Generic baseline and customization model (`docs/baseline.md`): a minimal
   platform root plus config-driven team namespaces (OpenBao open-source
-  namespaces), generalized policy templates, baseline OIDC and Kubernetes auth
-  (JWT and AppRole optional), KV v2, and a three-part configuration model
+  namespaces), generalized policy templates, baseline OIDC and JWT auth (AppRole
+  optional; Kubernetes auth intentionally excluded), KV v2, and a three-part
+  configuration model
   (deployment settings, teams, sync targets) with a minimal-deployment path.
 
 - OpenBao install layer (`deploy/openbao/`): the pinned chart reference and
@@ -72,6 +73,41 @@ point of view, not a list of commit subjects.
 - CI contract check (`scripts/validate-helm.sh` and a `helm validate` CI job)
   that renders the pinned OpenBao chart with Ladon's base and dev values, so the
   install layer stays valid against the pinned chart. Pins `Azure/setup-helm`.
+- Baseline auth rendering (`ladon.config.auth`): render the JWT auth method for
+  in-cluster workloads and the OIDC method for human operators, with their roles,
+  from parameters. Secrets are carried as references only (the OIDC client secret
+  never passes through rendering); JWT verifies against the provider's published
+  keys. Pure and tested.
+- Auto-unseal seal rendering (`ladon.config.seal`): render the OpenBao seal
+  stanza for a chosen provider, pluggable across clouds (GCP Cloud KMS, AWS KMS,
+  Azure Key Vault) with Shamir as the no-cloud fallback. Key references only,
+  never key material; an unknown provider is an error, not a silent fallback.
+- SDK apply layer (`ladon.apply`): turn rendered policies, auth methods, and the
+  KV mount into an ordered, value-free plan of OpenBao API writes (`plan`), and
+  execute it through an authenticated `hvac` client (`executor`, `client`),
+  dry-run by default with an explicit apply. Covers the phase-4 root config and
+  phase-10 per-team ESO onboarding. Pins hvac.
+- `ladon` command-line interface (`ladon.apply.cli`, `python -m ladon`,
+  `scripts/ladon`): build and render a plan, or connect and apply it (dry-run
+  unless `--apply`), for the root-config and team-onboarding phases. A `--config`
+  deployment file supplies the KV mount and a team's namespace. Address and token
+  come from the environment; placeholders are refused and nothing is logged.
+- ESO resource rendering (`ladon.config.eso`): render `ClusterSecretStore`
+  resources for the three providers (OpenBao over JWT, GCP Secret Manager over
+  Workload Identity, AWS Secrets Manager over IRSA) and `ExternalSecret`
+  resources, with the API group version parameterized. References and paths only,
+  never values. Pure and tested.
+- ESO install layer (`ladon.install.eso`): an agent-driven, dry-run-first Helm
+  install of the External Secrets Operator, mirroring the OpenBao install, with
+  explicit CRD ownership and a post-apply webhook health check. Pins the ESO
+  chart.
+- Terraform substrate (`terraform/`): the OpenBao-specific cloud substrate,
+  scoped to what runs on an existing cluster. The GCP unseal-key module
+  provisions the KMS keyring, key, and key-use IAM grant as one unit, via the
+  official registry KMS module. Cluster, network, and project provisioning are
+  out of scope (a separate foundation repo owns those). A `terraform validate`
+  CI job runs fmt and validate; pins Terraform, the Google provider, the KMS
+  module, and `hashicorp/setup-terraform`.
 
 ### Changed
 
