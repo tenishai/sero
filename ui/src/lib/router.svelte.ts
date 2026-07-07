@@ -9,6 +9,7 @@
 export type Route =
   | { name: "namespaces" }
   | { name: "request" }
+  | { name: "admin" }
   | { name: "secrets"; namespace: string }
   | { name: "secret"; namespace: string; path: string };
 
@@ -17,6 +18,9 @@ function parse(hash: string): Route {
   const parts = raw.split("/").filter(Boolean).map(decodeURIComponent);
   if (parts[0] === "request") {
     return { name: "request" };
+  }
+  if (parts[0] === "admin") {
+    return { name: "admin" };
   }
   if (parts[0] === "ns" && parts[1]) {
     if (parts[2] === "secret" && parts[3]) {
@@ -33,6 +37,8 @@ export function toHash(route: Route): string {
       return "#/";
     case "request":
       return "#/request";
+    case "admin":
+      return "#/admin";
     case "secrets":
       return `#/ns/${encodeURIComponent(route.namespace)}`;
     case "secret":
