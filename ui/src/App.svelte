@@ -1,41 +1,48 @@
 <script lang="ts">
+  import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import { branding } from "./branding";
+  import { router } from "$lib/router.svelte";
   import ThemeToggle from "$components/ThemeToggle.svelte";
+  import Namespaces from "$views/Namespaces.svelte";
+  import Secrets from "$views/Secrets.svelte";
+  import SecretDetail from "$views/SecretDetail.svelte";
 
-  // The app shell. Its identity (wordmark, tagline) comes entirely from
-  // branding.ts, so rebranding never edits this file. This first slice is the
-  // shell and the rebrand contract; views land in following slices.
+  // The app shell: identity from branding.ts, routing from the hash router, and
+  // a QueryClient for the server-state layer. Rebranding never edits this file.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: 1, staleTime: 15_000 } },
+  });
 </script>
 
-<div class="flex min-h-screen">
-  <aside
-    class="flex w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-panel)] p-4"
-  >
-    <div class="mb-8">
-      <div class="text-lg font-semibold text-[var(--color-ink)]">{branding.productName}</div>
-      {#if branding.tagline}
-        <div class="text-xs text-[var(--color-ink-faint)]">{branding.tagline}</div>
+<QueryClientProvider client={queryClient}>
+  <div class="flex min-h-screen">
+    <aside
+      class="flex w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-panel)] p-4"
+    >
+      <button
+        type="button"
+        class="mb-8 text-left"
+        onclick={() => router.go({ name: "namespaces" })}
+      >
+        <div class="text-lg font-semibold text-[var(--color-ink)]">{branding.productName}</div>
+        {#if branding.tagline}
+          <div class="text-xs text-[var(--color-ink-faint)]">{branding.tagline}</div>
+        {/if}
+      </button>
+
+      <div class="mt-auto pt-4">
+        <ThemeToggle />
+      </div>
+    </aside>
+
+    <main class="flex-1 p-8">
+      {#if router.current.name === "namespaces"}
+        <Namespaces />
+      {:else if router.current.name === "secrets"}
+        <Secrets namespace={router.current.namespace} />
+      {:else if router.current.name === "secret"}
+        <SecretDetail namespace={router.current.namespace} path={router.current.path} />
       {/if}
-    </div>
-
-    <nav class="flex flex-col gap-1 text-sm text-[var(--color-ink-muted)]">
-      <!-- Navigation lands with the views; the shell proves the layout + theme. -->
-      <span class="rounded px-2 py-1.5 text-[var(--color-ink-faint)]">Namespaces</span>
-      <span class="rounded px-2 py-1.5 text-[var(--color-ink-faint)]">Admin</span>
-    </nav>
-
-    <div class="mt-auto pt-4">
-      <ThemeToggle />
-    </div>
-  </aside>
-
-  <main class="flex-1 p-8">
-    <h1 class="text-xl font-semibold text-[var(--color-ink)]">{branding.productName}</h1>
-    <p class="mt-2 max-w-prose text-sm text-[var(--color-ink-muted)]">
-      Operator interface for the secrets platform. This is the UI foundation: the
-      theme system and the single-file rebrand contract. Namespace, secret, and
-      admin views follow.
-    </p>
-    <p class="mt-4 text-sm text-[var(--color-accent)]">Accent color sample</p>
-  </main>
-</div>
+    </main>
+  </div>
+</QueryClientProvider>
