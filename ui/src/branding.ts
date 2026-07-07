@@ -44,7 +44,7 @@ export const branding: Branding = {
   productName: "Ladon",
   tagline: "Secrets platform",
   adminNamespace: "platform-admin",
-  environments: ["dev", "prod"],
+  environments: ["dev", "qa", "prod"],
   storagePrefix: "ladon",
   docs: {},
 };
