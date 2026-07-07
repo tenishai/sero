@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 import yaml
 
-from ladon.config.teams import ConfigError
+from ladon.config.validate import require
 
 DEFAULT_API_VERSION = "v1"
 API_GROUP = "external-secrets.io"
@@ -83,12 +83,9 @@ def vault_store(
     onboarding); ``audiences`` must match the role's bound audiences. No secret
     is stored: the token is minted in-cluster and verified by OpenBao.
     """
-    if not server:
-        raise ConfigError("vault_store requires a non-empty 'server'")
-    if not role:
-        raise ConfigError("vault_store requires a non-empty 'role'")
-    if not audiences:
-        raise ConfigError("vault_store requires non-empty 'audiences'")
+    require(server, "server", context="vault_store")
+    require(role, "role", context="vault_store")
+    require(audiences, "audiences", context="vault_store")
     provider = {
         "vault": {
             "server": server,
@@ -127,12 +124,10 @@ def gcpsm_store(
     names; fully qualified ``projects/<p>/secrets/<n>`` remote refs can target any
     project the identity can reach.
     """
-    if not project_id:
-        raise ConfigError("gcpsm_store requires a non-empty 'project_id'")
-    if not cluster_name or not cluster_location or not cluster_project_id:
-        raise ConfigError(
-            "gcpsm_store requires 'cluster_name', 'cluster_location', and 'cluster_project_id'"
-        )
+    require(project_id, "project_id", context="gcpsm_store")
+    require(cluster_name, "cluster_name", context="gcpsm_store")
+    require(cluster_location, "cluster_location", context="gcpsm_store")
+    require(cluster_project_id, "cluster_project_id", context="gcpsm_store")
     provider = {
         "gcpsm": {
             "projectID": project_id,
@@ -164,8 +159,7 @@ def awssm_store(
     access key is stored. ``role`` is an optional role ARN to assume for
     cross-account access; omit it to use the service account's own role.
     """
-    if not region:
-        raise ConfigError("awssm_store requires a non-empty 'region'")
+    require(region, "region", context="awssm_store")
     aws: dict = {
         "service": "SecretsManager",
         "region": region,
@@ -192,15 +186,11 @@ def external_secret(
     source path (a name, never a value); ``secret_name`` is the Kubernetes Secret
     ESO creates and owns. ``dataFrom.extract`` pulls every key at the path.
     """
-    for label, value in (
-        ("name", name),
-        ("namespace", namespace),
-        ("store_name", store_name),
-        ("kv_path", kv_path),
-        ("secret_name", secret_name),
-    ):
-        if not value:
-            raise ConfigError(f"external_secret requires a non-empty {label!r}")
+    require(name, "name", context="external_secret")
+    require(namespace, "namespace", context="external_secret")
+    require(store_name, "store_name", context="external_secret")
+    require(kv_path, "kv_path", context="external_secret")
+    require(secret_name, "secret_name", context="external_secret")
     return {
         "apiVersion": f"{API_GROUP}/{api_version}",
         "kind": "ExternalSecret",

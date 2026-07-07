@@ -186,9 +186,10 @@ def connect(conn: BaoConnection, credential: Credential, *, check: bool = True) 
     client = _build_client(conn)
     try:
         credential.authenticate(client)
+    # Unparenthesized multi-except is valid on Python 3.14 (our floor) and is the
+    # form ruff normalizes to; a placeholder refusal is a hygiene failure, not a
+    # connection failure, so let both propagate unchanged for callers to tell apart.
     except BaoConnectionError, PlaceholderSecretError:
-        # A placeholder refusal is a hygiene failure, not a connection failure;
-        # let it propagate unchanged so callers can tell them apart.
         raise
     except Exception as exc:  # noqa: BLE001 - normalized; never include the secret
         raise BaoConnectionError(f"authentication failed: {exc}") from exc

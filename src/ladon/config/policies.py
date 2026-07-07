@@ -22,6 +22,11 @@ class Policy:
     name: str
     hcl: str
 
+    @classmethod
+    def from_blocks(cls, name: str, blocks: list[str]) -> Policy:
+        """Build a Policy from rendered HCL path blocks, joined into one body."""
+        return cls(name=name, hcl="\n\n".join(blocks) + "\n")
+
 
 def _block(path: str, capabilities: list[str]) -> str:
     caps = ", ".join(f'"{c}"' for c in capabilities)
@@ -42,7 +47,7 @@ def team_readwrite(mount: str = DEFAULT_KV_MOUNT) -> Policy:
         _block(f"{mount}/undelete/*", ["update"]),
         _block(f"{mount}/destroy/*", ["update"]),
     ]
-    return Policy(name="team-readwrite", hcl="\n\n".join(blocks) + "\n")
+    return Policy.from_blocks("team-readwrite", blocks)
 
 
 def team_readonly(mount: str = DEFAULT_KV_MOUNT) -> Policy:
@@ -51,7 +56,7 @@ def team_readonly(mount: str = DEFAULT_KV_MOUNT) -> Policy:
         _block(f"{mount}/data/*", ["read", "list"]),
         _block(f"{mount}/metadata/*", ["read", "list"]),
     ]
-    return Policy(name="team-readonly", hcl="\n\n".join(blocks) + "\n")
+    return Policy.from_blocks("team-readonly", blocks)
 
 
 def external_secrets_read(mount: str = DEFAULT_KV_MOUNT) -> Policy:
@@ -64,7 +69,7 @@ def external_secrets_read(mount: str = DEFAULT_KV_MOUNT) -> Policy:
         _block(f"{mount}/data/*", ["read"]),
         _block(f"{mount}/metadata/*", ["read", "list"]),
     ]
-    return Policy(name="external-secrets-read", hcl="\n\n".join(blocks) + "\n")
+    return Policy.from_blocks("external-secrets-read", blocks)
 
 
 def external_secrets_root(mount: str = DEFAULT_KV_MOUNT) -> Policy:
@@ -80,7 +85,7 @@ def external_secrets_root(mount: str = DEFAULT_KV_MOUNT) -> Policy:
         _block(f"+/{mount}/data/*", ["read"]),
         _block(f"+/{mount}/metadata/*", ["read", "list"]),
     ]
-    return Policy(name="external-secrets-root", hcl="\n\n".join(blocks) + "\n")
+    return Policy.from_blocks("external-secrets-root", blocks)
 
 
 def baseline_team_policies(mount: str = DEFAULT_KV_MOUNT) -> list[Policy]:

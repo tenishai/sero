@@ -1,9 +1,10 @@
 """Helm install of the External Secrets Operator (D4a).
 
 ESO is installed per cluster as an agent-driven, direct Helm install, not via a
-GitOps reconciler, mirroring the OpenBao install layer (``ladon.install.helm``).
-The same dry-run-first contract holds: command construction is pure and testable
-without a helm binary, and an apply must be requested explicitly.
+GitOps reconciler. It reuses the shared Helm machinery in ``ladon.install.helm``
+(``ChartRelease`` for argv construction, ``install`` for the repo-add/update/
+upgrade flow, ``run`` for execution), so only ESO's specifics live here: its chart
+coordinates, the ``installCRDs`` flag, and a post-apply webhook health check.
 
 Two concerns beyond a plain chart install, called out for D4a:
 
@@ -19,11 +20,9 @@ Two concerns beyond a plain chart install, called out for D4a:
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
-from ladon.install.helm import HelmError, run
+from ladon.install.helm import ChartRelease, HelmError, install, run
 
 # Upstream chart coordinates. Not vendored; install the pinned version from the
 # upstream repo. Keep in sync with docs/versions.md; bumps are their own PR.
@@ -39,49 +38,20 @@ DEFAULT_WEBHOOK_TIMEOUT = "120s"
 
 
 @dataclass(frozen=True)
-class ESORelease:
-    """A pinned External Secrets Operator Helm release and its commands."""
+class ESORelease(ChartRelease):
+    """A pinned External Secrets Operator Helm release."""
 
     name: str = "external-secrets"
     namespace: str = DEFAULT_NAMESPACE
-    values_files: Sequence[Path] = field(default_factory=tuple)
     chart: str = ESO_CHART
     version: str = ESO_CHART_VERSION
-    create_namespace: bool = True
+    repo_name: str = ESO_REPO_NAME
+    repo_url: str = ESO_REPO_URL
     install_crds: bool = True
 
-    def repo_add_argv(self) -> list[str]:
-        return ["helm", "repo", "add", ESO_REPO_NAME, ESO_REPO_URL]
-
-    def repo_update_argv(self) -> list[str]:
-        return ["helm", "repo", "update", ESO_REPO_NAME]
-
-    def upgrade_argv(self, *, dry_run: bool = True) -> list[str]:
-        """Build the ``helm upgrade --install`` command.
-
-        Defaults to a dry-run. The chart version is always pinned explicitly so
-        the command never tracks a floating chart. CRD installation is set
-        explicitly so the operator owns its CRDs.
-        """
-        argv = [
-            "helm",
-            "upgrade",
-            "--install",
-            self.name,
-            self.chart,
-            "--version",
-            self.version,
-            "--namespace",
-            self.namespace,
-        ]
-        if self.create_namespace:
-            argv.append("--create-namespace")
-        argv += ["--set", f"installCRDs={'true' if self.install_crds else 'false'}"]
-        for values_file in self.values_files:
-            argv += ["-f", str(values_file)]
-        if dry_run:
-            argv.append("--dry-run")
-        return argv
+    def extra_set_args(self) -> list[str]:
+        # Set CRD installation explicitly so the operator owns its CRDs.
+        return ["--set", f"installCRDs={'true' if self.install_crds else 'false'}"]
 
     def webhook_wait_argv(self, *, timeout: str = DEFAULT_WEBHOOK_TIMEOUT) -> list[str]:
         """Build the ``kubectl wait`` command for the webhook deployment.
@@ -115,11 +85,7 @@ def install_eso(
     webhook wait is skipped, since nothing was installed to wait for.
     """
     release = release or ESORelease()
-    results = [
-        run(release.repo_add_argv()),
-        run(release.repo_update_argv()),
-        run(release.upgrade_argv(dry_run=not apply)),
-    ]
+    results = install(release, apply=apply)
     if apply and wait_for_webhook:
         results.append(_wait_for_webhook(release))
     return results
