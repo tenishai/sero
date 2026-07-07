@@ -78,6 +78,24 @@ Languages and their toolchains. Populated once the language decision in
 | mcp | 1.28.1 | pypi.org/project/mcp | 2026-07-06 | Runtime dependency: MCP server (FastMCP) for the agent surface (D12). v1.x is the recommended production line (2.0 is prerelease). Pinned in pyproject and uv.lock. |
 | PyJWT | 2.13.0 | pypi.org/project/PyJWT | 2026-07-06 | Runtime dependency: verify MCP OAuth 2.1 bearer access tokens (D12). Also a transitive dep of mcp; pinned directly since Ladon imports it. Pinned in pyproject and uv.lock. |
 
+## Frontend (UI)
+
+The Svelte UI (D7) under `ui/`. Pinned exactly in `ui/package.json` and
+`ui/package-lock.json`; installed with `npm ci`. One runtime dependency; the rest
+is dev tooling.
+
+| Package | Pinned version | Verified against | Date | Notes |
+| --- | --- | --- | --- | --- |
+| svelte | 5.56.4 | npmjs.com/package/svelte | 2026-07-06 | Svelte 5 (runes). |
+| vite | 8.1.3 | npmjs.com/package/vite | 2026-07-06 | Build tool and dev server. |
+| typescript | 6.0.3 | npmjs.com/package/typescript | 2026-07-06 | |
+| tailwindcss | 4.3.2 | npmjs.com/package/tailwindcss | 2026-07-06 | v4, configured in CSS (`ui/src/app.css`); no config file. |
+| @tailwindcss/vite | 4.3.2 | npmjs.com/package/@tailwindcss/vite | 2026-07-06 | Tailwind Vite plugin. |
+| @sveltejs/vite-plugin-svelte | 7.1.4 | npmjs.com/package/@sveltejs/vite-plugin-svelte | 2026-07-06 | |
+| svelte-check | 4.7.1 | npmjs.com/package/svelte-check | 2026-07-06 | Type-check in `npm run build`. |
+| @tsconfig/svelte | 5.0.8 | npmjs.com/package/@tsconfig/svelte | 2026-07-06 | Base tsconfig. |
+| @tanstack/svelte-query | 6.1.36 | npmjs.com/package/@tanstack/svelte-query | 2026-07-06 | The one runtime dependency: server-state/query layer. |
+
 ## Tooling and CLIs
 
 Command-line tools the apply layers invoke. Pin the exact version in tooling and
@@ -98,6 +116,7 @@ when the CI skeleton lands.
 | `Azure/setup-helm` | `dda3372f752e03dde6b3237bc9431cdc2f7a02a2` | v5.0.0 | github.com/Azure/setup-helm/releases/latest | 2026-06-17 |
 | `astral-sh/setup-uv` | `fac544c07dec837d0ccb6301d7b5580bf5edae39` | v8.2.0 | github.com/astral-sh/setup-uv/releases/latest | 2026-06-17 |
 | `hashicorp/setup-terraform` | `dfe3c3f87815947d99a8997f908cb6525fc44e9e` | v4.0.1 | github.com/hashicorp/setup-terraform/releases/latest | 2026-06-23 |
+| `actions/setup-node` | `48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e` | v6.4.0 | github.com/actions/setup-node/releases/latest | 2026-07-06 |
 
 The CI runner image is pinned too: workflows use `ubuntu-24.04`, never
 `ubuntu-latest`.
