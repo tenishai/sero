@@ -48,6 +48,22 @@ class SecretDetail:
         return len(self.masked_keys)
 
 
+@dataclass(frozen=True)
+class WriteResult:
+    """The outcome of a secret write: what changed, by name, never a value.
+
+    ``created`` is true for a new path, false for an update. ``written_keys`` and
+    ``removed_keys`` are key names only; a value never appears here.
+    """
+
+    namespace: str
+    path: str
+    env: str
+    created: bool
+    written_keys: list[str] = field(default_factory=list)
+    removed_keys: list[str] = field(default_factory=list)
+
+
 class SecretReader(Protocol):
     """Read-only access to namespaces and secrets for the MCP read tools.
 
@@ -66,4 +82,33 @@ class SecretReader(Protocol):
 
     def get_secret(self, user_email: str, namespace: str, path: str, env: str) -> SecretDetail:
         """One path's state in one environment, with keys already masked."""
+        ...
+
+
+class SecretWriter(Protocol):
+    """Write access to secrets for the MCP write tools.
+
+    A production implementation wraps the OpenBao client; a fake backs the tests.
+    The values passed in are written to OpenBao and never returned or logged by
+    the tools; only key names appear in the ``WriteResult``. ``update`` merges:
+    keys in ``values`` are written, keys in ``remove_keys`` are deleted, and any
+    other existing key is left untouched.
+    """
+
+    def create_secret(
+        self, user_email: str, namespace: str, path: str, env: str, values: dict[str, str]
+    ) -> WriteResult:
+        """Create a new secret path with ``values``."""
+        ...
+
+    def update_secret(
+        self,
+        user_email: str,
+        namespace: str,
+        path: str,
+        env: str,
+        values: dict[str, str],
+        remove_keys: list[str],
+    ) -> WriteResult:
+        """Merge ``values`` into an existing path and delete ``remove_keys``."""
         ...

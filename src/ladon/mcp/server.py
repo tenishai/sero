@@ -25,7 +25,8 @@ from mcp.types import ToolAnnotations
 from sqlalchemy.orm import Session, sessionmaker
 
 from ladon.datastore import repositories as repo
-from ladon.mcp.ports import SecretReader
+from ladon.hygiene import assert_not_placeholder
+from ladon.mcp.ports import SecretReader, SecretWriter
 
 INSTRUCTIONS = """You are connected to a Ladon secrets platform.
 
@@ -169,6 +170,207 @@ def _require_namespace(reader: SecretReader, user_email: str, namespace: str) ->
         raise AccessDeniedError(f"{user_email} may not access namespace {namespace!r}")
 
 
+def _reject_placeholders(values: dict[str, str]) -> None:
+    """Refuse placeholder secret values before any write. Never names the value."""
+    for key, value in values.items():
+        assert_not_placeholder(value, key=key)
+
+
+def _write_summary(
+    *,
+    namespace: str,
+    path: str,
+    env: str,
+    created: bool,
+    written_keys: list[str],
+    removed_keys: list[str],
+    applied: bool,
+) -> dict[str, Any]:
+    """A value-free description of a write, for a dry-run or an applied result."""
+    return {
+        "applied": applied,
+        "action": "create" if created else "update",
+        "namespace": namespace,
+        "path": path,
+        "env": env,
+        "written_keys": sorted(written_keys),
+        "removed_keys": sorted(removed_keys),
+    }
+
+
+def create_secret_impl(
+    reader: SecretReader,
+    writer: SecretWriter,
+    session: Session,
+    *,
+    user_email: str,
+    namespace: str,
+    path: str,
+    env: str,
+    values: dict[str, str],
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Create a secret path. Dry-run unless ``apply=True``.
+
+    Gated by the allow list and namespace authorization; placeholder values are
+    refused. A dry-run returns the value-free plan and writes nothing. The audit
+    row records key names only (args are redacted before storage).
+    """
+    _require_allowed(session, user_email)
+    _require_namespace(reader, user_email, namespace)
+    _reject_placeholders(values)
+    audit_args = {"namespace": namespace, "path": path, "env": env, "data": values}
+
+    if not apply:
+        _audit(
+            session,
+            user_email=user_email,
+            tool_name="create_secret",
+            status="dry-run",
+            args=audit_args,
+        )
+        return _write_summary(
+            namespace=namespace,
+            path=path,
+            env=env,
+            created=True,
+            written_keys=list(values),
+            removed_keys=[],
+            applied=False,
+        )
+    try:
+        result = writer.create_secret(user_email, namespace, path, env, values)
+    except Exception as exc:
+        _audit(
+            session,
+            user_email=user_email,
+            tool_name="create_secret",
+            status="error",
+            args=audit_args,
+            error=str(exc),
+        )
+        raise
+    _audit(session, user_email=user_email, tool_name="create_secret", status="ok", args=audit_args)
+    return _write_summary(
+        namespace=namespace,
+        path=path,
+        env=env,
+        created=result.created,
+        written_keys=result.written_keys,
+        removed_keys=result.removed_keys,
+        applied=True,
+    )
+
+
+def update_secret_impl(
+    reader: SecretReader,
+    writer: SecretWriter,
+    session: Session,
+    *,
+    user_email: str,
+    namespace: str,
+    path: str,
+    env: str,
+    values: dict[str, str] | None = None,
+    remove_keys: list[str] | None = None,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Merge ``values`` into a path and delete ``remove_keys``. Dry-run unless apply.
+
+    Merges: only the named keys change; other existing keys are untouched. Gated
+    and placeholder-refusing like create. A dry-run writes nothing.
+    """
+    values = values or {}
+    remove_keys = remove_keys or []
+    _require_allowed(session, user_email)
+    _require_namespace(reader, user_email, namespace)
+    _reject_placeholders(values)
+    if not values and not remove_keys:
+        raise ValueError("update_secret needs at least one of 'values' or 'remove_keys'")
+    audit_args = {
+        "namespace": namespace,
+        "path": path,
+        "env": env,
+        "data": values,
+        "remove_keys": remove_keys,
+    }
+
+    if not apply:
+        _audit(
+            session,
+            user_email=user_email,
+            tool_name="update_secret",
+            status="dry-run",
+            args=audit_args,
+        )
+        return _write_summary(
+            namespace=namespace,
+            path=path,
+            env=env,
+            created=False,
+            written_keys=list(values),
+            removed_keys=remove_keys,
+            applied=False,
+        )
+    try:
+        result = writer.update_secret(user_email, namespace, path, env, values, remove_keys)
+    except Exception as exc:
+        _audit(
+            session,
+            user_email=user_email,
+            tool_name="update_secret",
+            status="error",
+            args=audit_args,
+            error=str(exc),
+        )
+        raise
+    _audit(session, user_email=user_email, tool_name="update_secret", status="ok", args=audit_args)
+    return _write_summary(
+        namespace=namespace,
+        path=path,
+        env=env,
+        created=result.created,
+        written_keys=result.written_keys,
+        removed_keys=result.removed_keys,
+        applied=True,
+    )
+
+
+def request_namespace_impl(
+    session: Session,
+    *,
+    user_email: str,
+    team_name: str,
+    environments: list[str],
+    members: list[str],
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Open a namespace-request workflow row. Allow-list gated; audited.
+
+    This writes only to Ladon's own datastore (the request queue), not to
+    OpenBao, so it has no dry-run: it records a request an admin later acts on.
+    """
+    _require_allowed(session, user_email)
+    if not environments:
+        raise ValueError("request_namespace needs at least one environment")
+    row = repo.create_namespace_request(
+        session,
+        requester_email=user_email,
+        team_name=team_name,
+        environments=environments,
+        members=members or [user_email],
+        description=description,
+    )
+    _audit(
+        session,
+        user_email=user_email,
+        tool_name="request_namespace",
+        status="ok",
+        args={"team_name": team_name, "environments": environments},
+    )
+    return {"request_id": row.id, "status": row.status, "team_name": team_name}
+
+
 # ── FastMCP wiring (thin) ────────────────────────────────────────────────
 
 
@@ -176,16 +378,19 @@ def build_server(
     reader: SecretReader,
     session_factory: sessionmaker[Session],
     *,
+    writer: SecretWriter | None = None,
     name: str = "ladon",
     token_verifier: Any | None = None,
     auth: Any | None = None,
 ):
-    """Build the FastMCP server with the read-only tools registered.
+    """Build the FastMCP server with the read and write tools registered.
 
-    ``reader`` is the secret read port; ``session_factory`` opens a datastore
-    session per call (for the audit write and allow-list check). ``token_verifier``
-    and ``auth`` are the OAuth 2.1 bearer machinery; when omitted (tests, local
-    stdio) the server has no auth and the caller supplies the user identity.
+    ``reader`` is the secret read port; ``writer`` is the write port (when
+    omitted, only the read tools and request_namespace are registered).
+    ``session_factory`` opens a datastore session per call (for the audit write
+    and allow-list check). ``token_verifier`` and ``auth`` are the OAuth 2.1
+    bearer machinery; when omitted (tests, local stdio) the server has no auth and
+    the caller supplies the user identity.
     """
     kwargs: dict[str, Any] = {"instructions": INSTRUCTIONS, "stateless_http": True}
     if token_verifier is not None:
@@ -238,4 +443,89 @@ def build_server(
             session.commit()
             return result
 
+    # A namespace request writes only to Ladon's own request queue, so it is
+    # available whether or not a secret writer is configured.
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False))
+    def request_namespace(
+        team_name: str,
+        environments: list[str],
+        ctx: Context,
+        members: list[str] | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Request a new team namespace. Records a request for an admin to action."""
+        with session_factory() as session:
+            result = request_namespace_impl(
+                session,
+                user_email=_user_email(ctx),
+                team_name=team_name,
+                environments=environments,
+                members=members or [],
+                description=description,
+            )
+            session.commit()
+            return result
+
+    if writer is not None:
+        _register_write_tools(server, reader, writer, session_factory, _user_email)
+
     return server
+
+
+def _register_write_tools(server, reader, writer, session_factory, _user_email):
+    """Register the secret-write tools. Split out so build_server stays readable."""
+    write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
+
+    @server.tool(annotations=write)
+    def create_secret(
+        namespace: str,
+        path: str,
+        env: str,
+        values: dict[str, str],
+        ctx: Context,
+        apply: bool = False,
+    ) -> dict[str, Any]:
+        """Create a secret path. Dry-run unless apply=True. Never echoes values."""
+        with session_factory() as session:
+            result = create_secret_impl(
+                reader,
+                writer,
+                session,
+                user_email=_user_email(ctx),
+                namespace=namespace,
+                path=path,
+                env=env,
+                values=values,
+                apply=apply,
+            )
+            session.commit()
+            return result
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False)
+    )
+    def update_secret(
+        namespace: str,
+        path: str,
+        env: str,
+        ctx: Context,
+        values: dict[str, str] | None = None,
+        remove_keys: list[str] | None = None,
+        apply: bool = False,
+    ) -> dict[str, Any]:
+        """Merge values into a path and delete remove_keys. Dry-run unless apply=True."""
+        with session_factory() as session:
+            result = update_secret_impl(
+                reader,
+                writer,
+                session,
+                user_email=_user_email(ctx),
+                namespace=namespace,
+                path=path,
+                env=env,
+                values=values,
+                remove_keys=remove_keys,
+                apply=apply,
+            )
+            session.commit()
+            return result
