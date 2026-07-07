@@ -83,3 +83,47 @@ test("a non-ok response raises ApiError with the detail message", async () => {
     (err: unknown) => err instanceof ApiError && err.status === 403 && err.message === "forbidden",
   );
 });
+
+test("createSecret posts to the namespace path and defaults to dry-run", async () => {
+  const bodies: unknown[] = [];
+  const transport: Transport = async (path, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    assert.equal(init?.method, "POST");
+    assert.equal(path, "/api/namespaces/team-a/secrets");
+    return new Response(
+      JSON.stringify({
+        applied: false, action: "create", namespace: "team-a", path: "app", env: "dev",
+        written_keys: ["API_KEY"], removed_keys: [],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const client = new ApiClient(transport);
+  const result = await client.createSecret("team-a", "app", "dev", { API_KEY: "v" });
+  assert.equal(result.applied, false); // dry-run by default
+  assert.deepEqual(bodies[0], {
+    path: "app", env: "dev", values: { API_KEY: "v" }, apply: false,
+  });
+});
+
+test("updateSecret PATCHes with merge and remove_keys and honors apply", async () => {
+  const bodies: unknown[] = [];
+  const transport: Transport = async (path, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    assert.equal(init?.method, "PATCH");
+    assert.equal(path, "/api/namespaces/team-a/secrets/app");
+    return new Response(
+      JSON.stringify({
+        applied: true, action: "update", namespace: "team-a", path: "app", env: "dev",
+        written_keys: ["NEW"], removed_keys: ["OLD"],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const client = new ApiClient(transport);
+  const result = await client.updateSecret("team-a", "app", "dev", { NEW: "v" }, ["OLD"], true);
+  assert.equal(result.applied, true);
+  assert.deepEqual(bodies[0], {
+    env: "dev", values: { NEW: "v" }, remove_keys: ["OLD"], apply: true,
+  });
+});

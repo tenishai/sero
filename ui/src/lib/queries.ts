@@ -7,8 +7,8 @@
  * views free of transport concerns.
  */
 
-import { createQuery } from "@tanstack/svelte-query";
-import { ApiClient, api } from "./api";
+import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+import { ApiClient, api, type WriteSummary } from "./api";
 
 let client: ApiClient = api;
 
@@ -39,4 +39,43 @@ export function secretQuery(namespace: string, path: string, env: string) {
     queryKey: ["secret", namespace, path, env],
     queryFn: () => client.getSecret(namespace, path, env),
   }));
+}
+
+export interface WriteVars {
+  namespace: string;
+  path: string;
+  env: string;
+  values: Record<string, string>;
+  /** For update: keys to delete. Ignored for create. */
+  removeKeys?: string[];
+  /** false = dry-run (default), true = commit. */
+  apply?: boolean;
+}
+
+export function createSecretMutation() {
+  const qc = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (v: WriteVars): Promise<WriteSummary> =>
+      client.createSecret(v.namespace, v.path, v.env, v.values, v.apply ?? false),
+    onSuccess: (result, v) => {
+      // Only a committed write changes server state worth refetching.
+      if (result.applied) invalidateSecret(qc, v);
+    },
+  }));
+}
+
+export function updateSecretMutation() {
+  const qc = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (v: WriteVars): Promise<WriteSummary> =>
+      client.updateSecret(v.namespace, v.path, v.env, v.values, v.removeKeys ?? [], v.apply ?? false),
+    onSuccess: (result, v) => {
+      if (result.applied) invalidateSecret(qc, v);
+    },
+  }));
+}
+
+function invalidateSecret(qc: ReturnType<typeof useQueryClient>, v: WriteVars): void {
+  qc.invalidateQueries({ queryKey: ["secret", v.namespace, v.path, v.env] });
+  qc.invalidateQueries({ queryKey: ["secrets", v.namespace] });
 }
