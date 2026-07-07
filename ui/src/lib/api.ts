@@ -76,6 +76,13 @@ export interface WriteSummary {
   removed_keys: string[];
 }
 
+/** The result of requesting a namespace: a pending request an admin will action. */
+export interface NamespaceRequestResult {
+  request_id: number;
+  status: string;
+  team_name: string;
+}
+
 const DEFAULT_BASE = "/api";
 
 export class ApiClient {
@@ -146,6 +153,21 @@ export class ApiClient {
       `/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(path)}`,
       { env, values, remove_keys: removeKeys, apply },
     );
+  }
+
+  /** Request a new team namespace. Records a pending request for an admin. */
+  requestNamespace(
+    teamName: string,
+    environments: string[],
+    members: string[],
+    description?: string,
+  ): Promise<NamespaceRequestResult> {
+    return this.send<NamespaceRequestResult>("POST", "/namespace-requests", {
+      team_name: teamName,
+      environments,
+      members,
+      description,
+    });
   }
 
   private async get<T>(path: string): Promise<T> {
