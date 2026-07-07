@@ -33,6 +33,14 @@ test("app renders without console errors and navigates the core views", async ({
   await page.goto("/?mock#/ns/team-payments/secret/app/gateway");
   await page.waitForLoadState("networkidle");
   await expect(page.getByText("STRIPE_KEY")).toBeVisible();
+  // The masked preview is shown; the plaintext is not, until revealed.
+  await expect(page.getByText("mock-value-for-STRIPE_KEY")).toHaveCount(0);
+
+  // Reveal fetches the value on demand and shows it; hide clears it.
+  await page.getByRole("button", { name: "reveal" }).first().click();
+  await expect(page.getByText("mock-value-for-STRIPE_KEY")).toBeVisible();
+  await page.getByRole("button", { name: "hide" }).first().click();
+  await expect(page.getByText("mock-value-for-STRIPE_KEY")).toHaveCount(0);
 
   expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
 });

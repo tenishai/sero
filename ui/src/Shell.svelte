@@ -5,6 +5,7 @@
   import { isAdmin } from "$lib/access";
   import ThemeToggle from "$components/ThemeToggle.svelte";
   import UserContext from "$components/UserContext.svelte";
+  import RevealBanner from "$components/RevealBanner.svelte";
   import Namespaces from "$views/Namespaces.svelte";
   import Secrets from "$views/Secrets.svelte";
   import SecretDetail from "$views/SecretDetail.svelte";
@@ -61,6 +62,7 @@
   </aside>
 
   <main class="flex-1 p-8">
+    <div class="mb-4"><RevealBanner /></div>
     {#if router.current.name === "namespaces"}
       <Namespaces />
     {:else if router.current.name === "request"}

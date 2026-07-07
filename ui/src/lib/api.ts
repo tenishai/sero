@@ -228,6 +228,20 @@ export class ApiClient {
     return this.del(`/admin/allow-list/${encodeURIComponent(email)}`);
   }
 
+  /**
+   * Fetch the plaintext value of a single secret key. This is the one call that
+   * returns a real secret value; it should be made only when a reveal grant is
+   * active and the returned value kept in memory only (never cached or logged).
+   * The rest of the client only ever handles masked keys.
+   */
+  async revealValue(namespace: string, path: string, env: string, key: string): Promise<string> {
+    const body = await this.get<{ value: string }>(
+      `/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(path)}` +
+        `/reveal?env=${encodeURIComponent(env)}&key=${encodeURIComponent(key)}`,
+    );
+    return body.value;
+  }
+
   private async get<T>(path: string): Promise<T> {
     const resp = await this.transport(`${this.base}${path}`, {
       headers: { Accept: "application/json" },

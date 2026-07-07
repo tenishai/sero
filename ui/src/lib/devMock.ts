@@ -110,6 +110,13 @@ export const devMockTransport: Transport = async (path, init) => {
     return json({ namespace: ns, secrets });
   }
 
+  const revealMatch = p.match(/^\/namespaces\/([^/]+)\/secrets\/(.+)\/reveal$/);
+  if (revealMatch) {
+    const key = url.searchParams.get("key") ?? "";
+    // An obviously-fake plaintext for preview; not a real secret.
+    return json({ value: `mock-value-for-${key}` });
+  }
+
   const detailMatch = p.match(/^\/namespaces\/([^/]+)\/secrets\/(.+)$/);
   if (detailMatch) {
     const ns = decodeURIComponent(detailMatch[1]);
