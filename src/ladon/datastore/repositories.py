@@ -5,15 +5,19 @@ operate on it. There is no hidden global state and no framework: a caller opens 
 session (via ``session_factory()``) and passes it in, which keeps these trivially
 testable against SQLite and lets the caller own the transaction boundary.
 
-This first slice covers two domains:
+Covers the five datastore domains:
 
 * the audit trail (``append_call``, ``recent_calls``), which redacts arguments
   through ``ladon.hygiene.redact`` before writing, so a secret never reaches the
   audit log;
 * the MCP allow list (``allow``, ``deny``, ``is_allowed``, ``list_allowed``),
-  the access-control list for the agent surface.
-
-The refresh-token, namespace-request, and reveal-grant repositories follow.
+  the access-control list for the agent surface;
+* refresh-token families (``create_family``, ``consume``, ``revoke_family``,
+  ``revoke_user``), with rotation and replay detection;
+* the namespace-request workflow (``create_namespace_request``,
+  ``mark_request_submitted``, ``mark_request_failed``, ``list_namespace_requests``);
+* step-up reveal flows and grants (``start_reveal_flow``, ``consume_reveal_flow``,
+  ``grant_reveal``, ``active_reveal_grant``, ``revoke_reveal_grant``).
 """
 
 from __future__ import annotations
@@ -21,13 +25,20 @@ from __future__ import annotations
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from ladon.datastore.models import McpAllowListEntry, McpRefreshToken, ToolCallLog
+from ladon.datastore.models import (
+    McpAllowListEntry,
+    McpRefreshToken,
+    NamespaceRequest,
+    RevealFlow,
+    RevealGrant,
+    ToolCallLog,
+)
 from ladon.hygiene import redact
 
 # ── Audit trail ────────────────────────────────────────────────────────
@@ -270,3 +281,184 @@ def revoke_user(session: Session, *, user_email: str, reason: str = "manual") ->
         .values(revoked_at=datetime.now(UTC), revoked_reason=reason)
     )
     return result.rowcount or 0
+
+
+# ── Namespace-request workflow ──────────────────────────────────────────
+
+
+def create_namespace_request(
+    session: Session,
+    *,
+    requester_email: str,
+    team_name: str,
+    environments: list[str],
+    members: list[str],
+    description: str | None = None,
+) -> NamespaceRequest:
+    """Open a namespace request in the ``pending`` state.
+
+    Flushed, not committed: the caller owns the transaction and gets the row back
+    with its assigned id.
+    """
+    row = NamespaceRequest(
+        requester_email=requester_email,
+        team_name=team_name,
+        environments=environments,
+        members=members,
+        description=description,
+        status="pending",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def mark_request_submitted(
+    session: Session, *, request_id: int, ticket_ref: str
+) -> NamespaceRequest:
+    """Move a request to ``submitted`` and record the tracking ticket reference."""
+    row = _require_request(session, request_id)
+    row.status = "submitted"
+    row.ticket_ref = ticket_ref
+    row.updated_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def mark_request_failed(session: Session, *, request_id: int, error: str) -> NamespaceRequest:
+    """Move a request to ``failed`` and record the error."""
+    row = _require_request(session, request_id)
+    row.status = "failed"
+    row.error = error
+    row.updated_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def _require_request(session: Session, request_id: int) -> NamespaceRequest:
+    row = session.get(NamespaceRequest, request_id)
+    if row is None:
+        raise KeyError(f"namespace request {request_id} not found")
+    return row
+
+
+def list_namespace_requests(
+    session: Session, *, status: str | None = None, limit: int = 100
+) -> Sequence[NamespaceRequest]:
+    """List namespace requests, newest first, optionally filtered by status."""
+    stmt = (
+        select(NamespaceRequest)
+        .order_by(NamespaceRequest.created_at.desc(), NamespaceRequest.id.desc())
+        .limit(limit)
+    )
+    if status is not None:
+        stmt = stmt.where(NamespaceRequest.status == status)
+    return session.scalars(stmt).all()
+
+
+# ── Step-up reveal flows and grants ─────────────────────────────────────
+
+# How long an in-progress reveal auth flow stays valid before it is stale.
+DEFAULT_FLOW_TTL = timedelta(minutes=10)
+
+
+def start_reveal_flow(
+    session: Session, *, state: str, pkce_verifier: str, requester_email: str
+) -> RevealFlow:
+    """Record an in-progress step-up reveal flow (short-lived PKCE state)."""
+    row = RevealFlow(state=state, pkce_verifier=pkce_verifier, requester_email=requester_email)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def consume_reveal_flow(
+    session: Session,
+    *,
+    state: str,
+    now: datetime | None = None,
+    ttl: timedelta = DEFAULT_FLOW_TTL,
+) -> RevealFlow | None:
+    """Pop a reveal flow by ``state``, if present and not older than ``ttl``.
+
+    Single-use: the row is deleted whether or not it was within the TTL, so a
+    given state can never be consumed twice. Returns the flow only when it was
+    still fresh; a stale flow is deleted and None is returned.
+    """
+    now = now or datetime.now(UTC)
+    row = session.get(RevealFlow, state)
+    if row is None:
+        return None
+    fresh = row.created_at is not None and (now - _aware(row.created_at)) <= ttl
+    session.delete(row)
+    session.flush()
+    return row if fresh else None
+
+
+def grant_reveal(
+    session: Session,
+    *,
+    grant_id: str,
+    user_email: str,
+    expires_at: datetime,
+    auth_time: datetime,
+    idp_assertion_id: str,
+) -> RevealGrant:
+    """Record a step-up reveal grant: that access was granted, not the secret."""
+    row = RevealGrant(
+        id=grant_id,
+        user_email=user_email,
+        expires_at=expires_at,
+        auth_time=auth_time,
+        idp_assertion_id=idp_assertion_id,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def active_reveal_grant(
+    session: Session,
+    *,
+    grant_id: str,
+    user_email: str,
+    now: datetime | None = None,
+) -> RevealGrant | None:
+    """Return the grant only if it matches the user, is unrevoked, and unexpired.
+
+    A grant belonging to another user, revoked, or past its expiry reads as no
+    active grant (returns None) rather than an error, so callers treat all three
+    the same: access is not currently granted.
+    """
+    now = now or datetime.now(UTC)
+    row = session.get(RevealGrant, grant_id)
+    if row is None or row.user_email != user_email:
+        return None
+    if row.revoked_at is not None:
+        return None
+    if _aware(row.expires_at) <= now:
+        return None
+    return row
+
+
+def revoke_reveal_grant(session: Session, *, grant_id: str, user_email: str) -> bool:
+    """Revoke a grant for a user. Returns True if an active grant was revoked."""
+    result = session.execute(
+        update(RevealGrant)
+        .where(
+            RevealGrant.id == grant_id,
+            RevealGrant.user_email == user_email,
+            RevealGrant.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+    )
+    return (result.rowcount or 0) > 0
+
+
+def _aware(dt: datetime) -> datetime:
+    """Treat a naive datetime as UTC, so comparisons never mix aware and naive.
+
+    SQLite round-trips timezone-aware datetimes as naive; PostgreSQL preserves
+    the tz. Normalizing here keeps the expiry checks correct on both.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
