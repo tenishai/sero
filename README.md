@@ -114,7 +114,7 @@ the others:
   for daedalus agent bundles.
 - [**cabal**](https://github.com/tenishai/cabal) - a self-hosted agent
   orchestration platform and A2A broker that runs personas as modules.
-- [**limenal**](https://github.com/tenishai/limenal) - an MCP/tool gateway: one
+- [**liminal**](https://github.com/tenishai/liminal) - an MCP/tool gateway: one
   connection per agent, many backend handlers behind it. Ladon's MCP surface is
   exactly the kind of backend a gateway like this fronts.
 - [**techne**](https://github.com/tenishai/techne) - local-first agentic memory
@@ -126,5 +126,5 @@ the others:
 
 Ladon's place in this picture: it holds the secrets. Human operators use its UI
 (OIDC); workloads read secrets through the External Secrets Operator; and agents
-built on daedalus/cabal reach it through its MCP tools (behind limenal), with the
+built on daedalus/cabal reach it through its MCP tools (behind liminal), with the
 same secrets-hygiene rules applied to every path.
