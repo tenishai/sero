@@ -586,8 +586,11 @@ def test_the_bundle_cannot_be_escaped(sessions, store, tmp_path):
     secret_file.write_text("not for the web", encoding="utf-8")
     client = build_client(sessions, store, ui_dist=tmp_path)
 
-    resp = client.get("/../outside.txt")
+    # Percent-encoded, so the client cannot normalize it away before it is
+    # sent: the containment check is what has to refuse this, not httpx.
+    resp = client.get("/%2e%2e/outside.txt")
     assert "not for the web" not in resp.text
+    assert "shell" in resp.text
 
 
 # ── Unconfigured deployment ────────────────────────────────────────────
@@ -829,3 +832,23 @@ def test_a_configured_assertion_is_required_and_decides(sessions, store, allowed
     # A forged one is no identity at all.
     forged = assertion_token(email=MEMBER, issuer="https://impostor.example.com")
     assert client.get("/api/me", headers={ASSERTION_SETTINGS.header: forged}).status_code == 401
+
+
+def test_a_malformed_body_is_refused_without_echoing_it(client, store):
+    # A value of the wrong type could be anything, including a secret typed
+    # into the wrong field, so the refusal must not quote what was sent.
+    resp = as_member(
+        client,
+        "POST",
+        "/api/namespaces/team-a/secrets",
+        json={
+            "path": "new",
+            "env": "dev",
+            "values": {"TOKEN": {"nested": "sentinel-not-a-string"}},
+            "apply": True,
+        },
+    )
+    assert resp.status_code == 422
+    assert "sentinel-not-a-string" not in resp.text
+    assert "values" in resp.json()["error"]
+    assert "new" not in store

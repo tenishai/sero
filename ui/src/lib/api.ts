@@ -26,14 +26,19 @@ export class ApiError extends Error {
 }
 
 /**
- * The signed-in user, as surfaced by the backend from the reverse proxy's
- * trusted identity header (see the auth model: no login form, the proxy owns
- * login). `namespaces` are those the user may access. Admin-ness is not a flag
- * here; the UI derives it from whether the configured admin namespace is present.
+ * The signed-in user, as surfaced by the backend from the identity the proxy
+ * established (see the auth model: no login form, the proxy owns login).
+ * `namespaces` are those the user may access. `is_admin` is the backend's
+ * answer, not a guess from namespace membership: admins come from the
+ * deployment config and hold no namespace by virtue of being admins.
+ * `environment` is the single environment this deployment serves; a request
+ * naming another is refused.
  */
 export interface Me {
   email: string;
   namespaces: string[];
+  is_admin: boolean;
+  environment: string | null;
 }
 
 export interface NamespacesResponse {
@@ -272,9 +277,14 @@ export class ApiClient {
   }
 
   private async errorText(resp: Response): Promise<string> {
+    // The backend answers {"error": "..."} and its messages name the namespace,
+    // path or field at fault, so they are worth showing. `detail` is the
+    // framework's own shape, kept as a fallback.
     try {
       const data = await resp.json();
-      return typeof data?.detail === "string" ? data.detail : resp.statusText;
+      if (typeof data?.error === "string") return data.error;
+      if (typeof data?.detail === "string") return data.detail;
+      return resp.statusText;
     } catch {
       return resp.statusText;
     }

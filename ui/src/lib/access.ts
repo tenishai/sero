@@ -1,16 +1,14 @@
 /**
  * Access derivations from the signed-in user.
  *
- * Admin-ness is not a backend flag; it is derived from whether the user can
- * access the configured admin namespace (branding.adminNamespace). Keeping it
- * config-driven and local keeps the concept brand-neutral: no client's team name
- * is baked into the code, and a deployment sets who is admin by namespace
- * membership.
+ * Admin-ness is the backend's answer (`is_admin` on /api/me), not something the
+ * client infers. The backend takes it from the deployment config's `access
+ * .admins`, where being an admin grants no namespace, so guessing it from
+ * namespace membership would name the wrong people in both directions.
  */
 
-import { branding } from "../branding.ts";
 import type { Me } from "./api.ts";
 
 export function isAdmin(me: Me | undefined): boolean {
-  return !!me && me.namespaces.includes(branding.adminNamespace);
+  return !!me?.is_admin;
 }

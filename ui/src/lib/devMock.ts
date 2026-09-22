@@ -9,7 +9,7 @@
  * Nothing here is a real secret: "values" are already-masked previews, exactly
  * as the backend would return them. Writes are echoed back as value-free
  * summaries, so the dry-run/apply flow is exercisable without persisting
- * anything.
+ * anything. Errors use the backend's shape, {"error": "..."}.
  */
 
 import type { Transport } from "./api.ts";
@@ -69,7 +69,12 @@ export const devMockTransport: Transport = async (path, init) => {
   const method = (init?.method ?? "GET").toUpperCase();
 
   if (p === "/me") {
-    return json({ email: "you@example.com", namespaces: NAMESPACES });
+    return json({
+      email: "you@example.com",
+      namespaces: NAMESPACES,
+      is_admin: true,
+      environment: "dev",
+    });
   }
   if (p === "/namespaces") {
     return json({ namespaces: NAMESPACES });
@@ -136,7 +141,7 @@ export const devMockTransport: Transport = async (path, init) => {
     });
   }
 
-  return json({ detail: `mock: no route for ${method} ${p}` }, 404);
+  return json({ error: `mock: no route for ${method} ${p}` }, 404);
 };
 
 function writeSummary(url: URL, init: RequestInit | undefined, action: "create" | "update"): Response {

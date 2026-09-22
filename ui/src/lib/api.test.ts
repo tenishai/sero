@@ -28,7 +28,12 @@ function fakeTransport(
 
 test("getMe returns the signed-in user from /api/me", async () => {
   const { transport, calls } = fakeTransport(() => ({
-    body: { email: "op@example.com", namespaces: ["team-a"] },
+    body: {
+      email: "op@example.com",
+      namespaces: ["team-a"],
+      is_admin: false,
+      environment: "dev",
+    },
   }));
   const client = new ApiClient(transport);
   const me = await client.getMe();
@@ -156,12 +161,36 @@ test("revealValue fetches one key's plaintext at the reveal endpoint", async () 
   assert.equal(calls[0], "/api/namespaces/team-a/secrets/app%2Fgw/reveal?env=dev&key=API_KEY");
 });
 
-test("a non-ok response raises ApiError with the detail message", async () => {
+test("a non-ok response raises ApiError with the backend's error message", async () => {
+  const { transport } = fakeTransport(() => ({
+    status: 403,
+    body: { error: "reveal is not enabled in this deployment" },
+  }));
+  const client = new ApiClient(transport);
+  await assert.rejects(
+    () => client.listNamespaces(),
+    (err: unknown) =>
+      err instanceof ApiError &&
+      err.status === 403 &&
+      err.message === "reveal is not enabled in this deployment",
+  );
+});
+
+test("a response using the framework's detail shape still reads", async () => {
   const { transport } = fakeTransport(() => ({ status: 403, body: { detail: "forbidden" } }));
   const client = new ApiClient(transport);
   await assert.rejects(
     () => client.listNamespaces(),
-    (err: unknown) => err instanceof ApiError && err.status === 403 && err.message === "forbidden",
+    (err: unknown) => err instanceof ApiError && err.message === "forbidden",
+  );
+});
+
+test("a body with neither falls back to the status text", async () => {
+  const { transport } = fakeTransport(() => ({ status: 500, body: { unexpected: true } }));
+  const client = new ApiClient(transport);
+  await assert.rejects(
+    () => client.listNamespaces(),
+    (err: unknown) => err instanceof ApiError && err.status === 500,
   );
 });
 
