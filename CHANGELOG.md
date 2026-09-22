@@ -43,6 +43,30 @@ for the task-by-task record.
 
 ### Added
 
+- Cloud-KMS auto-unseal you can install, not just describe. `scripts/ladon
+  seal-values --config <deployment-config> --base-config <values file or HCL>`
+  renders the Helm values overlay that carries the deployment's seal stanza in
+  the OpenBao server config, with a repeatable
+  `--service-account-annotation KEY=VALUE` for the binding that lets the vault
+  pod reach the key as an identity the key is granted to. It prints the overlay
+  and nothing else, and refuses a `shamir` deployment with exit 2. Until now
+  the seal renderer had no consumer, and the base values file claimed an
+  injection that never happened. `docs/deployment-order.md` gains the KMS path
+  for a new cluster and a procedure for migrating a running Shamir vault in
+  place.
+
+- Two IAM grants on the GCP unseal key, not one: the `gcpckms` seal calls
+  `cryptoKeys.get` at startup, so the unseal identity needs
+  `roles/cloudkms.viewer` as well as
+  `roles/cloudkms.cryptoKeyEncrypterDecrypter`. The Terraform module applies
+  both with the key. Found live, as `error checking key existence`.
+
+- The vault's NetworkPolicy admits the link-local metadata server on TCP 80,
+  which is how workload identity hands the pod the credentials auto-unseal
+  authenticates with. Found live: that address was allowed on port 53 alone,
+  so the vault crash-looped behind the default deny with nothing in its logs
+  about the network.
+
 - DNS egress in the deploy manifests also admits the link-local resolver
   address, for clusters whose pods resolve through a node-local or cloud DNS
   address rather than the kube-dns pods. Proven live: with only the kube-dns

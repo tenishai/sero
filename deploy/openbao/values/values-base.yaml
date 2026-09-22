@@ -47,10 +47,14 @@ server:
           path = "/openbao/data"
         }
 
-        # Auto-unseal: set per deployment. Ladon renders one seal stanza from the
-        # deployment.kms config (see src/ladon/config/seal.py) and injects it
-        # here. The provider is pluggable across clouds. Example shapes (do not
-        # commit real key references here):
+        # Auto-unseal: set per deployment, and not by editing this file.
+        # `scripts/ladon seal-values --config <deployment-config.yaml>
+        # --base-config <this file or an overlay>` renders one seal stanza from
+        # the deployment.kms config (see src/ladon/config/seal.py) into a values
+        # overlay you layer last; a Helm value is replaced rather than merged,
+        # so that overlay re-emits this whole config with the stanza in it. The
+        # provider is pluggable across clouds. Example shapes (do not commit
+        # real key references here):
         #
         #   seal "gcpckms" {
         #     project    = "<gcp-project-id>"
