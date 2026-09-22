@@ -29,7 +29,7 @@ from ladon.mcp.server import (
     request_namespace_impl,
     update_secret_impl,
 )
-from ladon.web.deps import CallerEmail, DbSession, Secrets, services
+from ladon.web.deps import Auditor, CallerEmail, DbSession, Secrets, services
 from ladon.web.serializers import namespace_request_row
 
 router = APIRouter()
@@ -107,24 +107,22 @@ def reveal_secret_value(
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
+    audit: Auditor,
 ) -> dict[str, str]:
     """The one route that returns a plaintext value.
 
     Three gates stand in front of it: the deployment's reveal gate (refusing by
-    default), the allow list, and namespace membership. The audit row records
-    which key was revealed, never what it held.
+    default), the allow list, and namespace membership. Whichever refuses, the
+    attempt is audited as ``denied`` with the reason. The audit row records which
+    key was asked for, never what it held.
     """
-    services(request).reveal_gate.require(email)
-    _require_allowed(session, email)
-    _require_namespace(secrets, email, namespace)
-    value = secrets.reveal_value(email, namespace, secret_path, env, key)
-    _audit(
-        session,
-        user_email=email,
-        tool_name="reveal_value",
-        status="ok",
-        args={"namespace": namespace, "path": secret_path, "env": env, "key_name": key},
-    )
+    args = {"namespace": namespace, "path": secret_path, "env": env, "key_name": key}
+    with audit.guard("reveal_value", email, args, session=session):
+        services(request).reveal_gate.require(email)
+        _require_allowed(session, email)
+        _require_namespace(secrets, email, namespace)
+        value = secrets.reveal_value(email, namespace, secret_path, env, key)
+    _audit(session, user_email=email, tool_name="reveal_value", status="ok", args=args)
     session.commit()
     return {"value": value}
 
@@ -152,18 +150,21 @@ def create_secret(
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
+    audit: Auditor,
 ) -> dict[str, Any]:
-    result = create_secret_impl(
-        secrets,
-        secrets,
-        session,
-        user_email=email,
-        namespace=namespace,
-        path=body.path,
-        env=body.env,
-        values=body.values,
-        apply=body.apply,
-    )
+    args = {"namespace": namespace, "path": body.path, "env": body.env}
+    with audit.guard("create_secret", email, args, session=session):
+        result = create_secret_impl(
+            secrets,
+            secrets,
+            session,
+            user_email=email,
+            namespace=namespace,
+            path=body.path,
+            env=body.env,
+            values=body.values,
+            apply=body.apply,
+        )
     session.commit()
     return result
 
@@ -176,19 +177,22 @@ def update_secret(
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
+    audit: Auditor,
 ) -> dict[str, Any]:
-    result = update_secret_impl(
-        secrets,
-        secrets,
-        session,
-        user_email=email,
-        namespace=namespace,
-        path=secret_path,
-        env=body.env,
-        values=body.values,
-        remove_keys=body.remove_keys,
-        apply=body.apply,
-    )
+    args = {"namespace": namespace, "path": secret_path, "env": body.env}
+    with audit.guard("update_secret", email, args, session=session):
+        result = update_secret_impl(
+            secrets,
+            secrets,
+            session,
+            user_email=email,
+            namespace=namespace,
+            path=secret_path,
+            env=body.env,
+            values=body.values,
+            remove_keys=body.remove_keys,
+            apply=body.apply,
+        )
     session.commit()
     return result
 

@@ -12,7 +12,6 @@ return one.
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 from starlette.testclient import TestClient
 
 from ladon.datastore import repositories as repo
@@ -46,11 +45,16 @@ ACCESS = parse_access(
 # ── Fakes ──────────────────────────────────────────────────────────────
 
 
+class WriteBroke(RuntimeError):
+    """What a vault that will not take a write looks like from up here."""
+
+
 class FakeKvV2:
     """The ``client.secrets.kv.v2`` surface, over a plain dict of paths."""
 
-    def __init__(self, store):
+    def __init__(self, store, *, writes_fail=False):
         self._store = store
+        self._writes_fail = writes_fail
 
     def list_secrets(self, *, path, mount_point):
         return {"data": {"keys": list(self._store.keys())}}
@@ -61,13 +65,16 @@ class FakeKvV2:
         return {"data": {"data": dict(self._store[path]), "metadata": {"version": 3}}}
 
     def create_or_update_secret(self, *, path, secret, mount_point):
+        if self._writes_fail:
+            raise WriteBroke("the vault refused the write")
         self._store[path] = dict(secret)
         return {"data": {"version": 1}}
 
 
 class FakeClient:
-    def __init__(self, store):
-        self.secrets = type("S", (), {"kv": type("K", (), {"v2": FakeKvV2(store)})()})()
+    def __init__(self, store, *, writes_fail=False):
+        kv = FakeKvV2(store, writes_fail=writes_fail)
+        self.secrets = type("S", (), {"kv": type("K", (), {"v2": kv})()})()
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────
@@ -80,10 +87,10 @@ def store():
 
 
 @pytest.fixture
-def sessions():
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
+def sessions(tmp_path):
+    # A file, not ":memory:": the audit path opens a second connection while the
+    # request's is still open, and only a real file shows whether that works.
+    engine = create_engine(f"sqlite:///{tmp_path / 'ladon.db'}")
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 
@@ -114,16 +121,18 @@ def build_settings(*, reveal_enabled=False, ui_dist=None, access=ACCESS):
     )
 
 
-def build_client(sessions, store, **kwargs):
+def build_client(sessions, store, *, writes_fail=False, raise_server_exceptions=True, **kwargs):
     settings = build_settings(**kwargs)
     groups = ConfigGroupSource(settings.access)
-    client = FakeClient(store)
+    client = FakeClient(store, writes_fail=writes_fail)
     secrets = OpenBaoSecrets(
         client_for=lambda namespace: client,
         namespaces_for=groups.namespaces_for,
     )
     app = create_app(settings, session_factory=sessions, secrets=secrets, groups=groups)
-    return TestClient(app)
+    # Starlette re-raises an unhandled exception after the 500 is sent, so a
+    # test that wants to read that response has to ask it not to.
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 @pytest.fixture
@@ -588,3 +597,75 @@ def test_secret_routes_say_so_when_openbao_is_not_configured(sessions):
     resp = client.get("/api/namespaces", headers={HEADER: MEMBER})
     assert resp.status_code == 503
     assert "OpenBao" in resp.json()["error"]
+
+
+# ── Audit durability ───────────────────────────────────────────────────
+
+
+def test_a_failed_write_still_leaves_an_audit_row(sessions, store, allowed):
+    # The tool function's own row dies with the rolled-back session, so the
+    # calls most worth investigating are exactly the ones that would vanish.
+    client = build_client(sessions, store, writes_fail=True, raise_server_exceptions=False)
+    resp = as_member(
+        client,
+        "POST",
+        "/api/namespaces/team-a/secrets",
+        json={
+            "path": "new",
+            "env": "dev",
+            "values": {"TOKEN": "dummy-new-value"},
+            "apply": True,
+        },
+    )
+    assert resp.status_code == 500
+    assert resp.json() == {"error": "internal error"}
+
+    (row,) = audit_rows(sessions, "create_secret")
+    assert row.status == "error"
+    assert row.user_email == MEMBER
+    assert row.redacted_args["path"] == "new"
+    assert "dummy-new-value" not in str(row.redacted_args) + str(row.error)
+
+
+def test_an_unexpected_failure_says_nothing_about_itself(sessions, store, allowed):
+    client = build_client(sessions, store, writes_fail=True, raise_server_exceptions=False)
+    resp = as_member(
+        client,
+        "POST",
+        "/api/namespaces/team-a/secrets",
+        json={"path": "new", "env": "dev", "values": {"TOKEN": "dummy"}, "apply": True},
+    )
+    # The caller learns nothing about the internals; the traceback is in the log.
+    assert resp.json() == {"error": "internal error"}
+    assert "vault refused" not in resp.text
+
+
+def test_a_reveal_the_gate_refuses_is_audited_as_denied(client, sessions):
+    as_member(client, "GET", "/api/namespaces/team-a/secrets/app/reveal?env=dev&key=API_KEY")
+    (row,) = audit_rows(sessions, "reveal_value")
+    assert row.status == "denied"
+    assert row.user_email == MEMBER
+    assert "not enabled" in row.error
+
+
+def test_a_reveal_denied_by_namespace_is_audited_with_the_reason(sessions, store, allowed):
+    client = build_client(sessions, store, reveal_enabled=True)
+    client.get(
+        "/api/namespaces/team-a/secrets/app/reveal?env=dev&key=API_KEY",
+        headers={HEADER: STRANGER},
+    )
+    (row,) = audit_rows(sessions, "reveal_value")
+    assert row.status == "denied"
+    assert row.user_email == STRANGER
+    assert "namespace" in row.error
+
+
+def test_a_denied_write_is_audited_as_denied(client, sessions):
+    client.post(
+        "/api/namespaces/team-a/secrets",
+        headers={HEADER: STRANGER},
+        json={"path": "new", "env": "dev", "values": {"TOKEN": "dummy"}, "apply": True},
+    )
+    (row,) = audit_rows(sessions, "create_secret")
+    assert row.status == "denied"
+    assert row.user_email == STRANGER

@@ -19,6 +19,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
+from ladon.web.audit import AuditRecorder
 from ladon.web.errors import ApiError
 from ladon.web.groups import GroupSource
 from ladon.web.identity import IdentityReader, NoIdentityError
@@ -70,6 +71,12 @@ def require_secrets(request: Request) -> Any:
     return secrets
 
 
+def audit_recorder(request: Request) -> AuditRecorder:
+    """An auditor that writes outside the request's transaction, so a failed
+    operation still leaves a row."""
+    return AuditRecorder(services(request).session_factory)
+
+
 def db(request: Request) -> Iterator[Session]:
     """A datastore session for the request, or 503 when none is configured.
 
@@ -88,3 +95,4 @@ def db(request: Request) -> Iterator[Session]:
 AdminEmail = Annotated[str, Depends(require_admin)]
 DbSession = Annotated[Session, Depends(db)]
 Secrets = Annotated[Any, Depends(require_secrets)]
+Auditor = Annotated[AuditRecorder, Depends(audit_recorder)]

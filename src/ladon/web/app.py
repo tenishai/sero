@@ -14,6 +14,7 @@ and never a value.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Mapping
@@ -40,6 +41,8 @@ from ladon.web.reveal import AllowGate, DenyGate, RevealDeniedError, RevealGate
 from ladon.web.settings import WebSettings, load_web_settings
 
 API_PREFIX = "/api"
+
+log = logging.getLogger(__name__)
 
 
 def create_app(
@@ -165,6 +168,14 @@ def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
     def _http(request: Request, exc: HTTPException) -> JSONResponse:
         return error(exc.status_code, str(exc.detail))
+
+    @app.exception_handler(Exception)
+    def _unexpected(request: Request, exc: Exception) -> JSONResponse:
+        # The traceback goes to the log and nothing else does: a path, a query
+        # string or a body could name a secret, and an operator reading logs
+        # does not need any of it to find the line that broke.
+        log.exception("unhandled error while serving a request")
+        return error(500, "internal error")
 
 
 def _register_ui(app: FastAPI, ui_dist: Path | None) -> None:
