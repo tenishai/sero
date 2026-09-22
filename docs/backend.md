@@ -472,6 +472,121 @@ Denials are recorded too, including the ones that never got past the token.
 Those carry `via` as the caller the token claimed to be, or `unknown` when it
 matched none, and are filed under `unidentified`. A `429` is filed under the
 caller's name, which is known by then.
+## Apply operations as jobs
+
+An apply phase reads and writes dozens of objects across OpenBao and the
+cluster. That takes longer than a load balancer will hold a request open, so an
+apply is started, not awaited:
+
+```
+POST /api/admin/apply/root-config
+POST /api/admin/apply/team-onboarding
+POST /api/admin/apply/app-onboarding
+POST /api/admin/apply/eso-install
+```
+
+Each answers `202` with `{"job_id": 7, "kind": "app-onboarding", "state":
+"queued"}`. Admin only, like the rest of `/api/admin`.
+
+The body is the flags the matching CLI command takes, with one deliberate
+exception: there is no `config`. The deployment config is the one this process
+was started with, and a request that could name another could plan against
+teams, namespaces and mounts nobody deployed. An unknown field is refused with
+`422` rather than ignored.
+
+| Phase | Body |
+| --- | --- |
+| `root-config` | `jwt_discovery_url`, optionally `oidc_discovery_url` with `oidc_client_id` and `oidc_client_secret_ref`; or `teams: ["team-a"]` to narrow the run to those teams' namespaces and apply nothing at the root. |
+| `team-onboarding` | `team`, `cluster`, `oidc_discovery_url`. |
+| `app-onboarding` | `team`, `app`, `cluster`, optionally `k8s_namespace`, `sa_namespace`, `audience`, `server`. |
+| `eso-install` | optionally `namespace` (where to install; an operator already on the cluster is reused where it is). |
+
+Every body takes `apply`, which is `false` by default: a dry-run job whose
+report is the diff against live state. Nothing is written until a caller says
+`{"apply": true}`, the same rule the CLI follows.
+
+A body that cannot produce a plan (a missing input, a team the config does not
+define) is a `400` while the caller is still listening, rather than a job that
+fails a second later for a reason nobody is watching for.
+
+### One job per kind
+
+Two applies of the same phase converge the same objects against each other's
+half-written state, so one job of a kind runs at a time. A second request while
+one is in flight answers `409` with the job that holds it:
+
+```json
+{"error": "an app-onboarding job is already running (job 7)", "job_id": 7, "kind": "app-onboarding"}
+```
+
+Another kind may start meanwhile. A job builds its own OpenBao client from this
+deployment's address and the token in the environment, so nothing a request
+carried does the writing, and it runs on its own datastore session, so the
+request it came from is free to finish.
+
+### Reading a report
+
+```
+GET /api/admin/jobs/7
+GET /api/admin/jobs?kind=app-onboarding&limit=20
+```
+
+```json
+{
+  "id": 7,
+  "kind": "app-onboarding",
+  "state": "done",
+  "requested_by": "admin@example.com",
+  "created_at": "2026-09-22T12:47:13",
+  "started_at": "2026-09-22T12:47:13.773830",
+  "finished_at": "2026-09-22T12:47:13.776860",
+  "elapsed_seconds": 0.003,
+  "report": [
+    {"surface": "openbao", "action": "create",
+     "target": "[team-a] write-policy sys/policies/acl/eso-sample-readonly"},
+    {"surface": "cluster", "action": "already current",
+     "target": "ServiceAccount/ladon/eso-team-a-sample-a84085"}
+  ],
+  "error": null
+}
+```
+
+`state` is `queued`, `running`, `done` or `failed`. `elapsed_seconds` is
+computed by the server, so a client does not have to agree with it about the
+clock.
+
+Each report line is one operation: which half it ran against (`openbao` or
+`cluster`), what it did or would do (`create`, `update`, `already current`,
+`blocked`), and the object it names. An `update` carries `changes`, the fields
+that differ, and a `blocked` line carries the `reason` an operator has to
+resolve by hand. A line never carries a value, a policy body, or a token.
+
+A job is `failed` when the work raised, and also when an operation was blocked:
+nothing was written, which is not a success. The report is kept either way,
+because what a run managed to do before it stopped is what an operator needs.
+`error` is redacted on its way into the datastore, like every other stored
+message.
+
+Two runs of the same phase converge: the second reports every operation
+`already current` and writes nothing.
+
+### Approving a namespace request
+
+`POST /api/admin/namespace-requests/<id>/approve` records the decision and
+starts the run that carries it out: a `root-config` job narrowed to that one
+team, which creates its namespace, the deployment's KV mount inside it, and the
+policies its access level grants. Nothing at the root is touched, so approving
+one team's request cannot rewrite the deployment's auth methods.
+
+The request row carries `job_id`, and a run that does not land leaves its
+message in `error` while the request stays `approved`: the decision stands, and
+what failed is the run. A team the deployment config does not define is refused
+with `400` before anything is decided, because the namespace, the mount and the
+policies all come from that entry.
+
+Jobs are threads inside the one process, and they do not survive a restart. A
+phase that was interrupted is re-run: applying converges, so running it again
+is how it finishes.
 
 ## Migrations
 
