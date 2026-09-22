@@ -1,13 +1,16 @@
 """Tests for the apply CLI entrypoint (D3b).
 
-The ``plan`` path is pure (no connection). The ``apply`` path's connect and
-execute calls are monkeypatched so nothing touches a live OpenBao.
+The ``plan`` path is pure (no connection). The ``apply`` path connects in both
+modes (a dry-run reads live state to diff against it), so its connect and
+execute calls are monkeypatched, or pointed at the recording fake, and nothing
+touches a live OpenBao.
 """
 
 import io
 
 import pytest
 
+from fake_openbao import FakeOpenBao
 from ladon.apply import cli
 from ladon.apply.executor import ApplyResult
 from ladon.config.teams import ConfigError
@@ -93,17 +96,45 @@ def test_team_onboarding_requires_cluster():
     assert code == 2
 
 
-def test_apply_without_flag_is_a_dry_run_and_does_not_connect(monkeypatch):
-    # connect must never be called on a dry-run.
-    def fail_connect(*a, **k):
-        raise AssertionError("connect should not be called on a dry-run")
+def test_apply_without_flag_diffs_against_live_state_and_writes_nothing(monkeypatch):
+    # The dry-run connects (read-only) so the diff is against what is really
+    # there, which is the whole point of a diff.
+    client = FakeOpenBao()
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
 
-    monkeypatch.setattr(cli, "connect", fail_connect)
     code, text = run(["apply", "--phase", "root-config", "--jwt-discovery-url", ISSUER])
     assert code == 0
     assert "DRY RUN" in text
     assert "Re-run with --apply" in text
-    assert "enable-secrets-engine sys/mounts/kv" in text
+    assert "create enable-secrets-engine sys/mounts/kv" in text
+    assert client.calls == []
+
+
+def test_apply_dry_run_reports_objects_that_are_already_current(monkeypatch):
+    client = FakeOpenBao()
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+
+    run(["apply", "--phase", "root-config", "--jwt-discovery-url", ISSUER, "--apply"])
+    code, text = run(["apply", "--phase", "root-config", "--jwt-discovery-url", ISSUER])
+    assert code == 0
+    assert "already current enable-secrets-engine sys/mounts/kv" in text
+
+
+def test_apply_reports_when_there_is_nothing_to_do(monkeypatch):
+    client = FakeOpenBao()
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+
+    argv = ["apply", "--phase", "root-config", "--jwt-discovery-url", ISSUER, "--apply"]
+    run(argv)
+    code, text = run(argv)
+    assert code == 0
+    assert "Nothing to apply" in text
 
 
 def test_apply_with_flag_connects_and_applies(monkeypatch):

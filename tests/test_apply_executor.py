@@ -2,11 +2,13 @@
 
 The dry-run path needs no client and touches nothing. The apply path is exercised
 with a recording fake that mimics the hvac call surface, so these run with no live
-OpenBao.
+OpenBao. Convergence against live state has its own file
+(``test_apply_converge.py``); these cover dispatch, ordering, and error context.
 """
 
 import pytest
 
+from fake_openbao import FakeOpenBao as FakeClient
 from ladon.apply.executor import (
     ApplyError,
     apply_plan,
@@ -44,31 +46,6 @@ def sample_plan():
         policies=[team_readwrite(), external_secrets_read()],
         auth_methods=[jwt, oidc],
     )
-
-
-class FakeSys:
-    def __init__(self, calls):
-        self._calls = calls
-
-    def enable_secrets_engine(self, *, backend_type, path, options):
-        self._calls.append(("enable_secrets_engine", path, backend_type, options))
-
-    def enable_auth_method(self, *, method_type, path):
-        self._calls.append(("enable_auth_method", path, method_type))
-
-    def create_or_update_policy(self, *, name, policy):
-        self._calls.append(("create_or_update_policy", name, policy))
-
-
-class FakeClient:
-    """Records calls instead of talking to OpenBao."""
-
-    def __init__(self):
-        self.calls = []
-        self.sys = FakeSys(self.calls)
-
-    def write_data(self, path, *, data):
-        self.calls.append(("write_data", path, data))
 
 
 def test_dry_run_needs_no_client_and_touches_nothing():

@@ -6,9 +6,11 @@ runnable end to end. Two subcommands:
 * ``plan`` builds a plan from flags and renders it to stdout. It never connects
   to OpenBao, so it is always safe to run.
 * ``apply`` builds the same plan, connects to OpenBao using the environment
-  (address and token, or another credential), and applies it. It is a dry-run by
-  default, per the secrets-hygiene rule that writes are opt-in; an explicit
-  ``--apply`` is required to write.
+  (address and token, or another credential), and diffs it against live state.
+  It is a dry-run by default, per the secrets-hygiene rule that writes are
+  opt-in; an explicit ``--apply`` is required to write. The dry-run connects too
+  (read-only), because a diff is only useful against what is really there; use
+  ``plan`` when there is nothing to connect to.
 
 Run as ``python -m ladon plan ...`` / ``python -m ladon apply ...``. Inputs are
 explicit flags per phase. A ``--config`` deployment file supplies the parts it
@@ -214,23 +216,31 @@ def _run_plan(args: argparse.Namespace, out) -> int:
 def _run_apply(args: argparse.Namespace, out) -> int:
     plan = build_plan(args)
 
-    if not args.apply:
-        # Dry-run: do not connect, just show what would be written.
-        result = apply_plan(plan)
-        print("DRY RUN: the following operations would be applied:", file=out)
-        for line in result.planned:
-            print(f"  {line}", file=out)
-        print("\nRe-run with --apply to write to OpenBao.", file=out)
-        return 0
-
+    # Both modes connect: a dry-run reads live state so the diff is against what
+    # is really there. Only --apply writes. Use `plan` for an offline render.
     namespace = resolve_namespace(args)
     conn = BaoConnection.from_env(namespace=namespace)
     client = connect(conn, TokenAuth.from_env())
-    result = apply_plan(plan, client=client, apply=True)
-    print("Applied the following operations:", file=out)
-    for line in result.applied:
-        print(f"  {line}", file=out)
+    result = apply_plan(plan, client=client, apply=args.apply)
+
+    if not args.apply:
+        print("DRY RUN: diff against live OpenBao:", file=out)
+        _print_diffs(result, out)
+        print("\nRe-run with --apply to write to OpenBao.", file=out)
+        return 0
+
+    if result.applied:
+        print("Applied the following operations:", file=out)
+    else:
+        print("Nothing to apply: every object is already current.", file=out)
+    _print_diffs(result, out)
     return 0
+
+
+def _print_diffs(result, out) -> None:
+    """One line per op: what it did (or would do) and which fields differ."""
+    for diff in result.diffs:
+        print(f"  {diff.render()}", file=out)
 
 
 def main(argv: Sequence[str] | None = None, *, out=None) -> int:
