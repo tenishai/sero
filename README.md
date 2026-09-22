@@ -122,9 +122,11 @@ All merged on main:
 - The machine lane reads and deletes: `GET /api/service/secrets` for the key
   names, the version and when a path last changed; `DELETE` on both routes,
   removing a path with all of its versions and the ExternalSecret in front of
-  it. Dry run by default, idempotent, and a cluster object another field
-  manager owns is `409` rather than removed. The lane can now delete; the
-  room's destroy step is the remaining half.
+  it, which takes the Kubernetes Secret it owns with it. Dry run by default,
+  idempotent, and guarded three ways: a cluster object another field manager
+  owns is `409`, one belonging to another application or namespace is `403`,
+  and the answer says whether a workload's Secret goes too. The lane can now
+  delete; the room's destroy step is the remaining half.
 - Apply phases as admin jobs with a restart sweep; namespace-request approval
   applies the team; MCP denial audit; the SQLite primary-key migration. (PR
   #68)

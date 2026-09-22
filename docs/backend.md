@@ -276,6 +276,7 @@ service_callers:
     k8s_namespaces: []
     acting_email_required: true
     rate_limit_per_minute: 60
+    read_limit_per_minute: 300
 ```
 
 `name`, `issuer`, `jwks_url`, `audience`, `subject` and `namespaces` are all
@@ -422,6 +423,13 @@ A path that is not there is `404 {"error": "there is no secret at ..."}`, and
 still an audited read: the request was authorized and the lookup happened, and
 who asked about a path that does not exist is worth being able to answer.
 
+Only a 404 from OpenBao means "not there". A denial, an expired token, a sealed
+vault or an unreachable one is a `500` with an audit row saying `error`, never
+a `404`: "I could not look" and "there is nothing there" are different answers,
+and a caller acting on the wrong one would treat a live secret as gone. The
+`DELETE` below inherits the same rule, which is why it can say `deleted: false`
+and mean it.
+
 **`DELETE /api/service/secrets`** removes one application path and every
 version of it. This is the half of provisioning the lane did not have: an
 application that goes away otherwise leaves its secret behind, and a KV path
@@ -456,6 +464,12 @@ gone is `"deleted": false` with an empty `keys` and a `200`, because a destroy
 step that fails when it is run twice is a destroy step nobody can retry. The key
 names are read before the delete and go into the audit row as `key_names`, so
 the record still says what was destroyed once the path is gone.
+
+The delete runs whether or not the read found anything, and the path is read
+once more afterwards. OpenBao answers a metadata delete the same either way, so
+skipping it on the strength of a read taken a moment earlier only adds a race;
+and a delete Ladon reported that OpenBao did not perform is worth catching here
+rather than the next time somebody finds the credential still live.
 
 Two grants this route needs that the write routes do not. The backend's OpenBao
 token needs `delete` on `kv/metadata/<path>`, which is the capability that
@@ -533,6 +547,16 @@ without this leaves an object ESO keeps reconciling: an error in the operator's
 log every interval over a path that is gone on purpose, and the Kubernetes
 Secret it owns still sitting there.
 
+**It takes the Secret with it.** Ladon renders every ExternalSecret with
+`creationPolicy: Owner`, so the Secret ESO creates carries an owner reference
+back to it, and when the ExternalSecret goes the garbage collector deletes the
+Secret. A pod already running keeps the copy it mounted until it restarts, and
+then does not start. That is what taking an application down means, and it is
+the reason this route is the most guarded thing on the lane: its blast radius
+is a workload's Secret, not one custom resource. The answer says so in
+`removes_target_secret`, read from the live object rather than assumed, so a
+dry run tells a caller what an apply would take away.
+
 ```json
 {
   "acting_email": "operator@example.com",
@@ -549,33 +573,52 @@ Secret it owns still sitting there.
   "applied": true,
   "namespace": "team-a",
   "app": "sample",
+  "store": "ladon-team-a-sample-<digest>",
   "k8s_namespace": "sample",
   "name": "sample-demo",
-  "deleted": true,
-  "report": ["ExternalSecret/sample/sample-demo: delete"]
+  "removes_target_secret": true,
+  "report": ["ExternalSecret/sample/sample-demo: delete"],
+  "deleted": true
 }
 ```
+
+A dry run answers `would_delete` in place of `deleted`, like the secrets
+`DELETE`: what a call has not done, it does not report as done.
 
 The body names the object and nothing else. No path, no store, no refresh
 interval: a removal should not depend on the store name and the path still
 resolving the way they did when the object was created.
 
-Three rules stand in front of it.
+Four rules stand in front of it.
 
-- **It must be Ladon's object.** The live object is read first, and if its
-  `managedFields` do not record `ladon`, the answer is `409` naming the manager
-  that does own it and nothing is deleted. This is the mirror of never passing
-  `--force-conflicts` on the apply side: taking a field from another manager is
-  an operator's decision, and so is deleting that manager's object.
+- **It must be Ladon's object.** The live object is read at the moment of the
+  delete, and if its `managedFields` do not record `ladon`, the answer is `409`
+  naming the manager that does own it and nothing is deleted. This is the
+  mirror of never passing `--force-conflicts` on the apply side: taking a field
+  from another manager is an operator's decision, and so is deleting that
+  manager's object. Entries for a subresource do not count as ownership, since
+  ESO records itself on the status of every ExternalSecret it reconciles.
+- **It must be this application's object, in this caller's namespace.** `app`
+  is a field in the body and `k8s_namespace` defaults to it, so the ownership
+  check alone would let a caller pinned to one OpenBao namespace name another
+  team's application and reach an ExternalSecret Ladon manages for somebody
+  else. The live object has to read through this application's own store,
+  whose name is derived exactly as the POST derives it, and to pull a path
+  inside `apps/<app>/`. Either mismatch is `403`. The message names the store
+  names and the prefix, which are configuration, and never the key the live
+  object reads, which is another team's business.
 - **The same pinning as the POST.** `k8s_namespace` defaults to the
   application's name, and anywhere else must be in the caller's
-  `k8s_namespaces`; otherwise `403`. Without it, a caller admitted to one
-  namespace could remove any ExternalSecret Ladon manages anywhere on the
-  cluster.
-- **Dry run by default.** A dry run does the read and the ownership check, so
-  it answers the same `403` and `409` an apply would, and deletes nothing.
-  `"deleted"` is `false` when the object was already gone, which is a success;
-  the report line reads `absent`.
+  `k8s_namespaces`; otherwise `403`.
+- **Dry run by default.** A dry run does the reads and both checks, so it
+  answers the same `403` and `409` an apply would, and deletes nothing.
+  `would_delete` is `false` when the object was already gone, which is a
+  success; the report line reads `absent`.
+
+kubectl is called with `--ignore-not-found` and `--wait=false`, and the object
+is read again afterwards: a delete kubectl accepted is not a delete the cluster
+performed, so the report says `delete` only for an object that is gone or
+carries a `deletionTimestamp`, and one still present raises.
 
 It removes the ExternalSecret and only that. The application's
 ClusterSecretStore, its JWT role, its read-only policy and its service account
@@ -607,10 +650,14 @@ phase, not a per-secret call on this lane.
   application's identity.
 - Delete a cluster object another field manager owns. That is `409`, and the
   message names the manager.
-- Exceed its call budget. Each caller has an in-process token bucket, 60 calls a
-  minute by default, shared across every route on the lane; past it the answer
-  is `429`. It is a guard against a stuck loop filling the vault, not a
-  distributed quota: a second replica has a second bucket.
+- Exceed its call budget. Each caller has two in-process token buckets: 60
+  writes a minute and 300 reads, by default. Past either, the answer is `429`
+  and the message says which ran out. The read is counted separately because a
+  caller watching an application come up polls it, and one shared bucket would
+  let that polling spend the allowance the same caller's writes need: the call
+  that got refused would be the one it was polling in order to make. Neither is
+  a distributed quota, only a guard against a stuck loop filling the vault, so
+  a second replica has a second pair.
 
 ### Auditing
 

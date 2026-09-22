@@ -280,8 +280,16 @@ removes the object it created when an application is taken down; leaving it
 behind means an operator reconciling a KV path that is gone on purpose. It is
 not granted on `ClusterSecretStore`: a store is an application's identity on
 the cluster, and removing one is off-boarding rather than a per-secret call.
-Ladon also refuses to delete an object whose field manager is not its own, but
-that guard is in the code, and this role is what bounds it if it fails.
+
+That grant reaches further than the kind it names. Ladon renders every
+ExternalSecret with `creationPolicy: Owner`, so the Kubernetes Secret ESO
+creates carries an owner reference back to it, and deleting the ExternalSecret
+has the garbage collector delete the Secret with it. Deleting one custom
+resource therefore takes a running workload's Secret away, in any namespace,
+without any grant on Secrets outside `ladon`. It is what taking an application
+down is supposed to do, and it is why two checks stand in front of it in the
+code: the live object must record `ladon` as one of its field managers, and it
+must belong to the application and namespace the caller named.
 
 Neither role can read a Secret outside the `ladon` namespace. A cluster-wide
 Secret read would turn this service account into a way to collect every synced

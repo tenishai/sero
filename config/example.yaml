@@ -111,10 +111,14 @@ access:
 #     # application's own name. Empty is the right answer for one application
 #     # in a namespace named after it, which is what onboarding creates.
 #     k8s_namespaces: []
-#     # Always true: both routes record the person every machine call is for.
+#     # Always true: every route records the person a machine call is for.
 #     acting_email_required: true
-#     # Calls a minute, across both service routes. Defaults to 60.
+#     # Writes a minute, across every write on the lane. Defaults to 60.
 #     rate_limit_per_minute: 60
+#     # Reads a minute, counted separately and higher: a caller polling the
+#     # read while an application comes up must not spend the budget its own
+#     # writes need. Defaults to 300.
+#     read_limit_per_minute: 300
 
 # Teams. Root config creates a namespace per team and, inside it, the KV v2
 # mount above, the policy the team's access level grants (team-readwrite, or

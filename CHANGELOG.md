@@ -12,6 +12,26 @@ point of view, not a list of commit subjects.
 
 ### Fixed
 
+- Only a 404 from OpenBao means a secret path is not there. Both reads in
+  the OpenBao wrapper swallowed every exception and reported the path as
+  absent, so a denial, an expired token or an unreachable vault became
+  "there is nothing there" and each surface above turned that into a
+  confident wrong answer: a read answering `404` for a secret that exists, a
+  delete reporting success over a path it never touched, and worst, an
+  update merging into nothing and writing back over every key the path held.
+  Anything that is not a 404 now surfaces as a `500` with an audit row.
+
+- A cluster delete now checks ownership at the moment it deletes rather than
+  in an earlier pass, passes `--wait=false` so one stuck finalizer cannot
+  hold a request open, and reads the object back afterwards: kubectl
+  accepting a delete is not the cluster having performed one. A manager entry
+  scoped to a subresource no longer counts as ownership, since ESO records
+  itself on the status of every ExternalSecret Ladon applies.
+
+- The backend refuses to start on a secrets implementation that cannot serve
+  every route it exposes, naming the missing methods, rather than answering
+  a caller with a `500` the first time one is reached.
+
 - Opening a namespace with no secrets in it answered "internal error": OpenBao
   reports an empty KV listing as a 404 and the reader let that escape. An empty
   namespace is now an empty list.
@@ -76,11 +96,29 @@ for the task-by-task record.
   A cluster object whose live field manager is not `ladon` is `409` naming
   the manager that owns it, and nothing is deleted. That is the mirror of
   never passing `--force-conflicts`: taking a field from another manager is
-  an operator's decision, and so is deleting that manager's object.
+  an operator's decision, and so is deleting that manager's object. It must
+  also be the application's own object: the live ExternalSecret has to read
+  through that application's store and pull a path inside `apps/<app>/`, or
+  it is a `403`. Without that, `app` being a field in the request body would
+  let a caller pinned to one namespace reach another team's ExternalSecret.
+
+  Removing an ExternalSecret removes the Kubernetes Secret with it, because
+  Ladon renders them with `creationPolicy: Owner` and the Secret carries an
+  owner reference back. That is the point of taking an application down, and
+  it is the reason for the guards above: the blast radius is a running
+  workload's Secret, not one custom resource. The answer says so in
+  `removes_target_secret`, so a dry run tells a caller what an apply would
+  take away. The deployment's ClusterRole grants `delete` on
+  `externalsecrets` and no other kind.
 
   Scope, so nobody has to infer it: this removes one secret and one
   ExternalSecret. An application's ClusterSecretStore, JWT role, read-only
   policy and service account are off-boarding, and still an operator's job.
+
+  Reads have a budget of their own, `read_limit_per_minute`, 300 a minute
+  against the write budget's 60. A caller watching an application come up
+  polls the read, and one shared bucket would let that polling spend the
+  allowance the same caller's writes need.
 
 - A front door, so the backend is a service people can reach rather than a
   port-forward. `deploy/ladon/standalone/front-door/` holds four manifests

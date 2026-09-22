@@ -26,6 +26,7 @@ from fake_cluster import FakeCluster, eso_status_entry, managed_field_entry
 from ladon.config.apps import MAX_KV_PATH_LENGTH, app_store_name
 from ladon.config.teams import ConfigError
 from ladon.datastore.models import Base, ToolCallLog
+from ladon.hygiene import mask
 from ladon.install.k8s import converge_documents, delete_documents, read_one
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.web.app import create_app
@@ -719,10 +720,13 @@ def test_a_write_with_neither_values_nor_remove_keys_is_refused(client):
     assert response.status_code == 400
 
 
-def test_the_report_never_carries_a_value(client):
+def test_the_report_never_carries_a_value(client, store):
+    written = put_body()["values"]["DB_URL"]
     response = client.post("/api/service/secrets", json=put_body(apply=True), headers=bearer())
-    assert "dummy-new-db-url" not in response.text
-    assert "dummy-api-key-value" not in response.text
+    for value in [written, *store[PATH].values()]:
+        assert value not in response.text
+        assert mask(value) not in response.text
+    assert response.json()["written_keys"] == ["DB_URL"]
 
 
 # ── Sync ───────────────────────────────────────────────────────────────
@@ -939,13 +943,26 @@ def test_a_read_returns_the_key_names_the_version_and_the_timestamp(client):
     }
 
 
-def test_a_read_never_returns_a_value_not_even_masked(client):
+def assert_carries_no_value(response, store):
+    """Neither a stored value nor the masked preview of one is in the answer.
+
+    The masks are computed from the fixture rather than written out, so a
+    change to what the fixture holds, or to how masking works, cannot leave
+    this asserting the absence of a string nothing would have produced.
+    """
+    for value in store[PATH].values():
+        assert value not in response.text
+        assert mask(value) not in response.text
+
+
+def test_a_read_never_returns_a_value_not_even_masked(client, store):
     # The human surface answers with a masked preview of every value. This one
     # does not: a mask is a hint about a value, and this lane hands out names.
     response = read(client)
-    assert "dummy-api-key-value" not in response.text
-    assert "dum" not in response.text
+    assert_carries_no_value(response, store)
     assert "masked_keys" not in response.json()
+    # The names themselves are the answer, so this is not vacuous.
+    assert response.json()["keys"] == sorted(store[PATH])
 
 
 def test_a_read_of_a_path_that_is_not_there_is_a_plain_404(client):
@@ -1078,10 +1095,13 @@ def test_a_dry_run_delete_of_a_path_that_is_not_there_would_delete_nothing(clien
     assert response.json()["keys"] == []
 
 
-def test_a_delete_never_returns_a_value(client):
+def test_a_delete_never_returns_a_value(client, store):
+    before = dict(store[PATH])
     response = erase(client, erase_body(apply=True))
-    assert "dummy-api-key-value" not in response.text
-    assert "dum" not in response.text
+    for value in before.values():
+        assert value not in response.text
+        assert mask(value) not in response.text
+    assert response.json()["keys"] == sorted(before)
 
 
 def test_a_delete_needs_a_service_token(client, store):

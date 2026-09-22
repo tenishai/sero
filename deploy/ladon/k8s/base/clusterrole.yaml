@@ -15,12 +15,22 @@
 #
 # `delete` is granted on `ExternalSecret` and nowhere else. The machine lane
 # removes the object it created when an application is taken down, and leaving
-# it behind means an operator reconciling a KV path that is gone on purpose. It
-# is not granted on `ClusterSecretStore`: a store is an application's identity
-# on the cluster, removing one is off-boarding rather than a per-secret call,
-# and a cluster-scoped delete is a blast radius worth not having. Ladon refuses
-# to delete an object whose field manager is not its own, but that guard is in
-# the code, and this is what bounds it if it fails.
+# it behind means an operator reconciling a KV path that is gone on purpose.
+#
+# Read that grant as wider than it looks. Ladon renders every ExternalSecret
+# with `creationPolicy: Owner`, so the Kubernetes Secret ESO creates carries an
+# owner reference to it, and deleting the ExternalSecret has the garbage
+# collector delete that Secret too. This rule therefore hands the backend the
+# ability to take a running workload's Secret away, in any namespace, without
+# any grant on Secrets outside the `ladon` namespace. That is the intended
+# outcome of taking an application down, and it is why two guards sit in front
+# of it in the code: the object must record `ladon` as a field manager, and it
+# must belong to the application and namespace the caller named.
+#
+# It is not granted on `ClusterSecretStore`: a store is an application's
+# identity on the cluster, removing one is off-boarding rather than a
+# per-secret call, and a cluster-scoped delete is a blast radius worth not
+# having.
 #
 # There is no access to Secrets outside Ladon's own namespace: a cluster-wide
 # Secret read would make this role a way to exfiltrate every synced value on
