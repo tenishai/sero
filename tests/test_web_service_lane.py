@@ -112,6 +112,16 @@ def sync(client, body=None, *, headers=None):
     )
 
 
+def erase(client, body=None, *, headers=None):
+    """DELETE one machine-lane secret. A body on a DELETE, like the sync one."""
+    return client.request(
+        "DELETE",
+        "/api/service/secrets",
+        json=erase_body() if body is None else body,
+        headers=bearer() if headers is None else headers,
+    )
+
+
 def read(client, *, headers=None, **overrides):
     """GET one path's key names. Arguments travel in the query string."""
     params = {"acting_email": ACTING, "namespace": NAMESPACE, "path": PATH, **overrides}
@@ -147,6 +157,9 @@ class FakeKvV2:
     def create_or_update_secret(self, *, path, secret, mount_point):
         self._store[path] = dict(secret)
         return {"data": {"version": 1}}
+
+    def delete_metadata_and_all_versions(self, *, path, mount_point):
+        self._store.pop(path, None)
 
 
 class FakeClient:
@@ -247,6 +260,17 @@ def put_body(**overrides):
         "namespace": NAMESPACE,
         "path": PATH,
         "values": {"DB_URL": "dummy-new-db-url"},
+        "apply": False,
+    }
+    body.update(overrides)
+    return body
+
+
+def erase_body(**overrides):
+    body = {
+        "acting_email": ACTING,
+        "namespace": NAMESPACE,
+        "path": PATH,
         "apply": False,
     }
     body.update(overrides)
@@ -902,3 +926,114 @@ def test_a_read_spends_the_callers_budget(sessions, store, cluster):
     assert read(limited).status_code == 200
     assert read(limited).status_code == 429
     assert put(limited).status_code == 429
+
+
+# ── Deleting a whole secret ────────────────────────────────────────────
+
+
+def test_a_dry_run_delete_says_what_it_would_remove_and_removes_nothing(client, store):
+    response = erase(client)
+    assert response.status_code == 200
+    assert response.json() == {
+        "applied": False,
+        "namespace": NAMESPACE,
+        "path": PATH,
+        "keys": ["API_KEY", "DB_URL"],
+        "would_delete": True,
+    }
+    assert PATH in store
+
+
+def test_an_applied_delete_removes_the_path(client, store):
+    response = erase(client, erase_body(apply=True))
+    assert response.status_code == 200
+    assert response.json() == {
+        "applied": True,
+        "namespace": NAMESPACE,
+        "path": PATH,
+        "keys": ["API_KEY", "DB_URL"],
+        "deleted": True,
+    }
+    assert PATH not in store
+
+
+def test_deleting_the_same_path_twice_is_not_an_error(client, store):
+    erase(client, erase_body(apply=True))
+    again = erase(client, erase_body(apply=True))
+    assert again.status_code == 200
+    assert again.json()["deleted"] is False
+    assert again.json()["keys"] == []
+
+
+def test_a_dry_run_delete_of_a_path_that_is_not_there_would_delete_nothing(client):
+    response = erase(client, erase_body(path=f"apps/{APP}/nowhere"))
+    assert response.status_code == 200
+    assert response.json()["would_delete"] is False
+    assert response.json()["keys"] == []
+
+
+def test_a_delete_never_returns_a_value(client):
+    response = erase(client, erase_body(apply=True))
+    assert "dummy-api-key-value" not in response.text
+    assert "dum" not in response.text
+
+
+def test_a_delete_needs_a_service_token(client, store):
+    response = client.request("DELETE", "/api/service/secrets", json=erase_body(apply=True))
+    assert response.status_code == 401
+    assert PATH in store
+
+
+def test_a_delete_needs_an_acting_email(client):
+    body = erase_body()
+    del body["acting_email"]
+    assert erase(client, body).status_code == 422
+
+
+def test_a_delete_refuses_a_namespace_the_caller_is_not_pinned_to(client, store):
+    response = erase(client, erase_body(namespace=OTHER_NAMESPACE, apply=True))
+    assert response.status_code == 403
+    assert "delete in" in response.json()["error"]
+    assert PATH in store
+
+
+def test_a_delete_refuses_a_path_outside_the_applications_prefix(client, store):
+    assert erase(client, erase_body(path="platform/demo", apply=True)).status_code == 400
+    assert erase(client, erase_body(path="apps/../platform/demo", apply=True)).status_code == 400
+    assert PATH in store
+
+
+def test_a_delete_is_audited_with_what_it_removed(client, sessions):
+    erase(client, erase_body(apply=True))
+    (row,) = rows(sessions, "service.delete_secret")
+    assert row.status == "ok"
+    assert row.user_email == ACTING
+    assert row.redacted_args["lane"] == "service"
+    assert row.redacted_args["via"] == CALLER
+    assert row.redacted_args["subject"] == SUBJECT
+    assert row.redacted_args["path"] == PATH
+    # Names, so the row still says what was destroyed once the path is gone.
+    assert row.redacted_args["key_names"] == ["API_KEY", "DB_URL"]
+    assert row.redacted_args["existed"] is True
+
+
+def test_a_dry_run_delete_is_audited_as_one(client, sessions):
+    erase(client)
+    (row,) = rows(sessions, "service.delete_secret")
+    assert row.status == "dry-run"
+
+
+def test_a_refused_delete_is_audited(client, sessions):
+    erase(client, erase_body(namespace=OTHER_NAMESPACE, apply=True))
+    (row,) = rows(sessions, "service.delete_secret")
+    assert row.status == "denied"
+    assert row.redacted_args["namespace"] == OTHER_NAMESPACE
+    assert row.redacted_args["via"] == CALLER
+
+
+def test_a_delete_spends_the_callers_budget(sessions, store, cluster):
+    limited = build_client(
+        sessions, store, cluster, service_callers=callers(rate_limit_per_minute=1)
+    )
+    assert erase(limited).status_code == 200
+    assert erase(limited).status_code == 429

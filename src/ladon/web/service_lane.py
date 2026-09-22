@@ -336,6 +336,15 @@ class ServicePutBody(BaseModel):
     apply: bool = False
 
 
+class ServiceDeleteBody(BaseModel):
+    """One application path, removed outright."""
+
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
+    path: str
+    apply: bool = False
+
+
 class ServiceSyncBody(BaseModel):
     """One ExternalSecret, converged against the application's own store."""
 
@@ -550,6 +559,72 @@ def put_secret(
             )
     session.commit()
     return result
+
+
+@router.delete("/service/secrets")
+def delete_secret(
+    body: ServiceDeleteBody,
+    caller: DeleteCaller,
+    session: DbSession,
+    secrets: Secrets,
+    audit: Auditor,
+    environment: DeclaredEnvironment,
+) -> dict[str, Any]:
+    """Remove one application path, and every version of it.
+
+    The other half of provisioning. An application that is taken down leaves
+    its secret behind otherwise, and a KV path nobody is watching is the one
+    whose values go stale in place: still readable, still valid, still the
+    credential somebody rotated everywhere except here.
+
+    Metadata and all versions, so the path is gone rather than soft-deleted. A
+    soft delete leaves something that still lists and can be undeleted, which
+    is not what "remove it" means, and the versions are where the values are.
+
+    Dry run by default, like every write on this lane. Without ``apply`` the
+    answer says what it WOULD delete, by key name, and nothing is touched.
+    With it, deleting a path that is already gone is ``deleted: false`` and a
+    200, because a destroy step that fails when it is run twice is a destroy
+    step nobody can retry.
+    """
+    args = {
+        **_attribution(caller),
+        "acting_email": body.acting_email,
+        "namespace": body.namespace,
+        "path": body.path,
+    }
+    with audit.guard(DELETE_TOOL, body.acting_email, args, session=session):
+        _require_pinned(caller, body.namespace, action="delete in")
+        path = _refuse_outside_apps(body.path)
+        args["path"] = path
+        detail = secrets.get_secret(body.acting_email, body.namespace, path, environment or "")
+        # Names only, read before the delete: afterwards there is nothing left
+        # to ask, and a row that cannot say what was removed is half a record.
+        keys = sorted(detail.masked_keys)
+        deleted = (
+            secrets.delete_secret(body.acting_email, body.namespace, path)
+            if body.apply and detail.exists
+            else False
+        )
+        _audit(
+            session,
+            user_email=body.acting_email,
+            tool_name=DELETE_TOOL,
+            status="ok" if body.apply else "dry-run",
+            args={**args, "key_names": keys, "existed": detail.exists},
+        )
+    session.commit()
+    answer: dict[str, Any] = {
+        "applied": body.apply,
+        "namespace": body.namespace,
+        "path": path,
+        "keys": keys,
+    }
+    if body.apply:
+        answer["deleted"] = deleted
+    else:
+        answer["would_delete"] = detail.exists
+    return answer
 
 
 @router.post("/service/sync")
