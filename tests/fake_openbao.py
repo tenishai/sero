@@ -4,9 +4,9 @@ It serves canned live state, records reads and writes separately (so a test can
 assert that a dry-run wrote nothing), and folds each write back into its own
 state, so a read-back after an apply sees what was written. Shapes mirror hvac:
 mount and auth listings are keyed by ``"<path>/"`` and wrapped in ``data``, a
-path read returns ``{"data": {...}}``, a namespace listing returns its children
-under ``keys``, and a missing object raises :class:`InvalidPath` or reads as
-``None``.
+path read returns ``{"data": {...}}``, a namespace or path listing returns its
+children under ``keys``, a policy listing returns names under ``policies``, and a
+missing object raises :class:`InvalidPath` or reads as ``None``.
 
 State is kept per OpenBao namespace, because that is the isolation the model
 rests on: a mount in one namespace is a different object from the same mount
@@ -62,6 +62,10 @@ class FakeSys:
         if name not in policies:
             raise InvalidPath(f"no policy named {name}")
         return {"data": {"name": name, "rules": policies[name]}}
+
+    def list_policies(self):
+        self._bao.record_read("list_policies")
+        return {"data": {"policies": sorted(self._bao.state().policies)}}
 
     def list_namespaces(self):
         self._bao.record_read("list_namespaces")
@@ -174,6 +178,23 @@ class FakeOpenBao:
         self.record_read("read", path)
         data = self.state().paths.get(path)
         return None if data is None else {"data": dict(data)}
+
+    def list(self, path):
+        # Roles and anything else written by path are stored as paths, so a
+        # listing is the distinct next segment under the prefix. An empty
+        # listing is a 404, the way OpenBao answers it.
+        self.record_read("list", path)
+        prefix = path.rstrip("/") + "/"
+        keys = sorted(
+            {
+                key[len(prefix) :].split("/")[0]
+                for key in self.state().paths
+                if key.startswith(prefix)
+            }
+        )
+        if not keys:
+            raise InvalidPath(f"no keys under {path}")
+        return {"data": {"keys": keys}}
 
     def write_data(self, path, *, data):
         self.record_call("write_data", path, data)

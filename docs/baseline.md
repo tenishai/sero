@@ -152,6 +152,57 @@ about the platform. The command does need the deployment config, because the
 team's OpenBao namespace and the KV mount are facts about the platform and
 guessing either renders an identity that grants access to a path nothing uses.
 
+## Auditing roles and the default policy
+
+Scoped identities are only worth what they are worth today. The objects above
+drift: a role stops refusing the namespace's `default` policy, or `default`
+itself gets widened to unblock something, and from then on every role that
+inherits it has every capability and every scoped policy is decorative. Nothing
+about that is visible from the outside. A role still names its own policy, the
+policy still grants what it always granted, and the login still succeeds. The
+platform this baseline is drawn from ran that way for months, because nothing
+ever looked.
+
+`scripts/ladon audit` looks. It connects read-only, writes nothing, and reports
+one finding per deviation. Each finding carries a severity (`high`, `medium`,
+`low`), a stable code, the object it is about, and a detail that names the path
+and the capability at issue. A policy body is never printed, and neither is a
+field's value: a report is a thing that gets pasted into a ticket.
+
+Per namespace, it checks:
+
+- **every role on every JWT auth mount.** That it sets
+  `token_no_default_policy` (`role-inherits-default`, high), that it does not
+  name `default` among its policies (`default-in-token-policies`, high), that an
+  `eso-` role pins a `bound_subject` (`unbound-subject`, high), that it names at
+  least one policy (`no-token-policies`), that every policy it names exists
+  (`missing-policy`), and that it binds an audience (`unbound-audience`).
+- **the `default` policy body.** That it reaches none of `sys/policies/*`,
+  `sys/auth/*` or `sys/mounts/*` (`default-grants-system`, high), that it grants
+  nothing beyond read and list on a KV mount's `data` and `metadata` paths
+  (`default-widens-kv`, high), and that it grants no `sudo`-like capability
+  anywhere (`default-grants-sudo`, high).
+- **every `eso-<app>-readonly` policy.** That every grant stays inside that
+  application's own prefix or the four token-self paths
+  (`out-of-scope-grant`, high), that no grant reaches another application's
+  prefix (`cross-app-grant`, high), and that nothing beyond read and list is
+  granted on what it can reach (`overbroad-capability`, high).
+
+The KV mounts are read from the namespace rather than assumed, so a deployment
+that renamed its mount is audited against the mount it actually has.
+
+A namespace is clean when it has no `high` findings. The command exits 0 when
+every audited namespace is clean and 3 when any is not, which is what a
+scheduled run keys on; an exit of 2 means the audit could not run at all.
+
+Policy bodies are read with a strict reader of the `path "<p>" { capabilities =
+[...] }` block form Ladon renders, tolerating comments and blank lines. A body
+it cannot read is reported as `unparsed-policy` (medium) rather than crashing
+the run or, worse, being partly understood and silently vouched for. Two things
+it deliberately does not judge: capabilities on a KV mount's `delete`,
+`undelete` and `destroy` paths, and policies other than `default` and the
+per-application ones, which are a deployment's own to shape.
+
 ## Customization model
 
 A deployment is described by configuration, not by edits to Ladon. The

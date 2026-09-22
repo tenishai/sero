@@ -269,6 +269,33 @@ point of view, not a list of commit subjects.
   the pinned chart, the manual initialize and unseal, the backend's own objects,
   the config and bootstrap Secret, the workload, and a port-forward for a first
   look. It says what it deliberately leaves out.
+- `scripts/ladon audit [--config FILE] [--namespace NS] [--json]` reports every
+  role and policy that grants more than it was meant to. For each namespace it
+  reads every role on every JWT auth mount (does it refuse the `default` policy,
+  does it pin a subject and an audience, does every policy it names exist), the
+  `default` policy's own body (does it reach `sys/policies/*`, `sys/auth/*` or
+  `sys/mounts/*`, does it write the KV mount, does it grant `sudo` anywhere),
+  and every `eso-<app>-readonly` policy (does any grant leave the application's
+  own prefix or reach another application's). It connects read-only and writes
+  nothing, so it needs no `--apply`. Without `--namespace` it covers the root
+  plus every team namespace the deployment config names. Human output is one
+  line per finding, `[<namespace>] <severity> <code> <object>: <detail>`, and
+  `--json` carries the same findings for a caller. It exits 0 when every
+  audited namespace is clean, 3 when any has a high finding, and 2 when the
+  audit could not run.
+
+  This is the one deviation a scoped-identity model cannot survive and cannot
+  see: the platform this baseline is drawn from had its `default` policy widened
+  to full KV access plus `sudo` on the policy endpoints, so every role that
+  inherited `default` had every capability and every per-application policy was
+  decorative. Logins kept succeeding and nothing detected it for months.
+
+  Policy bodies are read with a strict reader of the `path "<p>" { capabilities
+  = [...] }` block form Ladon renders, tolerating comments and blank lines and
+  adding no dependency. A body it cannot read becomes a medium `unparsed-policy`
+  finding rather than a crash or, worse, a partial reading that silently vouches
+  for the rest. No finding ever carries a policy body or a field value: it names
+  the object, the path, and the capability.
 
 Proven live on a shared development cluster, against the platform vault:
 
