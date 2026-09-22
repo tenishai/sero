@@ -12,6 +12,8 @@ dependencies = [
   "alembic==1.18.5",
   "mcp==1.28.1",
   "pyjwt==2.13.0",
+  "fastapi==0.141.1",
+  "uvicorn==0.50.2",
 ]
 
 [dependency-groups]
