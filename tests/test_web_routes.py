@@ -14,6 +14,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from starlette.testclient import TestClient
 
+from fake_assertion import SETTINGS as ASSERTION_SETTINGS
+from fake_assertion import token as assertion_token
+from fake_assertion import verifier as assertion_verifier
 from ladon.datastore import repositories as repo
 from ladon.datastore.models import Base, ToolCallLog
 from ladon.mcp.openbao import OpenBaoSecrets
@@ -780,3 +783,49 @@ def test_an_undeclared_environment_pins_nothing(sessions, store, allowed):
         as_member(client, "GET", "/api/namespaces/team-a/secrets/app?env=prod").status_code == 200
     )
     assert as_member(client, "GET", "/api/me").json()["environment"] is None
+
+
+# ── The proxy's assertion ──────────────────────────────────────────────
+
+
+def test_two_identity_headers_are_refused(client):
+    # Duplicated headers mean something on the path is rewriting them, and
+    # picking one is how a proxy's value gets replaced by an attacker's.
+    resp = client.get("/api/me", headers=[(HEADER, MEMBER), (HEADER, "attacker@example.com")])
+    assert resp.status_code == 401
+    assert resp.json() == {"error": "no identity"}
+
+
+def test_a_configured_assertion_is_required_and_decides(sessions, store, allowed):
+    settings = build_settings()
+    groups = ConfigGroupSource(settings.access)
+    secrets = OpenBaoSecrets(
+        client_for=lambda namespace: FakeClient(store),
+        namespaces_for=groups.namespaces_for,
+    )
+    app = create_app(
+        settings,
+        session_factory=sessions,
+        secrets=secrets,
+        groups=groups,
+        assertion_verifier=assertion_verifier(),
+    )
+    client = TestClient(app)
+
+    # No assertion: refused, even with the plain header set.
+    assert client.get("/api/me", headers={HEADER: MEMBER}).status_code == 401
+
+    # A valid assertion decides, and the plain header is ignored.
+    resp = client.get(
+        "/api/me",
+        headers={
+            ASSERTION_SETTINGS.header: assertion_token(email=MEMBER),
+            HEADER: "attacker@example.com",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["email"] == MEMBER
+
+    # A forged one is no identity at all.
+    forged = assertion_token(email=MEMBER, issuer="https://impostor.example.com")
+    assert client.get("/api/me", headers={ASSERTION_SETTINGS.header: forged}).status_code == 401

@@ -78,3 +78,39 @@ def test_the_config_may_not_carry_a_token():
 def test_a_malformed_access_block_is_rejected():
     with pytest.raises(ConfigError):
         load_deployment_config_text("access: [not, a, mapping]\n")
+
+
+ASSERTION_CONFIG = """
+identity:
+  header: x-forwarded-email
+  assertion:
+    header: x-proxy-assertion
+    jwks_url: https://proxy.example.com/keys
+    audience: /projects/example/apps/ladon
+    issuer: https://proxy.example.com
+    email_claim: preferred_username
+"""
+
+
+def test_the_assertion_block_parses():
+    settings = parse_web_settings(load_deployment_config_text(ASSERTION_CONFIG), env={})
+    assertion = settings.identity.assertion
+    assert assertion is not None
+    assert assertion.header == "x-proxy-assertion"
+    assert assertion.jwks_url == "https://proxy.example.com/keys"
+    assert assertion.audience == "/projects/example/apps/ladon"
+    assert assertion.issuer == "https://proxy.example.com"
+    assert assertion.email_claim == "preferred_username"
+
+
+def test_no_assertion_block_means_the_plain_header_applies():
+    settings = parse_web_settings(load_deployment_config_text(CONFIG), env={})
+    assert settings.identity.assertion is None
+
+
+def test_a_half_configured_assertion_is_rejected():
+    # Verifying a signature but not the audience would accept any token the
+    # same proxy signed for any other service.
+    partial = "identity:\n  assertion:\n    jwks_url: https://proxy.example.com/keys\n"
+    with pytest.raises(ConfigError, match="audience"):
+        parse_web_settings(load_deployment_config_text(partial), env={})

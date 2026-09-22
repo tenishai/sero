@@ -19,6 +19,11 @@ from pathlib import Path
 
 from ladon.config.loader import DeploymentConfig, load_deployment_config
 from ladon.config.teams import ConfigError
+from ladon.web.assertion import (
+    DEFAULT_ASSERTION_HEADER,
+    DEFAULT_EMAIL_CLAIM,
+    AssertionSettings,
+)
 
 # The proxy in front of the platform authenticates people and passes the result
 # in this header. Configurable, because the header name is proxy-specific.
@@ -42,6 +47,9 @@ class IdentitySettings:
     # The dev escape hatch (LADON_DEV_IDENTITY) is inert unless this is true, so
     # a deployed instance cannot be talked into trusting an environment variable.
     allow_dev_identity: bool = False
+    # A signed assertion from the proxy. When configured it is required, it is
+    # the identity, and ``header`` is not read: a claim gives way to a proof.
+    assertion: AssertionSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +98,31 @@ def parse_identity(data: object) -> IdentitySettings:
     return IdentitySettings(
         header=header.lower(),
         allow_dev_identity=bool(data.get("allow_dev_identity", False)),
+        assertion=parse_assertion(data.get("assertion")),
+    )
+
+
+def parse_assertion(data: object) -> AssertionSettings | None:
+    """Parse the ``identity.assertion:`` block, or None when there is none.
+
+    Every field that decides whether a token is acceptable is required. A
+    half-configured assertion that verified a signature but not the audience
+    would accept any token the same proxy signed for any other service.
+    """
+    if not data:
+        return None
+    if not isinstance(data, dict):
+        raise ConfigError("'identity.assertion' must be a mapping")
+    missing = [f for f in ("jwks_url", "audience", "issuer") if not data.get(f)]
+    if missing:
+        raise ConfigError(f"'identity.assertion' needs {', '.join(missing)}")
+    header = data.get("header") or DEFAULT_ASSERTION_HEADER
+    return AssertionSettings(
+        jwks_url=str(data["jwks_url"]),
+        audience=str(data["audience"]),
+        issuer=str(data["issuer"]),
+        header=str(header).lower(),
+        email_claim=str(data.get("email_claim") or DEFAULT_EMAIL_CLAIM),
     )
 
 

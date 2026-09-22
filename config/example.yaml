@@ -50,8 +50,22 @@ identity:
   header: x-goog-authenticated-user-email
   # The local development hatch: with this true, LADON_DEV_IDENTITY names the
   # caller and the backend warns at startup that identity is unverified. Leave
-  # it false everywhere a second person can reach the process.
+  # it false everywhere a second person can reach the process. It is ignored
+  # entirely when an assertion is configured below.
   allow_dev_identity: false
+  # The proxy's signed assertion. CONFIGURE THIS whenever the proxy can issue
+  # one: the header above is an unverified claim that anything able to reach
+  # this process can set, while an assertion is a proof. When present it is
+  # required on every request, it decides the identity, and the plain header is
+  # not read at all. Every field is required; verifying a signature without
+  # checking the audience would accept any token the same proxy signed for any
+  # other service. See the trust boundary in docs/backend.md.
+  # assertion:
+  #   header: x-goog-iap-jwt-assertion
+  #   jwks_url: https://proxy.example.com/keys
+  #   audience: /projects/<project-number>/apps/<app-id>
+  #   issuer: https://proxy.example.com
+  #   email_claim: email
 
 # Who may reach which namespaces, and who administers the deployment. A caller
 # gets the union of their direct membership and the namespaces of every group

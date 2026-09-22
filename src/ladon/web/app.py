@@ -33,6 +33,7 @@ from ladon.hygiene import WriteRefused
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.mcp.server import AccessDeniedError
 from ladon.web import routes_admin, routes_secrets
+from ladon.web.assertion import AssertionVerifier
 from ladon.web.deps import Services
 from ladon.web.errors import ApiError
 from ladon.web.groups import ConfigGroupSource, GroupSource
@@ -52,6 +53,7 @@ def create_app(
     secrets: Any | None = None,
     groups: GroupSource | None = None,
     reveal_gate: RevealGate | None = None,
+    assertion_verifier: AssertionVerifier | None = None,
     env: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """Build the application.
@@ -69,12 +71,22 @@ def create_app(
     if secrets is None and settings.openbao_address:
         secrets = _live_secrets(settings, groups)
 
+    if assertion_verifier is None and settings.identity.assertion is not None:
+        assertion_verifier = AssertionVerifier(settings.identity.assertion)
+    if assertion_verifier is None:
+        log.warning(
+            "identity.assertion is not configured: the identity header is an "
+            "unverified claim, and this process must be reachable only through "
+            "the authenticating proxy. See the trust boundary in docs/backend.md."
+        )
+
     app = FastAPI(title="Ladon", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = Services(
         settings=settings,
         identity=IdentityReader(
             header=settings.identity.header,
             dev_identity=resolve_dev_identity(settings.identity, env),
+            assertion=assertion_verifier,
         ),
         groups=groups,
         reveal_gate=reveal_gate or (AllowGate() if settings.reveal_enabled else DenyGate()),

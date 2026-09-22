@@ -8,6 +8,7 @@ normalized before anything authorizes on it.
 import logging
 
 import pytest
+from starlette.datastructures import Headers
 
 from ladon.web.identity import (
     DEV_IDENTITY_ENV,
@@ -34,27 +35,27 @@ def test_normalize_keeps_a_value_whose_colon_is_not_an_issuer_prefix():
 
 def test_reader_returns_the_header_value():
     reader = IdentityReader(header=DEFAULT_IDENTITY_HEADER)
-    headers = {DEFAULT_IDENTITY_HEADER: "accounts.example.com:op@example.com"}
+    headers = Headers({DEFAULT_IDENTITY_HEADER: "accounts.example.com:op@example.com"})
     assert reader.email(headers) == "op@example.com"
 
 
 def test_reader_refuses_a_missing_header():
     reader = IdentityReader(header=DEFAULT_IDENTITY_HEADER)
     with pytest.raises(NoIdentityError):
-        reader.email({})
+        reader.email(Headers({}))
 
 
 def test_reader_refuses_an_empty_header():
     reader = IdentityReader(header=DEFAULT_IDENTITY_HEADER)
     with pytest.raises(NoIdentityError):
-        reader.email({DEFAULT_IDENTITY_HEADER: "   "})
+        reader.email(Headers({DEFAULT_IDENTITY_HEADER: "   "}))
 
 
 def test_dev_identity_is_the_fallback_not_an_override():
     reader = IdentityReader(header=DEFAULT_IDENTITY_HEADER, dev_identity="dev@example.com")
-    assert reader.email({}) == "dev@example.com"
+    assert reader.email(Headers({})) == "dev@example.com"
     # A real proxy header still wins, so switching the hatch on cannot mask it.
-    assert reader.email({DEFAULT_IDENTITY_HEADER: "op@example.com"}) == "op@example.com"
+    assert reader.email(Headers({DEFAULT_IDENTITY_HEADER: "op@example.com"})) == "op@example.com"
 
 
 def test_dev_identity_is_ignored_unless_the_config_allows_it(caplog):
