@@ -16,22 +16,35 @@ files and no OpenBao.
 
 from __future__ import annotations
 
+import re
+
 from ladon.config.loader import DeploymentConfig
 from ladon.config.policies import DEFAULT_KV_MOUNT
 from ladon.config.teams import ConfigError
+
+# A mount is one path segment. The apply layer takes the last segment of
+# "sys/mounts/<mount>" as the mount name, so a value with a separator in it
+# would enable a mount other than the one the config names.
+_MOUNT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
 
 def kv_mount(config: DeploymentConfig) -> str:
     """The deployment's KV mount path, or the baseline default if unset.
 
     Read from ``deployment.kv_mount`` when present. The value must be a non-empty
-    string; anything else is a config error rather than a silent fallback.
+    string and a single path segment; anything else is a config error rather than
+    a silent fallback.
     """
     value = config.settings.get("kv_mount")
     if value is None:
         return DEFAULT_KV_MOUNT
     if not isinstance(value, str) or not value:
         raise ConfigError("deployment.kv_mount must be a non-empty string")
+    if not _MOUNT_RE.match(value):
+        raise ConfigError(
+            f"deployment.kv_mount {value!r} must be a single path segment "
+            "(letters, digits, and _ . -)"
+        )
     return value
 
 

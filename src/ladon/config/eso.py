@@ -92,6 +92,11 @@ def _namespace_conditions(namespaces: list[str]) -> list[dict]:
     ]
 
 
+def _optional_conditions(namespaces: list[str] | None) -> list[dict] | None:
+    """Conditions for a store where the restriction is opt-in, or None."""
+    return _namespace_conditions(list(namespaces)) if namespaces else None
+
+
 def vault_store(
     *,
     name: str,
@@ -154,6 +159,7 @@ def gcpsm_store(
     cluster_name: str,
     cluster_location: str,
     cluster_project_id: str,
+    k8s_namespaces: list[str] | None = None,
     sa_name: str = DEFAULT_ESO_SA,
     sa_namespace: str = DEFAULT_ESO_NAMESPACE,
     api_version: str = DEFAULT_API_VERSION,
@@ -164,6 +170,11 @@ def gcpsm_store(
     Workload Identity. ``project_id`` is the fallback project for short secret
     names; fully qualified ``projects/<p>/secrets/<n>`` remote refs can target any
     project the identity can reach.
+
+    ``k8s_namespaces`` restricts which Kubernetes namespaces may reference this
+    cluster-wide store. Unlike the OpenBao store there is no team namespace to
+    default to, so the restriction is opt-in; set it whenever the store is not
+    meant for the whole cluster.
     """
     require(project_id, "project_id", context="gcpsm_store")
     require(cluster_name, "cluster_name", context="gcpsm_store")
@@ -182,7 +193,7 @@ def gcpsm_store(
             },
         }
     }
-    return _store(name, provider, api_version)
+    return _store(name, provider, api_version, _optional_conditions(k8s_namespaces))
 
 
 def awssm_store(
@@ -190,6 +201,7 @@ def awssm_store(
     name: str,
     region: str,
     role: str | None = None,
+    k8s_namespaces: list[str] | None = None,
     sa_name: str = DEFAULT_ESO_SA,
     sa_namespace: str = DEFAULT_ESO_NAMESPACE,
     api_version: str = DEFAULT_API_VERSION,
@@ -199,6 +211,9 @@ def awssm_store(
     ESO assumes an IAM role through IRSA using its service-account token; no
     access key is stored. ``role`` is an optional role ARN to assume for
     cross-account access; omit it to use the service account's own role.
+
+    ``k8s_namespaces`` restricts which Kubernetes namespaces may reference this
+    cluster-wide store, as on ``gcpsm_store``.
     """
     require(region, "region", context="awssm_store")
     aws: dict = {
@@ -208,7 +223,7 @@ def awssm_store(
     }
     if role:
         aws["role"] = role
-    return _store(name, {"aws": aws}, api_version)
+    return _store(name, {"aws": aws}, api_version, _optional_conditions(k8s_namespaces))
 
 
 def external_secret(

@@ -74,6 +74,19 @@ def test_eso_namespace_is_a_parameter():
     assert role["bound_subject"] == "system:serviceaccount:secrets-operator:external-secrets"
 
 
+def test_eso_service_account_name_is_a_parameter():
+    # The store renderer already lets a deployment name the operator's service
+    # account; the role that trusts it must agree, or the subject will not match.
+    plan = team_onboarding_plan(
+        cluster="team-a",
+        oidc_discovery_url=ISSUER,
+        eso_namespace="secrets-operator",
+        eso_sa="secrets-reader",
+    )
+    role = next(o for o in plan.ops if o.kind == "write-auth-role").data
+    assert role["bound_subject"] == "system:serviceaccount:secrets-operator:secrets-reader"
+
+
 def test_policy_hcl_matches_baseline_eso_read_grant():
     plan = team_onboarding_plan(cluster="team-a", oidc_discovery_url=ISSUER)
     policy = next(o for o in plan.ops if o.kind == "write-policy").data

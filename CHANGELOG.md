@@ -142,7 +142,15 @@ point of view, not a list of commit subjects.
   shown.
 - The conventions lint also rejects cloud region literals, and the regions in
   the Terraform module docs, variables, and tests became placeholders or
-  made-up values.
+  made-up values. It matches the GCP, AWS and Azure region shapes, including
+  government and China partitions, and has its own tests.
+- The GCP Secret Manager and AWS Secrets Manager stores take the same optional
+  Kubernetes namespace restriction as the OpenBao store. It stays opt-in for
+  those two: they are platform-level push targets with no team namespace to
+  default to.
+- Team onboarding takes the External Secrets Operator's service account name as
+  a parameter, so a deployment that renames it can keep the role's bound subject
+  and the store pointing at the same identity.
 
 ### Fixed
 
@@ -164,6 +172,8 @@ point of view, not a list of commit subjects.
   boolean as a string, a one-element list as a bare value, a reordered nested
   claim) no longer read as drift, and a policy that exists but is empty is an
   update rather than a create.
+- `deployment.kv_mount` must be a single path segment. A value with a separator
+  in it would have enabled a mount other than the one the config named.
 - Documentation drift: the baseline auth methods are JWT plus OIDC, with
   Kubernetes auth deliberately excluded, in the roadmap and source review as
   well as the baseline and design documents.

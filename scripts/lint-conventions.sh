@@ -22,6 +22,11 @@
 set -euo pipefail
 
 SCRIPT_PATH="${BASH_SOURCE[0]#./}"
+
+# This script's own tests plant the literals the checks reject, so the region
+# check skips that one file. It is reviewed as fixtures, not as configuration.
+SELFTEST_PATH="tests/test_lint_conventions.py"
+
 fail_count=0
 
 # Collect the files to scan: arguments if given, else all tracked files.
@@ -144,21 +149,26 @@ check_secrets() {
 # Check 5: no cloud region literals -----------------------------------------
 # A real region names where somebody's deployment runs, which is exactly what
 # brand neutrality excludes. Docs and variables use "<region>"; tests use a
-# made-up value. Matches the GCP and AWS region shapes (a direction word after
-# a continent prefix, then a number); other shapes are left to review.
+# made-up value.
+#
+# Two shapes are matched: the GCP/AWS one (a direction after a continent or
+# partition prefix, with the trailing number optional), and the Azure one (a
+# direction joined to a region word). Both are bounded on each side, so
+# "eastbound", "sample-west-2" and "us-eastern" are left alone.
 check_regions() {
   local scan=() f
   for f in "${FILES[@]}"; do
-    [[ "$f" == "$SCRIPT_PATH" ]] && continue
+    [[ "$f" == "$SCRIPT_PATH" || "$f" == "$SELFTEST_PATH" ]] && continue
     scan+=("$f")
   done
   if [[ ${#scan[@]} -eq 0 ]]; then
     echo "ok:   no cloud region literals (no files)"
     return 0
   fi
-  local prefix='(af|ap|ca|eu|il|me|sa|us|asia|australia|europe|northamerica|southamerica)'
-  local direction='(central|east|north|northeast|northwest|south|southeast|southwest|west)'
-  local pattern="(^|[^a-zA-Z0-9-])${prefix}-${direction}-?[0-9]"
+  local prefix='(africa|asia|australia|europe|northamerica|southamerica|af|ap|ca|cn|eu|il|me|sa|us-gov|us)'
+  local direction='(central|northeast|northwest|southeast|southwest|north|south|east|west)'
+  local azure='(north|south|east|west|central)(us|europe|asia|india)[0-9]*'
+  local pattern="(^|[^a-zA-Z0-9-])(${prefix}-${direction}(-?[0-9]+)?|${azure})([^a-zA-Z0-9-]|\$)"
   { grep -nEI -e "$pattern" "${scan[@]}" 2>/dev/null || true; } \
     | report "no cloud region literals"
 }

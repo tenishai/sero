@@ -24,7 +24,16 @@ def run(argv):
     return code, out.getvalue()
 
 
-def test_plan_root_config_renders_without_connecting():
+def refuse_to_connect(*a, **k):
+    raise AssertionError("plan must never connect to OpenBao")
+
+
+def test_plan_root_config_renders_without_connecting(monkeypatch):
+    # Proven by refusing the connection rather than by the absence of an
+    # address: the environment may well have one set.
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", refuse_to_connect)
     code, text = run(["plan", "--phase", "root-config", "--jwt-discovery-url", ISSUER])
     assert code == 0
     assert "enable-secrets-engine sys/mounts/kv" in text
@@ -69,7 +78,10 @@ def test_oidc_without_client_id_is_rejected():
     assert code == 2  # missing --oidc-client-id / --oidc-client-secret-ref
 
 
-def test_plan_team_onboarding_renders():
+def test_plan_team_onboarding_renders(monkeypatch):
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", refuse_to_connect)
     code, text = run(
         [
             "plan",

@@ -122,6 +122,42 @@ def test_gcpsm_store_workload_identity():
     assert wi["serviceAccountRef"]["name"] == "external-secrets"
 
 
+def test_gcpsm_store_can_be_restricted_to_namespaces():
+    store = gcpsm_store(
+        name="gcpsm",
+        project_id="proj",
+        cluster_name="bao-east",
+        cluster_location="example-region1",
+        cluster_project_id="proj",
+        k8s_namespaces=["team-a"],
+    )
+    assert store.manifest["spec"]["conditions"] == [
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "team-a"}}}
+    ]
+
+
+def test_awssm_store_can_be_restricted_to_namespaces():
+    store = awssm_store(name="awssm", region="example-region1", k8s_namespaces=["team-a", "team-b"])
+    assert store.manifest["spec"]["conditions"] == [
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "team-a"}}},
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "team-b"}}},
+    ]
+
+
+def test_cloud_stores_are_unrestricted_by_default():
+    # These are platform-level push targets with no single team namespace to
+    # default to, so the restriction is opt-in rather than assumed.
+    gcp = gcpsm_store(
+        name="g",
+        project_id="p",
+        cluster_name="c",
+        cluster_location="l",
+        cluster_project_id="p",
+    )
+    assert "conditions" not in gcp.manifest["spec"]
+    assert "conditions" not in awssm_store(name="a", region="r").manifest["spec"]
+
+
 def test_gcpsm_store_requires_cluster_fields():
     with pytest.raises(ConfigError, match="cluster_name"):
         gcpsm_store(

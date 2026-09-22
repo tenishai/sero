@@ -139,6 +139,12 @@ def oidc_role(
     ``allowed_redirect_uris`` is required: OIDC login fails closed without it.
     ``bound_groups`` restricts the role to operators in those identity-provider
     groups; an empty value means the role is not group-restricted.
+
+    Unlike ``jwt_role`` this does not set ``token_no_default_policy``. The
+    namespace's ``default`` policy is what lets a token look itself up, renew
+    itself, and revoke itself, which an interactive operator session needs and a
+    workload with a fixed TTL does not. A deployment that has widened its default
+    policy should narrow that policy rather than opt operators out of it.
     """
     if not policies:
         raise ConfigError(f"oidc role {name!r}: 'policies' must be non-empty")
