@@ -504,6 +504,41 @@ def test_verify_reports_an_extra_condition_on_the_live_object():
     ]
 
 
+def test_verify_is_exact_inside_a_store_condition():
+    # A key added beside Ladon's selector keeps the list length and every field
+    # Ladon set, so a subset compare reads clean while the store has been opened
+    # to a namespace Ladon never admitted.
+    doc = store_doc()
+    live = live_from(doc)
+    live["spec"]["conditions"][0]["namespaces"] = ["ns-other"]
+    problems = verify([doc], [live])
+    assert problems == [
+        "ClusterSecretStore/ladon-ns-a-sample: spec.conditions[0].namespaces is not set by Ladon"
+    ]
+    assert "ns-other" not in problems[0]
+
+
+def test_verify_is_exact_inside_the_provider_auth_block():
+    doc = store_doc()
+    doc["spec"]["provider"]["vault"]["auth"] = {"jwt": {"role": "eso-ns-a-sample"}}
+    live = live_from(doc)
+    live["spec"]["provider"]["vault"]["auth"]["tokenSecretRef"] = {"name": "sample"}
+    problems = verify([doc], [live])
+    assert problems == [
+        "ClusterSecretStore/ladon-ns-a-sample: spec.provider.vault.auth.tokenSecretRef "
+        "is not set by Ladon"
+    ]
+
+
+def test_verify_stays_a_subset_outside_the_strict_paths():
+    # Everywhere else a live object may carry what the API server, a controller
+    # or another manager put there; only what Ladon asked for is checked.
+    doc = store_doc()
+    live = live_from(doc)
+    live["spec"]["refreshInterval"] = "1h"
+    assert verify([doc], [live]) == []
+
+
 def test_verify_reports_a_document_missing_from_the_read_back():
     docs = both_docs()
     problems = verify(docs, [live_from(docs[0])])
@@ -787,3 +822,54 @@ def test_a_read_that_fails_for_another_reason_is_an_error():
     runner = FakeRunner(stderr="Error from server (Forbidden): not allowed\n", returncode=1)
     with pytest.raises(K8sError, match="Forbidden"):
         k8s.converge_documents([service_account_doc()], run=runner, dry_run=False)
+
+
+def test_a_key_added_inside_a_condition_is_an_update_and_is_re_applied():
+    # The scenario the strict comparison exists for: a namespace Ladon never
+    # admitted is added beside its selector. Server-side apply treats the
+    # condition list as atomic, so re-applying the document removes it.
+    tampered = store_doc()
+    tampered["spec"]["conditions"][0]["namespaces"] = ["ns-other"]
+    cluster = FakeCluster(live=[tampered])
+
+    report = converge([store_doc()], cluster, dry_run=False)
+    assert report.results[0].action == "update"
+    assert len(cluster.applies) == 1
+    assert "namespaces" not in cluster.stored(store_doc())["spec"]["conditions"][0]
+
+
+def test_a_field_added_outside_the_strict_paths_stays_current():
+    live = store_doc()
+    live["spec"]["refreshInterval"] = "1h"
+    cluster = FakeCluster(live=[live])
+    report = converge([store_doc()], cluster, dry_run=False)
+    assert report.results[0].action == "already current"
+    assert cluster.applies == []
+
+
+def test_a_failure_after_the_write_carries_the_partial_report():
+    # The documents were written; a report that vanished with the exception
+    # would leave an operator not knowing what landed.
+    cluster = FakeCluster(mutate=lambda doc: {k: v for k, v in doc.items() if k != "spec"})
+    with pytest.raises(k8s.ClusterApplyError) as excinfo:
+        converge([service_account_doc(), store_doc()], cluster, dry_run=False)
+    assert [r.action for r in excinfo.value.report.results] == ["create", "create"]
+    assert "spec" in str(excinfo.value)
+
+
+def test_a_read_back_that_fails_after_the_write_also_carries_the_report():
+    calls = {"applied": False}
+
+    def handler(argv, stdin):
+        if argv[1] == "apply":
+            calls["applied"] = True
+            return _Result(argv, stdout="serviceaccount/eso-ns-a-sample created\n")
+        if calls["applied"]:
+            return _Result(argv, returncode=1, stderr="Error from server (Forbidden): no\n")
+        return _Result(argv, returncode=1, stderr='Error from server (NotFound): "x" not found\n')
+
+    with pytest.raises(k8s.ClusterApplyError) as excinfo:
+        k8s.converge_documents(
+            [service_account_doc()], run=FakeRunner(handler=handler), dry_run=False
+        )
+    assert [r.action for r in excinfo.value.report.results] == ["create"]

@@ -97,6 +97,17 @@ UNKNOWN_VERSION = "unknown"
 VERIFIED_TOP_LEVEL_FIELDS = ("spec", "automountServiceAccountToken")
 VERIFIED_METADATA_FIELDS = ("labels", "annotations")
 
+# Subtrees where a subset comparison is not safe, so the live object may hold
+# nothing Ladon did not set. Both of these are places where one added key widens
+# access while every field Ladon wrote still reads back unchanged: a `namespaces`
+# list beside a store's `namespaceSelector` admits a namespace Ladon never
+# admitted, and a second entry in a provider's `auth` block is another way to
+# authenticate. Everywhere else the subset rule stands, because a live object
+# legitimately carries what the API server, a controller or another manager put
+# there. Paths are dotted field paths, and strictness is inherited by everything
+# below them, list entries included.
+STRICT_PATHS = frozenset({"spec.conditions", "spec.provider.vault.auth"})
+
 # kubectl prints one line per object: "<resource>/<name> <verb>", with a
 # "(server dry run)" suffix on a server dry-run.
 _RESULT_LINE = re.compile(
@@ -127,6 +138,19 @@ _MISSING = object()
 
 class K8sError(RuntimeError):
     """A kubectl invocation failed, or kubectl is unavailable."""
+
+
+class ClusterApplyError(K8sError):
+    """An apply failed after documents were already written.
+
+    Carries the report of what the apply did, so a caller can print it before
+    the error: the write happened, and an operator who cannot see what landed
+    has to go and look by hand.
+    """
+
+    def __init__(self, message: str, *, report: ApplyReport):
+        super().__init__(message)
+        self.report = report
 
 
 class ESONotInstalledError(K8sError):
@@ -337,11 +361,20 @@ def converge_documents(
             results.append(ApplyResult(kind, namespace, name, actions[index]))
             landed.append(doc)
 
+    report = ApplyReport(results=tuple(results), dry_run=dry_run)
     if not dry_run and landed:
-        problems = verify(landed, read_back(landed, run=run))
+        # Past this point the documents are written, so every failure carries
+        # the report: what landed is what a caller has to be told about.
+        try:
+            problems = verify(landed, read_back(landed, run=run))
+        except K8sError as exc:
+            raise ClusterApplyError(str(exc), report=report) from exc
         if problems:
-            raise K8sError("the cluster did not store what Ladon applied: " + "; ".join(problems))
-    return ApplyReport(results=tuple(results), dry_run=dry_run)
+            raise ClusterApplyError(
+                "the cluster did not store what Ladon applied: " + "; ".join(problems),
+                report=report,
+            )
+    return report
 
 
 def read_one(doc: dict, *, missing_ok: bool = False, run: Runner = run) -> dict | None:
@@ -384,6 +417,10 @@ def verify(docs: Iterable[dict], live: Iterable[dict]) -> list[str]:
     compared as subsets (key order is meaningless), lists element by element in
     order, with a length difference reported: an extra entry in a store's
     ``conditions`` widens who may use it, so it is drift, not noise.
+
+    Under :data:`STRICT_PATHS` the subset rule is off and a key the document
+    does not set is itself a mismatch, because inside those subtrees an added
+    key widens access while everything Ladon wrote still reads back unchanged.
     """
     index = {_identify(obj): obj for obj in live}
     problems: list[str] = []
@@ -396,7 +433,9 @@ def verify(docs: Iterable[dict], live: Iterable[dict]) -> list[str]:
             continue
         for key in VERIFIED_TOP_LEVEL_FIELDS:
             if key in doc:
-                problems += _compare(doc[key], obj.get(key, _MISSING), f"{target}: {key}")
+                problems += _compare(
+                    doc[key], obj.get(key, _MISSING), f"{target}: {key}", field=key
+                )
         desired_meta = doc.get("metadata", {})
         live_meta = obj.get("metadata", {})
         for key in VERIFIED_METADATA_FIELDS:
@@ -405,6 +444,7 @@ def verify(docs: Iterable[dict], live: Iterable[dict]) -> list[str]:
                     desired_meta[key],
                     live_meta.get(key, _MISSING),
                     f"{target}: metadata.{key}",
+                    field=f"metadata.{key}",
                 )
     return problems
 
@@ -416,6 +456,12 @@ def eso_api_version(*, run: Runner = run) -> str:
     resource at a version the cluster does not store is the API mismatch
     deployment-order.md warns about. Raises when the CRDs are absent: that is a
     cluster without an operator, not a cluster on an older version.
+
+    One CRD is read and its answer is taken for the group: an operator installs
+    its custom resource definitions as a unit, so ``ExternalSecret`` and
+    ``ClusterSecretStore`` are stored at the same version wherever one operator
+    owns them, which is what D18a keeps true. Probe per kind if a deployment
+    ever splits that ownership.
     """
     resources = run(["kubectl", "api-resources", f"--api-group={ESO_API_GROUP}", "-o", "name"])
     if resources.returncode != 0:
@@ -577,15 +623,30 @@ def _first_line(text: str) -> str:
     return "no output"
 
 
-def _compare(desired: Any, live: Any, path: str) -> list[str]:
+def _compare(desired: Any, live: Any, path: str, *, field: str, strict: bool = False) -> list[str]:
+    """Compare one field, reporting paths and never values.
+
+    ``path`` is what a message says; ``field`` is the dotted field path the
+    strict rule is keyed on, which list indexes do not extend, so strictness
+    covers every entry of a strict list alike.
+    """
     if live is _MISSING:
         return [f"{path} is missing from the live object"]
     if isinstance(desired, dict):
         if not isinstance(live, dict):
             return [f"{path} has a different shape in the live object"]
         problems: list[str] = []
+        if strict:
+            problems += [f"{path}.{key} is not set by Ladon" for key in live if key not in desired]
         for key, value in desired.items():
-            problems += _compare(value, live.get(key, _MISSING), f"{path}.{key}")
+            child = f"{field}.{key}" if field else key
+            problems += _compare(
+                value,
+                live.get(key, _MISSING),
+                f"{path}.{key}",
+                field=child,
+                strict=strict or child in STRICT_PATHS,
+            )
         return problems
     if isinstance(desired, list):
         if not isinstance(live, list):
@@ -594,7 +655,7 @@ def _compare(desired: Any, live: Any, path: str) -> list[str]:
             return [f"{path} has {_entries(len(desired))}, the live object has {len(live)}"]
         problems = []
         for index, (want, got) in enumerate(zip(desired, live, strict=True)):
-            problems += _compare(want, got, f"{path}[{index}]")
+            problems += _compare(want, got, f"{path}[{index}]", field=field, strict=strict)
         return problems
     if desired != live:
         return [f"{path} differs from the live object"]

@@ -689,8 +689,27 @@ def test_a_cluster_that_did_not_store_what_was_applied_is_an_error(tmp_path, mon
     monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
     use_cluster(monkeypatch, cluster)
 
-    code, _ = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
+    code, text = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
     assert code == 2
+    # The documents were written, so the report is printed before the failure:
+    # an operator has to know what landed.
+    assert cluster_lines(text) == [
+        f"[cluster] create ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] create ClusterSecretStore/{APP_STORE}",
+    ]
+
+
+def test_a_cluster_half_that_is_wholly_blocked_does_not_claim_a_write(tmp_path, monkeypatch):
+    client = FakeOpenBao()
+    cluster = FakeCluster(blocked=[APP_IDENTITY, APP_STORE])
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster)
+
+    code, text = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
+    assert code == 2
+    assert "Cluster documents (nothing applied):" in text
+    assert [line.split(" ")[1] for line in cluster_lines(text)] == ["blocked", "blocked"]
 
 
 # The sync phase ---------------------------------------------------------------
@@ -731,14 +750,17 @@ def test_apply_sync_converges_the_external_secret(monkeypatch):
     monkeypatch.setattr(cli, "connect", refuse_to_connect)
     use_cluster(monkeypatch, cluster)
 
+    note = "(apps/sample/demo -> Secret/sample-demo)"
     code, first = run(["apply", *sync_argv(), "--apply"])
     assert code == 0
-    assert cluster_lines(first) == ["[cluster] create ExternalSecret/ladon-sample/sample-demo"]
+    assert cluster_lines(first) == [
+        f"[cluster] create ExternalSecret/ladon-sample/sample-demo {note}"
+    ]
 
     code, second = run(["apply", *sync_argv(), "--apply"])
     assert code == 0
     assert cluster_lines(second) == [
-        "[cluster] already current ExternalSecret/ladon-sample/sample-demo"
+        f"[cluster] already current ExternalSecret/ladon-sample/sample-demo {note}"
     ]
     assert len(cluster.applies) == 1
 
@@ -843,3 +865,45 @@ def test_a_converged_cluster_half_says_so_rather_than_claiming_a_write(tmp_path,
     _, second = run(argv)
     assert "Cluster documents: every document is already current." in second
     assert "(applied)" not in second
+
+
+def test_sync_names_the_path_and_the_target_secret_before_applying(monkeypatch):
+    # Secrets hygiene: a dry-run shows the path and the sync target, never a
+    # value, so what is about to be wired is reviewable.
+    cluster = FakeCluster()
+    use_cluster(monkeypatch, cluster)
+    code, text = run(["apply", *sync_argv("--target-name", "sample-credentials")])
+    assert code == 0
+    assert cluster_lines(text) == [
+        "[cluster] create ExternalSecret/ladon-sample/sample-demo "
+        "(apps/sample/demo -> Secret/sample-credentials)"
+    ]
+
+
+def test_sync_defaults_the_namespace_to_the_application(monkeypatch):
+    cluster = FakeCluster()
+    use_cluster(monkeypatch, cluster)
+    argv = [
+        "plan",
+        "--phase",
+        "sync",
+        "--team",
+        "team-a",
+        "--app",
+        "sample",
+        "--path",
+        "apps/sample/demo",
+        "--name",
+        "sample-demo",
+    ]
+    code, text = run(argv)
+    assert code == 0
+    assert "namespace: sample" in text
+
+
+def test_sync_refuses_a_path_that_climbs_out_of_the_prefix(monkeypatch):
+    cluster = FakeCluster()
+    use_cluster(monkeypatch, cluster)
+    code, _ = run(["apply", *sync_argv()[:6], "--path", "apps/sample/../other", *sync_argv()[8:]])
+    assert code == 2
+    assert cluster.calls == []

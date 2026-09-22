@@ -77,9 +77,11 @@ from ladon.hygiene import has_url_userinfo
 from ladon.install.eso import DEFAULT_NAMESPACE as ESO_NAMESPACE
 from ladon.install.eso import ESORelease, install_eso
 from ladon.install.helm import HelmError
-from ladon.install.k8s import ALREADY_CURRENT as CLUSTER_ALREADY_CURRENT
+from ladon.install.k8s import CREATE as CLUSTER_CREATE
+from ladon.install.k8s import UPDATE as CLUSTER_UPDATE
 from ladon.install.k8s import (
     ApplyReport,
+    ClusterApplyError,
     K8sError,
     converge_documents,
     detect_eso,
@@ -210,8 +212,10 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "app-onboarding: the one Kubernetes namespace allowed to use the "
-            "application's store; defaults to the application name. sync: the "
-            "namespace the ExternalSecret and its Secret live in (required)."
+            "application's store. sync: the namespace the ExternalSecret and "
+            "its Secret live in; a namespace the store does not admit is "
+            "refused by the store at refresh time, not here. Both default to "
+            "the application name."
         ),
     )
     p.add_argument(
@@ -444,7 +448,6 @@ def build_sync_document(args: argparse.Namespace) -> dict:
             ("--team", args.team),
             ("--app", args.app),
             ("--path", args.path),
-            ("--k8s-namespace", args.k8s_namespace),
             ("--name", args.name),
         )
         if not value
@@ -453,7 +456,11 @@ def build_sync_document(args: argparse.Namespace) -> dict:
         raise ConfigError(f"sync requires {' and '.join(missing)}")
     return external_secret(
         name=args.name,
-        namespace=args.k8s_namespace,
+        # The same default onboarding uses, so the common case (one application,
+        # one namespace of its own) needs no flag. A namespace the store does
+        # not admit is refused by the store at refresh time, not here: which
+        # namespaces a store admits is the store's to say.
+        namespace=args.k8s_namespace or args.app,
         store_name=app_store_name(team=args.team, app=args.app),
         kv_path=_checked_app_path(args.app, args.path),
         secret_name=args.target_name or args.name,
@@ -467,7 +474,17 @@ def _checked_app_path(app: str, path: str) -> str:
     The application's policy grants read on ``apps/<app>`` and nothing else, so
     a path outside it renders a document that looks right and is refused at
     refresh time, in ESO's logs, later.
+
+    A relative segment is refused before the prefix is tested: ``.`` and ``..``
+    read as inside the prefix while naming something else, and whether a reader
+    resolves them at all differs between the policy engine and the store.
     """
+    segments = path.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        raise ConfigError(
+            f"sync: --path {path!r} has an empty or relative segment; give the "
+            "path as it is stored, with no '.' or '..'"
+        )
     prefix = f"{APP_PATH_SEGMENT}/{app}"
     if path != prefix and not path.startswith(f"{prefix}/"):
         raise ConfigError(
@@ -559,8 +576,15 @@ def _run_apply(args: argparse.Namespace, out) -> int:
         return 2
 
     if documents:
-        report = converge_documents(documents, dry_run=not args.apply)
-        _print_cluster_report(report, out)
+        notes = _document_notes(documents)
+        try:
+            report = converge_documents(documents, dry_run=not args.apply)
+        except ClusterApplyError as exc:
+            # The documents were written before this failed, so what landed is
+            # reported before the error line names what went wrong.
+            _print_cluster_report(exc.report, out, notes=notes)
+            raise
+        _print_cluster_report(report, out, notes=notes)
         if report.blocked:
             print(
                 f"\n{len(report.blocked)} cluster document(s) blocked. Resolve them on the "
@@ -631,19 +655,44 @@ def _print_diffs(result, out) -> None:
         print(f"  {diff.render()}", file=out)
 
 
-def _print_cluster_report(report: ApplyReport, out) -> None:
+def _document_notes(documents: list[dict]) -> dict[tuple[str, str | None, str], str]:
+    """What a document does, for the documents whose target is not in the name.
+
+    An ``ExternalSecret`` is the one that carries a secret somewhere: the report
+    names the path it reads and the Secret it fills, never a value, so the
+    dry-run shows what is about to be wired before it is wired.
+    """
+    notes = {}
+    for document in documents:
+        if document.get("kind") != "ExternalSecret":
+            continue
+        metadata = document.get("metadata", {})
+        spec = document.get("spec", {})
+        key = spec.get("dataFrom", [{}])[0].get("extract", {}).get("key", "")
+        target = spec.get("target", {}).get("name", "")
+        notes[("ExternalSecret", metadata.get("namespace"), metadata.get("name", ""))] = (
+            f"{key} -> Secret/{target}"
+        )
+    return notes
+
+
+def _print_cluster_report(report: ApplyReport, out, *, notes=None) -> None:
     """One line per document: what it did (or would do) to the cluster."""
+    notes = notes or {}
     if report.dry_run:
         header = "Cluster documents (server dry run):"
-    elif any(r.action != CLUSTER_ALREADY_CURRENT for r in report.results):
+    elif any(r.action in (CLUSTER_CREATE, CLUSTER_UPDATE) for r in report.results):
         header = "Cluster documents (applied):"
+    elif report.blocked:
+        header = "Cluster documents (nothing applied):"
     else:
         header = "Cluster documents: every document is already current."
     print(f"\n{header}", file=out)
     for result in report.results:
         line = f"  [cluster] {result.action} {result.target}"
-        if result.reason:
-            line += f" ({result.reason})"
+        for detail in (notes.get((result.kind, result.namespace, result.name)), result.reason):
+            if detail:
+                line += f" ({detail})"
         print(line, file=out)
 
 
