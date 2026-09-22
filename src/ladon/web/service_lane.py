@@ -61,6 +61,7 @@ from ladon.install.k8s import (
     converge_documents,
     delete_documents,
     eso_api_version,
+    read_one,
 )
 from ladon.mcp.server import (
     AccessDeniedError,
@@ -197,6 +198,7 @@ class ClusterSync:
     api_version: Callable[[], str] = eso_api_version
     converge: Callable[..., ApplyReport] = converge_documents
     remove: Callable[..., ApplyReport] = delete_documents
+    read: Callable[..., dict[str, Any] | None] = read_one
 
 
 @dataclass(frozen=True)
@@ -765,12 +767,32 @@ def unsync_secret(
     identity rather than about one of its secrets. That belongs to an operator
     and an apply phase, not to a per-secret call on the machine lane.
 
-    An object whose live field manager is not ``ladon`` is refused with a
-    ``409`` naming the manager that does own it, the same rule the apply side
-    follows in never passing ``--force-conflicts``. Same pinning as the POST:
-    the object may land, and be removed, in the application's own Kubernetes
-    namespace, or one pinned to the caller. Dry run by default, and removing
-    an object that is already gone is not an error.
+    This removes the target Secret with it. Ladon renders every ExternalSecret
+    with ``creationPolicy: Owner``, so the Kubernetes Secret carries an owner
+    reference to it and the garbage collector takes the Secret when the owner
+    goes. That is the intended outcome of taking an application down, and it is
+    also the reason the checks below are what they are: the blast radius of
+    this route is a running workload's Secret, not one custom resource.
+
+    Three things are checked before anything is deleted.
+
+    * **The object is Ladon's.** A live field manager that is not ``ladon`` is
+      a ``409`` naming the manager that does own it, the same rule the apply
+      side follows in never passing ``--force-conflicts``.
+    * **The object belongs to the application the caller named, in the
+      namespace the caller is pinned to.** ``app`` is a field in the body and
+      ``k8s_namespace`` defaults to it, so without this a caller pinned to one
+      OpenBao namespace could name any application at all and reach an
+      ExternalSecret that Ladon manages for somebody else, passing the
+      ownership check on the way. The live object has to read through this
+      application's own store, whose name is derived here exactly as the POST
+      derives it, and to pull a path inside ``apps/<app>/``. Either mismatch is
+      a ``403``.
+    * **The caller may place objects there**, the same pinning as the POST: the
+      application's own Kubernetes namespace, or one pinned to the caller.
+
+    Dry run by default, and removing an object that is already gone is not an
+    error.
     """
     k8s_namespace = body.k8s_namespace or body.app
     args = {
@@ -786,31 +808,53 @@ def unsync_secret(
         # The target rule has nothing to decide here: a removal names no
         # Secret to adopt, so the object's own name stands in for it.
         _require_cluster_target(caller, body.app, k8s_namespace, name=body.name, target=body.name)
+        store = _store_for(body.namespace, body.app)
+        args["store"] = store
         cluster = lane(request).cluster
         document = external_secret_ref(
             name=body.name,
             namespace=k8s_namespace,
             api_version=_cluster_call(cluster.api_version),
         )
+        # Read before the removal to check whose object this is. The removal
+        # reads again, at the moment it deletes, to check the field manager;
+        # these are different questions and the second one is the one that has
+        # to be fresh. Nothing a caller can do changes the answer in between:
+        # editing the live object would take cluster write access, which is
+        # not what this lane hands out.
+        live = _cluster_call(cluster.read, document, missing_ok=True)
+        cascades = False
+        if live is not None:
+            _require_the_applications_own(
+                live, store=store, app=body.app, name=body.name, k8s_namespace=k8s_namespace
+            )
+            cascades = _owns_its_target(live)
         report = _cluster_call(cluster.remove, [document], dry_run=not body.apply)
+        outcome = report.results[0].action
         _audit(
             session,
             user_email=body.acting_email,
             tool_name=UNSYNC_TOOL,
             status="ok" if body.apply else "dry-run",
-            args={**args, "outcome": report.results[0].action},
+            args={**args, "outcome": outcome, "removes_target_secret": cascades},
         )
     session.commit()
-    return {
+    answer: dict[str, Any] = {
         "applied": body.apply,
         "namespace": body.namespace,
         "app": body.app,
+        "store": store,
         "k8s_namespace": k8s_namespace,
         "name": body.name,
-        # False when the object was already gone, which is a success.
-        "deleted": report.results[0].action == DELETE,
+        # The Kubernetes Secret goes with the ExternalSecret that owns it, and
+        # a caller about to take a workload's Secret away should be told so by
+        # the dry run rather than find out from the workload.
+        "removes_target_secret": cascades,
         "report": report.lines(),
     }
+    # False when the object was already gone, which is a success either way.
+    answer["deleted" if body.apply else "would_delete"] = outcome == DELETE
+    return answer
 
 
 # ── Internals ──────────────────────────────────────────────────────────
@@ -878,6 +922,59 @@ def _require_cluster_target(
             f"the service caller {caller.name!r} may not name a target Secret "
             f"in Kubernetes namespace {k8s_namespace!r}"
         )
+
+
+def _require_the_applications_own(
+    live: dict[str, Any], *, store: str, app: str, name: str, k8s_namespace: str
+) -> None:
+    """Refuse an ExternalSecret that is not this application's, in this namespace.
+
+    The ownership check says Ladon manages the object. It does not say which of
+    Ladon's tenants it belongs to, and everything that names the object here is
+    a field in the request body: a caller pinned to one OpenBao namespace could
+    otherwise name another team's application and remove a live workload's
+    ExternalSecret, taking the Secret it owns with it.
+
+    Two properties of the live object answer that, and both come from how
+    onboarding builds one. It reads through that application's own store, whose
+    name is derived from the namespace this caller is pinned to, so a store
+    name that does not match means the object is somebody else's. And it pulls
+    a path inside ``apps/<app>/``, which is the only prefix that application's
+    identity can read; an object with no ``dataFrom`` extract at all is not one
+    Ladon rendered.
+
+    The refusals name store names and the prefix, which are configuration. They
+    never quote the live object's own key: which path another team's
+    ExternalSecret reads is that team's business, and a refusal is not a reason
+    to hand it to the caller that asked for something it may not have.
+    """
+    spec = live.get("spec") or {}
+    reference = (spec.get("secretStoreRef") or {}).get("name")
+    if reference != store:
+        raise AccessDeniedError(
+            f"the ExternalSecret {name!r} in Kubernetes namespace {k8s_namespace!r} reads "
+            f"through store {reference!r}, not {store!r}; it does not belong to application "
+            f"{app!r} in this caller's namespace"
+        )
+    prefix = f"apps/{app}/"
+    keys = [(entry.get("extract") or {}).get("key") for entry in spec.get("dataFrom") or []]
+    if not keys or not all(isinstance(key, str) and key.startswith(prefix) for key in keys):
+        raise AccessDeniedError(
+            f"the ExternalSecret {name!r} in Kubernetes namespace {k8s_namespace!r} does not "
+            f"read a path under {prefix!r}; it does not belong to application {app!r}"
+        )
+
+
+# ESO's default when a document names none, and what Ladon always renders: the
+# Secret carries an owner reference to the ExternalSecret, so removing the one
+# removes the other.
+OWNER_CREATION_POLICY = "Owner"
+
+
+def _owns_its_target(live: dict[str, Any]) -> bool:
+    """Whether removing this object removes the Kubernetes Secret with it."""
+    target = ((live.get("spec") or {}).get("target")) or {}
+    return str(target.get("creationPolicy", OWNER_CREATION_POLICY)) == OWNER_CREATION_POLICY
 
 
 def _store_for(namespace: str, app: str) -> str:

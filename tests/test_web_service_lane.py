@@ -22,10 +22,11 @@ from fake_assertion import ISSUER, JWKS_URL, KEY, KID, OTHER_KEY, jwks, token
 from fake_assertion import SETTINGS as ASSERTION_SETTINGS
 from fake_assertion import token as assertion_token
 from fake_assertion import verifier as assertion_verifier
-from fake_cluster import FakeCluster
+from fake_cluster import FakeCluster, eso_status_entry, managed_field_entry
+from ladon.config.apps import app_store_name
 from ladon.config.teams import ConfigError
 from ladon.datastore.models import Base, ToolCallLog
-from ladon.install.k8s import converge_documents, delete_documents
+from ladon.install.k8s import converge_documents, delete_documents, read_one
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.web.app import create_app
 from ladon.web.assertion import STALE_KEYS_MAX_SECONDS
@@ -265,6 +266,7 @@ def build_client(
             api_version=lambda: "v1",
             converge=lambda docs, **kwargs: converge_documents(docs, run=cluster, **kwargs),
             remove=lambda docs, **kwargs: delete_documents(docs, run=cluster, **kwargs),
+            read=lambda doc, **kwargs: read_one(doc, run=cluster, **kwargs),
         ),
         now=clock or (lambda: 0.0),
     )
@@ -1090,6 +1092,50 @@ def external_secret_is_live(client, cluster):
     assert len(cluster.objects) == 1
 
 
+def live_external_secret(
+    *,
+    managers=("ladon",),
+    store=None,
+    key=PATH,
+    k8s_namespace=DEFAULT_K8S_NAMESPACE,
+    name="sample-demo",
+    creation_policy="Owner",
+    eso_status=True,
+):
+    """An ExternalSecret as the cluster holds one, with managed fields.
+
+    Defaults to what the POST route renders for this caller's application, so
+    a test changes only the one property it is about.
+    """
+    entries = [managed_field_entry(m) for m in managers]
+    if eso_status:
+        entries.append(eso_status_entry())
+    return {
+        "apiVersion": "external-secrets.io/v1",
+        "kind": "ExternalSecret",
+        "metadata": {
+            "name": name,
+            "namespace": k8s_namespace,
+            "managedFields": entries,
+        },
+        "spec": {
+            "refreshInterval": "1h",
+            "secretStoreRef": {
+                "name": app_store_name(team=NAMESPACE, app=APP) if store is None else store,
+                "kind": "ClusterSecretStore",
+            },
+            "target": {"name": name, "creationPolicy": creation_policy},
+            "dataFrom": [{"extract": {"key": key}}],
+        },
+    }
+
+
+def lane_over(sessions, store, live, **overrides):
+    """A client whose cluster already holds these objects."""
+    cluster = FakeCluster(live=live)
+    return build_client(sessions, store, cluster, service_callers=callers(**overrides)), cluster
+
+
 def test_a_dry_run_unsync_says_what_it_would_remove_and_removes_nothing(client, cluster):
     external_secret_is_live(client, cluster)
     response = unsync(client)
@@ -1098,10 +1144,12 @@ def test_a_dry_run_unsync_says_what_it_would_remove_and_removes_nothing(client, 
         "applied": False,
         "namespace": NAMESPACE,
         "app": APP,
+        "store": app_store_name(team=NAMESPACE, app=APP),
         "k8s_namespace": DEFAULT_K8S_NAMESPACE,
         "name": "sample-demo",
-        "deleted": True,
+        "removes_target_secret": True,
         "report": ["ExternalSecret/sample/sample-demo: delete"],
+        "would_delete": True,
     }
     assert cluster.deletes == []
     assert len(cluster.objects) == 1
@@ -1132,40 +1180,130 @@ def test_unsyncing_an_object_that_was_never_there_is_not_an_error(client, cluste
     assert response.json()["deleted"] is False
 
 
-def test_unsync_refuses_an_object_another_field_manager_owns(sessions, store):
-    # Somebody else's ExternalSecret, at the name this caller asked for.
-    theirs = {
-        "apiVersion": "external-secrets.io/v1",
-        "kind": "ExternalSecret",
-        "metadata": {
-            "name": "sample-demo",
-            "namespace": DEFAULT_K8S_NAMESPACE,
-            "managedFields": [{"manager": "another-controller", "operation": "Apply"}],
-        },
-    }
-    cluster = FakeCluster(live=[theirs])
-    client = build_client(sessions, store, cluster, service_callers=callers())
+def test_unsync_refuses_an_object_a_client_side_apply_has_taken_over(sessions, store):
+    # The application's own ExternalSecret, but `kubectl apply` without
+    # --server-side has replaced Ladon's managed-fields entry with its own.
+    # Whatever maintains it now is not Ladon, and removing it would take the
+    # workload's Secret with it.
+    taken = live_external_secret(managers=("kubectl-client-side-apply",))
+    client, cluster = lane_over(sessions, store, [taken])
 
     response = unsync(client, unsync_body(apply=True))
     assert response.status_code == 409
-    assert "another-controller" in response.json()["error"]
+    assert "kubectl-client-side-apply" in response.json()["error"]
     assert cluster.deletes == []
     assert len(cluster.objects) == 1
 
 
-def test_a_dry_run_unsync_refuses_a_foreign_object_too(sessions, store):
-    theirs = {
-        "apiVersion": "external-secrets.io/v1",
-        "kind": "ExternalSecret",
-        "metadata": {
-            "name": "sample-demo",
-            "namespace": DEFAULT_K8S_NAMESPACE,
-            "managedFields": [{"manager": "another-controller", "operation": "Apply"}],
-        },
-    }
-    cluster = FakeCluster(live=[theirs])
-    client = build_client(sessions, store, cluster, service_callers=callers())
+def test_a_dry_run_unsync_refuses_a_taken_over_object_too(sessions, store):
+    taken = live_external_secret(managers=("kubectl-client-side-apply",))
+    client, _ = lane_over(sessions, store, [taken])
     assert unsync(client).status_code == 409
+
+
+def test_esos_status_entry_does_not_make_the_object_esos(sessions, store):
+    # Every ExternalSecret Ladon applies carries an external-secrets entry for
+    # the status subresource. Reading that as ownership would refuse every
+    # object on the cluster.
+    client, cluster = lane_over(sessions, store, [live_external_secret()])
+    assert unsync(client, unsync_body(apply=True)).status_code == 200
+    assert cluster.objects == {}
+
+
+# ── Whose ExternalSecret is it ─────────────────────────────────────────
+
+
+def test_unsync_refuses_another_applications_object_in_this_callers_reach(sessions, store):
+    # The finding this check exists for. `app` is a body field and
+    # k8s_namespace defaults to it, so a caller pinned to one OpenBao namespace
+    # names another team's application: the object is real, Ladon manages it,
+    # and the ownership check alone would let it through. Removing it takes a
+    # running workload's Secret with it.
+    theirs = live_external_secret(
+        store=app_store_name(team="payments", app="payments"),
+        key="apps/payments/payments-db",
+        k8s_namespace="payments",
+        name="payments-db",
+    )
+    client, cluster = lane_over(sessions, store, [theirs])
+
+    response = unsync(
+        client,
+        unsync_body(app="payments", k8s_namespace="payments", name="payments-db", apply=True),
+    )
+    assert response.status_code == 403
+    assert cluster.deletes == []
+    assert len(cluster.objects) == 1
+
+
+def test_the_refusal_names_the_stores_and_not_the_path_it_reads(sessions, store):
+    theirs = live_external_secret(
+        store=app_store_name(team="payments", app="payments"),
+        key="apps/payments/payments-db",
+        k8s_namespace="payments",
+        name="payments-db",
+    )
+    client, _ = lane_over(sessions, store, [theirs])
+    error = unsync(
+        client, unsync_body(app="payments", k8s_namespace="payments", name="payments-db")
+    ).json()["error"]
+    # The store names are configuration and say what is wrong. Which path
+    # somebody else's object reads is not this caller's business.
+    assert app_store_name(team="payments", app="payments") in error
+    assert app_store_name(team=NAMESPACE, app="payments") in error
+    assert "payments-db" in error
+    assert "apps/payments/payments-db" not in error
+
+
+def test_unsync_refuses_an_object_that_reads_outside_the_applications_prefix(sessions, store):
+    # Right store, wrong path: not something onboarding rendered.
+    odd = live_external_secret(key="apps/other/demo")
+    client, cluster = lane_over(sessions, store, [odd])
+    response = unsync(client, unsync_body(apply=True))
+    assert response.status_code == 403
+    assert "apps/sample/" in response.json()["error"]
+    assert cluster.deletes == []
+
+
+def test_unsync_refuses_an_object_with_no_extract_at_all(sessions, store):
+    bare = live_external_secret()
+    del bare["spec"]["dataFrom"]
+    client, cluster = lane_over(sessions, store, [bare])
+    assert unsync(client, unsync_body(apply=True)).status_code == 403
+    assert cluster.deletes == []
+
+
+def test_the_provenance_check_is_made_before_anything_is_deleted(sessions, store):
+    theirs = live_external_secret(store=app_store_name(team="payments", app="sample"))
+    client, cluster = lane_over(sessions, store, [theirs])
+    unsync(client, unsync_body(apply=True))
+    assert cluster.deletes == []
+
+
+def test_a_refused_provenance_check_is_audited_as_a_denial(sessions, store):
+    theirs = live_external_secret(store=app_store_name(team="payments", app="sample"))
+    client, _ = lane_over(sessions, store, [theirs])
+    unsync(client, unsync_body(apply=True))
+    (row,) = rows(sessions, "service.delete_sync")
+    assert row.status == "denied"
+    assert row.redacted_args["via"] == CALLER
+    assert row.redacted_args["store"] == app_store_name(team=NAMESPACE, app=APP)
+
+
+def test_an_object_that_does_not_own_its_target_says_so(sessions, store):
+    # Merge or None leaves the Secret behind, and the answer must not claim
+    # otherwise.
+    shared = live_external_secret(creation_policy="Merge")
+    client, _ = lane_over(sessions, store, [shared])
+    response = unsync(client, unsync_body(apply=True))
+    assert response.status_code == 200
+    assert response.json()["removes_target_secret"] is False
+
+
+def test_removing_nothing_removes_no_target_secret(client, cluster):
+    response = unsync(client, unsync_body(apply=True))
+    assert response.json()["removes_target_secret"] is False
+    assert response.json()["deleted"] is False
 
 
 def test_unsync_needs_a_service_token(client):
@@ -1227,6 +1365,7 @@ def test_an_unsync_is_audited(client, sessions, cluster):
     assert row.redacted_args["k8s_namespace"] == DEFAULT_K8S_NAMESPACE
     assert row.redacted_args["name"] == "sample-demo"
     assert row.redacted_args["outcome"] == "delete"
+    assert row.redacted_args["removes_target_secret"] is True
 
 
 def test_a_dry_run_unsync_is_audited_as_one(client, sessions, cluster):
@@ -1237,17 +1376,8 @@ def test_a_dry_run_unsync_is_audited_as_one(client, sessions, cluster):
 
 
 def test_an_unsync_refused_for_a_foreign_object_is_audited(sessions, store):
-    theirs = {
-        "apiVersion": "external-secrets.io/v1",
-        "kind": "ExternalSecret",
-        "metadata": {
-            "name": "sample-demo",
-            "namespace": DEFAULT_K8S_NAMESPACE,
-            "managedFields": [{"manager": "another-controller", "operation": "Apply"}],
-        },
-    }
-    cluster = FakeCluster(live=[theirs])
-    client = build_client(sessions, store, cluster, service_callers=callers())
+    taken = live_external_secret(managers=("kubectl-client-side-apply",))
+    client, _ = lane_over(sessions, store, [taken])
     unsync(client, unsync_body(apply=True))
     (row,) = rows(sessions, "service.delete_sync")
     assert row.status == "refused"
