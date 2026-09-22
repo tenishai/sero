@@ -21,6 +21,7 @@ def test_vault_store_shape_and_auth():
         auth_mount="jwt-team-a",
         role="external-secrets-root",
         audiences=["bao"],
+        namespace="team-a",
     )
     assert store.provider == "vault"
     spec = store.manifest["spec"]["provider"]["vault"]
@@ -35,13 +36,73 @@ def test_vault_store_shape_and_auth():
     assert sat["audiences"] == ["bao"]
 
 
-def test_vault_store_requires_server_role_audiences():
+def test_vault_store_reads_the_teams_openbao_namespace():
+    # Without this the store can only read the root namespace's KV, which is not
+    # where a team's secrets live.
+    store = vault_store(
+        name="bao",
+        server="s",
+        auth_mount="j",
+        role="r",
+        audiences=["a"],
+        namespace="team-a",
+    )
+    assert store.manifest["spec"]["provider"]["vault"]["namespace"] == "team-a"
+
+
+def test_vault_store_is_restricted_to_the_team_kubernetes_namespace():
+    # A ClusterSecretStore is cluster-wide by default, so any namespace could
+    # reference it and read the team's secrets. The API server sets
+    # kubernetes.io/metadata.name and it cannot be forged by relabeling, unlike
+    # a team-managed label.
+    store = vault_store(
+        name="bao",
+        server="s",
+        auth_mount="j",
+        role="r",
+        audiences=["a"],
+        namespace="team-a",
+    )
+    assert store.manifest["spec"]["conditions"] == [
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "team-a"}}}
+    ]
+
+
+def test_vault_store_accepts_several_kubernetes_namespaces():
+    store = vault_store(
+        name="bao",
+        server="s",
+        auth_mount="j",
+        role="r",
+        audiences=["a"],
+        namespace="team-a",
+        k8s_namespaces=["team-a-dev", "team-a-qa"],
+    )
+    assert store.manifest["spec"]["conditions"] == [
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "team-a-dev"}}},
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "team-a-qa"}}},
+    ]
+
+
+def test_vault_store_requires_server_role_audiences_and_namespace():
     with pytest.raises(ConfigError, match="'server'"):
-        vault_store(name="x", server="", auth_mount="j", role="r", audiences=["a"])
+        vault_store(name="x", server="", auth_mount="j", role="r", audiences=["a"], namespace="n")
     with pytest.raises(ConfigError, match="'role'"):
-        vault_store(name="x", server="s", auth_mount="j", role="", audiences=["a"])
+        vault_store(name="x", server="s", auth_mount="j", role="", audiences=["a"], namespace="n")
     with pytest.raises(ConfigError, match="'audiences'"):
-        vault_store(name="x", server="s", auth_mount="j", role="r", audiences=[])
+        vault_store(name="x", server="s", auth_mount="j", role="r", audiences=[], namespace="n")
+    with pytest.raises(ConfigError, match="'namespace'"):
+        vault_store(name="x", server="s", auth_mount="j", role="r", audiences=["a"], namespace="")
+    with pytest.raises(ConfigError, match="'k8s_namespaces'"):
+        vault_store(
+            name="x",
+            server="s",
+            auth_mount="j",
+            role="r",
+            audiences=["a"],
+            namespace="n",
+            k8s_namespaces=[],
+        )
 
 
 def test_gcpsm_store_workload_identity():
@@ -113,6 +174,20 @@ def test_external_secret_shape():
     assert spec["refreshInterval"] == "1h"
 
 
+def test_external_secret_keeps_an_existing_secret_name_and_refresh_interval():
+    # A consumer adopting ESO keeps the Secret name its workloads already mount.
+    es = external_secret(
+        name="app",
+        namespace="team-a",
+        store_name="bao-team-a",
+        kv_path="team-a/app",
+        secret_name="legacy-app-secrets",
+        refresh_interval="15m",
+    )
+    assert es["spec"]["target"]["name"] == "legacy-app-secrets"
+    assert es["spec"]["refreshInterval"] == "15m"
+
+
 def test_external_secret_validates_required():
     with pytest.raises(ConfigError, match="'kv_path'"):
         external_secret(
@@ -126,9 +201,9 @@ def test_external_secret_validates_required():
 
 def test_api_version_defaults_to_v1_and_overrides():
     assert (
-        vault_store(name="x", server="s", auth_mount="j", role="r", audiences=["a"]).manifest[
-            "apiVersion"
-        ]
+        vault_store(
+            name="x", server="s", auth_mount="j", role="r", audiences=["a"], namespace="n"
+        ).manifest["apiVersion"]
         == f"{API_GROUP}/v1"
     )
     legacy = awssm_store(name="x", region="r", api_version="v1beta1")
@@ -145,7 +220,9 @@ def test_api_version_defaults_to_v1_and_overrides():
 
 
 def test_to_manifest_round_trips_yaml():
-    store = vault_store(name="bao", server="s", auth_mount="j", role="r", audiences=["bao"])
+    store = vault_store(
+        name="bao", server="s", auth_mount="j", role="r", audiences=["bao"], namespace="team-a"
+    )
     text = to_manifest(store)
     loaded = yaml.safe_load(text)
     assert loaded == store.manifest
@@ -156,7 +233,9 @@ def test_to_manifest_round_trips_yaml():
 
 def test_no_secret_value_in_rendered_output():
     # The store and ExternalSecret carry references and paths, never values.
-    store = vault_store(name="bao", server="s", auth_mount="j", role="r", audiences=["bao"])
+    store = vault_store(
+        name="bao", server="s", auth_mount="j", role="r", audiences=["bao"], namespace="team-a"
+    )
     es = external_secret(
         name="n", namespace="ns", store_name="bao", kv_path="team/app", secret_name="app"
     )
