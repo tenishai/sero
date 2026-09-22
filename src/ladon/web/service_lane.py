@@ -209,6 +209,11 @@ class ServiceLane:
         default_factory=dict
     )
     buckets: dict[str, TokenBucket] = field(default_factory=dict)
+    # The read's own budget, per caller. Kept apart from the write budget so
+    # that a caller polling to see whether an application has come up cannot
+    # spend the allowance its own writes need: with one bucket, the call that
+    # matters would be the one that gets refused.
+    read_buckets: dict[str, TokenBucket] = field(default_factory=dict)
     cluster: ClusterSync = field(default_factory=ClusterSync)
     # Wall-clock, for comparing against the token's own ``iat``. Separate from
     # the buckets' monotonic clock, which measures elapsed time and nothing else.
@@ -245,9 +250,10 @@ class ServiceLane:
         self._require_fresh(claims, caller)
         return caller
 
-    def allow(self, caller: ServiceCaller) -> bool:
-        """Spend one call from this caller's budget."""
-        bucket = self.buckets.get(caller.name)
+    def allow(self, caller: ServiceCaller, *, read: bool = False) -> bool:
+        """Spend one call from this caller's write budget, or its read budget."""
+        buckets = self.read_buckets if read else self.buckets
+        bucket = buckets.get(caller.name)
         return bucket.take() if bucket is not None else False
 
     def _require_fresh(self, claims: dict[str, Any], caller: ServiceCaller) -> None:
@@ -320,6 +326,9 @@ def build_service_lane(
         },
         buckets={
             caller.name: TokenBucket(caller.rate_limit_per_minute, now=now) for caller in callers
+        },
+        read_buckets={
+            caller.name: TokenBucket(caller.read_limit_per_minute, now=now) for caller in callers
         },
         cluster=cluster or ClusterSync(),
         clock=clock,
@@ -404,8 +413,12 @@ def lane(request: Request) -> ServiceLane:
     return request.app.state.service_lane
 
 
-def _authenticated(request: Request, tool_name: str) -> ServiceCaller:
+def _authenticated(request: Request, tool_name: str, *, read: bool = False) -> ServiceCaller:
     """The verified caller, or 401; then one call from its budget, or 429.
+
+    ``read`` picks which budget. The read has its own, because a caller
+    watching an application come up polls it, and one shared bucket would let
+    that polling spend the allowance the same caller's writes need.
 
     Both refusals are audited before they are answered. A machine probing for a
     way in is exactly the pattern worth spotting, and without a row it is the
@@ -425,7 +438,7 @@ def _authenticated(request: Request, tool_name: str) -> ServiceCaller:
         )
         raise ApiError(401, "no service identity") from exc
 
-    if not lane(request).allow(caller):
+    if not lane(request).allow(caller, read=read):
         recorder.record(
             # The body has not been read yet, so there is no person to name;
             # the caller is known, and filing it under the machine is what puts
@@ -434,7 +447,9 @@ def _authenticated(request: Request, tool_name: str) -> ServiceCaller:
             tool_name=tool_name,
             status=DENIED,
             args={"lane": LANE, "via": caller.name, "subject": caller.subject},
-            error="the caller has spent its call budget for this minute",
+            error=(
+                f"the caller has spent its {'read' if read else 'write'} budget for this minute"
+            ),
         )
         raise ApiError(429, f"too many calls from {caller.name!r}; try again shortly")
     return caller
@@ -449,7 +464,7 @@ def sync_caller(request: Request) -> ServiceCaller:
 
 
 def read_caller(request: Request) -> ServiceCaller:
-    return _authenticated(request, READ_TOOL)
+    return _authenticated(request, READ_TOOL, read=True)
 
 
 def delete_caller(request: Request) -> ServiceCaller:

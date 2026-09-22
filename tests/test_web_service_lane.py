@@ -38,6 +38,8 @@ from ladon.web.service_lane import (
 )
 from ladon.web.settings import (
     DEFAULT_IDENTITY_HEADER,
+    DEFAULT_SERVICE_RATE_LIMIT,
+    DEFAULT_SERVICE_READ_LIMIT,
     AccessSettings,
     IdentitySettings,
     WebSettings,
@@ -381,6 +383,26 @@ def test_a_caller_that_would_not_record_who_it_acts_for_is_refused():
 def test_a_kubernetes_namespace_that_is_not_a_label_is_refused():
     with pytest.raises(ConfigError, match="k8s_namespaces"):
         callers(k8s_namespaces=["Not A Label"])
+
+
+def test_a_caller_gets_a_separate_read_budget_by_default():
+    (caller,) = callers()
+    assert caller.rate_limit_per_minute == DEFAULT_SERVICE_RATE_LIMIT
+    assert caller.read_limit_per_minute == DEFAULT_SERVICE_READ_LIMIT
+    # Higher on purpose: a read costs a lookup and changes nothing, and a
+    # caller polling one must not spend the budget its writes need.
+    assert caller.read_limit_per_minute > caller.rate_limit_per_minute
+
+
+def test_a_deployment_may_set_the_read_budget():
+    (caller,) = callers(read_limit_per_minute=10)
+    assert caller.read_limit_per_minute == 10
+
+
+def test_a_read_budget_that_is_not_a_positive_number_is_refused():
+    for bad in (0, -1, "many", True):
+        with pytest.raises(ConfigError, match="read_limit_per_minute"):
+            callers(read_limit_per_minute=bad)
 
 
 def test_kubernetes_namespaces_may_be_omitted_entirely():
@@ -963,13 +985,36 @@ def test_a_refused_read_is_audited(client, sessions):
     assert row.redacted_args["via"] == CALLER
 
 
-def test_a_read_spends_the_callers_budget(sessions, store, cluster):
+def test_a_read_spends_the_callers_read_budget(sessions, store, cluster):
     limited = build_client(
-        sessions, store, cluster, service_callers=callers(rate_limit_per_minute=1)
+        sessions, store, cluster, service_callers=callers(read_limit_per_minute=1)
     )
     assert read(limited).status_code == 200
     assert read(limited).status_code == 429
+
+
+def test_a_read_does_not_spend_the_write_budget(sessions, store, cluster):
+    # A caller polling the read while an application comes up must not find
+    # that the write it is waiting to make is the call that gets refused.
+    limited = build_client(
+        sessions, store, cluster, service_callers=callers(rate_limit_per_minute=1)
+    )
+    for _ in range(5):
+        assert read(limited).status_code == 200
+    assert put(limited).status_code == 200
     assert put(limited).status_code == 429
+    # And the write budget running out leaves the read working.
+    assert read(limited).status_code == 200
+
+
+def test_the_read_budget_is_its_own_and_does_not_free_a_write(sessions, store, cluster):
+    limited = build_client(
+        sessions, store, cluster, service_callers=callers(read_limit_per_minute=1)
+    )
+    assert read(limited).status_code == 200
+    assert read(limited).status_code == 429
+    # Reads exhausted, writes untouched.
+    assert put(limited).status_code == 200
 
 
 # ── Deleting a whole secret ────────────────────────────────────────────
