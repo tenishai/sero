@@ -110,7 +110,7 @@ def test_gcpsm_store_workload_identity():
         name="gcpsm",
         project_id="proj",
         cluster_name="bao-east",
-        cluster_location="us-east4",
+        cluster_location="example-region1",
         cluster_project_id="proj",
     )
     assert store.provider == "gcpsm"
@@ -118,7 +118,7 @@ def test_gcpsm_store_workload_identity():
     assert gcpsm["projectID"] == "proj"
     wi = gcpsm["auth"]["workloadIdentity"]
     assert wi["clusterName"] == "bao-east"
-    assert wi["clusterLocation"] == "us-east4"
+    assert wi["clusterLocation"] == "example-region1"
     assert wi["serviceAccountRef"]["name"] == "external-secrets"
 
 
@@ -128,17 +128,17 @@ def test_gcpsm_store_requires_cluster_fields():
             name="g",
             project_id="p",
             cluster_name="",
-            cluster_location="us-east4",
+            cluster_location="example-region1",
             cluster_project_id="p",
         )
 
 
 def test_awssm_store_irsa_without_role():
-    store = awssm_store(name="awssm", region="us-east-1")
+    store = awssm_store(name="awssm", region="example-region1")
     assert store.provider == "aws"
     aws = store.manifest["spec"]["provider"]["aws"]
     assert aws["service"] == "SecretsManager"
-    assert aws["region"] == "us-east-1"
+    assert aws["region"] == "example-region1"
     assert "role" not in aws
     assert aws["auth"]["jwt"]["serviceAccountRef"]["name"] == "external-secrets"
 
@@ -146,7 +146,7 @@ def test_awssm_store_irsa_without_role():
 def test_awssm_store_with_cross_account_role():
     store = awssm_store(
         name="awssm",
-        region="us-west-2",
+        region="example-region2",
         role="arn:aws:iam::123456789012:role/eso",
     )
     assert store.manifest["spec"]["provider"]["aws"]["role"] == "arn:aws:iam::123456789012:role/eso"

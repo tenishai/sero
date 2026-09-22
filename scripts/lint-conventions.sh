@@ -7,6 +7,7 @@
 #   2. No company-specific identifiers anywhere in the tree.
 #   3. No floating version pins (":latest" images, unpinned GitHub Actions).
 #   4. No committed secret material (private keys, credentials).
+#   5. No cloud region literals (they name somebody's deployment).
 #
 # Runs against tracked files by default (git ls-files). Pass file paths as
 # arguments to check only those. Exits non-zero if any check fails.
@@ -140,12 +141,35 @@ check_secrets() {
     | report "no committed secret material"
 }
 
+# Check 5: no cloud region literals -----------------------------------------
+# A real region names where somebody's deployment runs, which is exactly what
+# brand neutrality excludes. Docs and variables use "<region>"; tests use a
+# made-up value. Matches the GCP and AWS region shapes (a direction word after
+# a continent prefix, then a number); other shapes are left to review.
+check_regions() {
+  local scan=() f
+  for f in "${FILES[@]}"; do
+    [[ "$f" == "$SCRIPT_PATH" ]] && continue
+    scan+=("$f")
+  done
+  if [[ ${#scan[@]} -eq 0 ]]; then
+    echo "ok:   no cloud region literals (no files)"
+    return 0
+  fi
+  local prefix='(af|ap|ca|eu|il|me|sa|us|asia|australia|europe|northamerica|southamerica)'
+  local direction='(central|east|north|northeast|northwest|south|southeast|southwest|west)'
+  local pattern="(^|[^a-zA-Z0-9-])${prefix}-${direction}-?[0-9]"
+  { grep -nEI -e "$pattern" "${scan[@]}" 2>/dev/null || true; } \
+    | report "no cloud region literals"
+}
+
 echo "Ladon conventions lint"
 echo "----------------------"
 check_dashes   || fail_count=$((fail_count + 1))
 check_branding || fail_count=$((fail_count + 1))
 check_pins     || fail_count=$((fail_count + 1))
 check_secrets  || fail_count=$((fail_count + 1))
+check_regions  || fail_count=$((fail_count + 1))
 echo "----------------------"
 
 if [[ $fail_count -gt 0 ]]; then

@@ -16,7 +16,7 @@ module "unseal_key" {
   source = "../../modules/unseal-key/gcp"
 
   project_id    = "my-project"
-  location      = "us-east4"
+  location      = "<region>"
   key_ring      = "openbao"
   crypto_key    = "unseal"
   unseal_member = "serviceAccount:bao@my-project.iam.gserviceaccount.com"
@@ -32,7 +32,7 @@ deployment:
   kms:
     provider: gcpckms
     project: my-project       # = seal_config.project
-    region: us-east4          # = seal_config.region
+    region: <region>          # = seal_config.region
     key_ring: openbao         # = seal_config.key_ring
     crypto_key: unseal        # = seal_config.crypto_key
 ```
