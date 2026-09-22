@@ -96,16 +96,22 @@ access:
 # A caller may merge keys into one path under apps/ and converge one
 # ExternalSecret for one application. It cannot read a secret, reveal a value,
 # administer the deployment, or reach a namespace not listed here. See the
-# machine lane in docs/backend.md.
+# machine lane in docs/backend.md, including the network requirement: admit a
+# machine caller to this port only where identity.assertion is configured.
 #
 # service_callers:
-#   - name: assembly-room
+#   - name: provisioner
 #     issuer: https://issuer.example.com
 #     jwks_url: https://issuer.example.com/keys   # https only
 #     audience: https://ladon.example.com/service
-#     subject: system:serviceaccount:ladon:assembly-room
+#     subject: system:serviceaccount:ladon:provisioner
+#     # OpenBao namespaces this caller may write in. A nested path is fine.
 #     namespaces: [team-a]
-#     # Always true: the lane records the person every machine write is for.
+#     # Kubernetes namespaces it may place an ExternalSecret in, beyond the
+#     # application's own name. Empty is the right answer for one application
+#     # in a namespace named after it, which is what onboarding creates.
+#     k8s_namespaces: []
+#     # Always true: both routes record the person every machine call is for.
 #     acting_email_required: true
 #     # Calls a minute, across both service routes. Defaults to 60.
 #     rate_limit_per_minute: 60

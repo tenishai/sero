@@ -10,7 +10,7 @@ lands proves the lane authorized on the caller's pinned namespaces rather than
 on the human it names.
 """
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -19,13 +19,20 @@ from starlette.testclient import TestClient
 
 from fake_assertion import AUDIENCE as HUMAN_AUDIENCE
 from fake_assertion import ISSUER, JWKS_URL, KEY, KID, OTHER_KEY, jwks, token
+from fake_assertion import SETTINGS as ASSERTION_SETTINGS
+from fake_assertion import token as assertion_token
+from fake_assertion import verifier as assertion_verifier
 from fake_cluster import FakeCluster
 from ladon.config.teams import ConfigError
 from ladon.datastore.models import Base, ToolCallLog
 from ladon.install.k8s import converge_documents
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.web.app import create_app
-from ladon.web.service_lane import ClusterSync, build_service_lane
+from ladon.web.service_lane import (
+    MAX_SERVICE_TOKEN_AGE_SECONDS,
+    ClusterSync,
+    build_service_lane,
+)
 from ladon.web.settings import (
     DEFAULT_IDENTITY_HEADER,
     AccessSettings,
@@ -34,14 +41,24 @@ from ladon.web.settings import (
     parse_service_callers,
 )
 
-CALLER = "assembly-room"
-SUBJECT = "system:serviceaccount:ladon:assembly-room"
+
+def now_epoch():
+    return datetime.now(UTC).timestamp()
+
+
+CALLER = "provisioner"
+SUBJECT = "system:serviceaccount:ladon:provisioner"
 SERVICE_AUDIENCE = "https://ladon.example.com/service"
 ACTING = "op@example.com"
 NAMESPACE = "team-a"
+NESTED_NAMESPACE = "platform/team-a"
 OTHER_NAMESPACE = "team-b"
 APP = "sample"
 PATH = f"apps/{APP}/demo"
+# Where an ExternalSecret lands unless the caller is pinned to somewhere else:
+# the application's own name, which is what onboarding defaults to.
+DEFAULT_K8S_NAMESPACE = APP
+PINNED_K8S_NAMESPACE = "ladon-sample"
 
 CALLER_CONFIG = {
     "name": CALLER,
@@ -50,6 +67,9 @@ CALLER_CONFIG = {
     "audience": SERVICE_AUDIENCE,
     "subject": SUBJECT,
     "namespaces": [NAMESPACE],
+    # Empty on purpose: the common caller may reach the default Kubernetes
+    # namespace and nowhere else.
+    "k8s_namespaces": [],
     "acting_email_required": True,
 }
 
@@ -148,7 +168,17 @@ def cluster():
     return FakeCluster()
 
 
-def build_client(sessions, store, cluster, *, service_callers, clock=None, identity=None, env=None):
+def build_client(
+    sessions,
+    store,
+    cluster,
+    *,
+    service_callers,
+    clock=None,
+    identity=None,
+    env=None,
+    assertion_verifier=None,
+):
     settings = WebSettings(
         identity=identity or IdentitySettings(),
         access=AccessSettings(),
@@ -180,6 +210,7 @@ def build_client(sessions, store, cluster, *, service_callers, clock=None, ident
         session_factory=sessions,
         secrets=secrets,
         service_lane=lane,
+        assertion_verifier=assertion_verifier,
         env=env or {},
     )
     return TestClient(app)
@@ -204,10 +235,10 @@ def put_body(**overrides):
 
 def sync_body(**overrides):
     body = {
+        "acting_email": ACTING,
         "namespace": NAMESPACE,
         "app": APP,
         "path": PATH,
-        "k8s_namespace": "ladon-sample",
         "name": "sample-demo",
         "apply": False,
     }
@@ -257,6 +288,17 @@ def test_two_callers_sharing_an_issuer_and_audience_are_refused():
 def test_a_caller_that_would_not_record_who_it_acts_for_is_refused():
     with pytest.raises(ConfigError, match="acting_email_required"):
         callers(acting_email_required=False)
+
+
+def test_a_kubernetes_namespace_that_is_not_a_label_is_refused():
+    with pytest.raises(ConfigError, match="k8s_namespaces"):
+        callers(k8s_namespaces=["Not A Label"])
+
+
+def test_kubernetes_namespaces_may_be_omitted_entirely():
+    config = {k: v for k, v in CALLER_CONFIG.items() if k != "k8s_namespaces"}
+    (caller,) = parse_service_callers([config], human_audience=HUMAN_AUDIENCE)
+    assert caller.k8s_namespaces == ()
 
 
 # ── Authentication ─────────────────────────────────────────────────────
@@ -343,6 +385,67 @@ def test_a_deployment_with_no_service_callers_refuses_the_lane(sessions, store, 
     assert closed.post("/api/service/secrets", json=put_body(), headers=bearer()).status_code == 401
 
 
+def test_a_token_older_than_the_maximum_age_is_refused(client):
+    # Still inside its expiry, but minted long ago: a machine token that has
+    # been sitting somewhere is a machine token somebody else may be holding.
+    stale = service_token(
+        claims={"iat": int(now_epoch()) - (MAX_SERVICE_TOKEN_AGE_SECONDS + 60)},
+        expires_in=timedelta(hours=6),
+    )
+    assert put(client, token_value=stale).status_code == 401
+
+
+def test_a_token_just_inside_the_maximum_age_is_accepted(client):
+    fresh = service_token(
+        claims={"iat": int(now_epoch()) - (MAX_SERVICE_TOKEN_AGE_SECONDS - 60)},
+        expires_in=timedelta(hours=6),
+    )
+    assert put(client, token_value=fresh).status_code == 200
+
+
+def test_a_token_issued_in_the_future_is_refused(client):
+    ahead = service_token(claims={"iat": int(now_epoch()) + 600})
+    assert put(client, token_value=ahead).status_code == 401
+
+
+def test_a_token_that_is_not_yet_valid_is_refused(client):
+    later = service_token(claims={"nbf": int(now_epoch()) + 600})
+    assert put(client, token_value=later).status_code == 401
+
+
+def test_a_token_matching_two_callers_is_refused(sessions, store, cluster):
+    # One token naming both audiences: whose subject and namespaces apply is
+    # not a question this lane guesses at.
+    second_audience = "https://ladon.example.com/service-two"
+    pair = parse_service_callers(
+        [
+            CALLER_CONFIG,
+            {**CALLER_CONFIG, "name": "other", "audience": second_audience},
+        ],
+        human_audience=HUMAN_AUDIENCE,
+    )
+    ambiguous = build_client(sessions, store, cluster, service_callers=pair)
+    both = service_token(audience=[SERVICE_AUDIENCE, second_audience])
+    assert put(ambiguous, token_value=both).status_code == 401
+
+
+def test_a_machine_token_is_not_a_human_identity(sessions, store, cluster):
+    # The reverse replay of the audience rule: a machine credential presented
+    # where a person's assertion goes must not become that person.
+    human = build_client(
+        sessions,
+        store,
+        cluster,
+        service_callers=callers(),
+        identity=IdentitySettings(assertion=ASSERTION_SETTINGS),
+        assertion_verifier=assertion_verifier(),
+    )
+    headers = {ASSERTION_SETTINGS.header: service_token()}
+    assert human.get("/api/namespaces", headers=headers).status_code == 401
+    # And the human's own assertion is still not a machine credential.
+    assert put(human, token_value=assertion_token()).status_code == 401
+
+
 # ── Authorization and the path rule ────────────────────────────────────
 
 
@@ -368,6 +471,35 @@ def test_a_path_that_climbs_out_of_the_prefix_is_refused(client):
         "/api/service/secrets", json=put_body(path="apps/../platform/demo"), headers=bearer()
     )
     assert response.status_code == 400
+
+
+def test_a_path_that_percent_decodes_to_a_relative_segment_is_refused(client):
+    # A hop that decodes before Ladon sees it would read this as "apps/..".
+    response = put(client, put_body(path="apps/%2e%2e/platform/demo"))
+    assert response.status_code == 400
+
+
+def test_a_path_carrying_any_percent_escape_is_refused(client):
+    response = put(client, put_body(path="apps/sample/de%6do"))
+    assert response.status_code == 400
+
+
+def test_an_unreasonably_long_path_is_refused(client):
+    response = put(client, put_body(path="apps/sample/" + "a" * 300))
+    assert response.status_code == 400
+
+
+def test_a_nested_namespace_is_accepted_on_both_routes(sessions, store, cluster):
+    nested = build_client(
+        sessions, store, cluster, service_callers=callers(namespaces=[NESTED_NAMESPACE])
+    )
+    assert put(nested, put_body(namespace=NESTED_NAMESPACE)).status_code == 200
+    assert sync(nested, sync_body(namespace=NESTED_NAMESPACE)).status_code == 200
+
+
+def test_a_namespace_that_is_not_a_path_of_labels_is_refused(client):
+    assert put(client, put_body(namespace="Team A")).status_code == 422
+    assert sync(client, sync_body(namespace="team-a/")).status_code == 422
 
 
 def test_a_missing_acting_email_is_refused(client):
@@ -464,14 +596,14 @@ def test_sync_converges_one_external_secret(client, cluster):
     dry = client.post("/api/service/sync", json=sync_body(), headers=bearer())
     assert dry.status_code == 200
     assert dry.json()["applied"] is False
-    assert dry.json()["report"] == ["ExternalSecret/ladon-sample/sample-demo: create"]
+    assert dry.json()["report"] == ["ExternalSecret/sample/sample-demo: create"]
 
     applied = client.post("/api/service/sync", json=sync_body(apply=True), headers=bearer())
     assert applied.status_code == 200
-    assert applied.json()["report"] == ["ExternalSecret/ladon-sample/sample-demo: create"]
+    assert applied.json()["report"] == ["ExternalSecret/sample/sample-demo: create"]
 
     again = client.post("/api/service/sync", json=sync_body(apply=True), headers=bearer())
-    assert again.json()["report"] == ["ExternalSecret/ladon-sample/sample-demo: already current"]
+    assert again.json()["report"] == ["ExternalSecret/sample/sample-demo: already current"]
     # Three calls, one write: the dry run asked the server and the second apply
     # found the document already current, so neither sent anything.
     written = [call for call in cluster.applies if "--dry-run=server" not in call]
@@ -484,15 +616,6 @@ def test_sync_points_at_the_applications_own_store(client, cluster):
     assert "kind: ExternalSecret" in document
     assert f"key: {PATH}" in document
     assert "ladon-team-a-sample-" in document
-
-
-def test_sync_targets_the_secret_name_the_consumer_already_uses(client, cluster):
-    client.post(
-        "/api/service/sync",
-        json=sync_body(target_name="sample-credentials", apply=True),
-        headers=bearer(),
-    )
-    assert "name: sample-credentials" in cluster.streams[0]
 
 
 def test_sync_refuses_a_path_outside_the_applications_prefix(client, cluster):
@@ -513,6 +636,66 @@ def test_sync_refuses_a_namespace_the_caller_is_not_pinned_to(client, cluster):
 
 def test_sync_needs_a_service_token(client):
     assert client.post("/api/service/sync", json=sync_body()).status_code == 401
+
+
+def test_sync_needs_an_acting_email(client):
+    body = sync_body()
+    del body["acting_email"]
+    assert sync(client, body).status_code == 422
+
+
+# ── Where an ExternalSecret may land ────────────────────────────────────
+
+
+def test_sync_defaults_the_kubernetes_namespace_to_the_application(client, cluster):
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 200
+    assert response.json()["k8s_namespace"] == DEFAULT_K8S_NAMESPACE
+    assert f"namespace: {DEFAULT_K8S_NAMESPACE}" in cluster.streams[0]
+
+
+def test_sync_refuses_a_kubernetes_namespace_the_caller_is_not_pinned_to(client, cluster):
+    # The store's selector gates what ESO may READ. It does nothing about where
+    # an object may be WRITTEN, and the field manager is Ladon's, so an
+    # unpinned namespace here would let one caller create or replace an
+    # ExternalSecret anywhere on the cluster.
+    response = sync(client, sync_body(k8s_namespace="kube-system", apply=True))
+    assert response.status_code == 403
+    assert cluster.calls == []
+
+
+def test_sync_allows_a_kubernetes_namespace_the_caller_is_pinned_to(sessions, store, cluster):
+    pinned = build_client(
+        sessions, store, cluster, service_callers=callers(k8s_namespaces=[PINNED_K8S_NAMESPACE])
+    )
+    response = sync(pinned, sync_body(k8s_namespace=PINNED_K8S_NAMESPACE, apply=True))
+    assert response.status_code == 200
+    assert f"namespace: {PINNED_K8S_NAMESPACE}" in cluster.streams[0]
+
+
+def test_sync_refuses_a_different_target_name_in_the_default_namespace(client, cluster):
+    # Naming a target is how an ExternalSecret adopts a Secret the consumer
+    # already uses, which is also how it would take over one it should not.
+    response = sync(client, sync_body(target_name="sample-credentials", apply=True))
+    assert response.status_code == 403
+    assert cluster.calls == []
+
+
+def test_sync_allows_a_different_target_name_in_a_pinned_namespace(sessions, store, cluster):
+    pinned = build_client(
+        sessions, store, cluster, service_callers=callers(k8s_namespaces=[PINNED_K8S_NAMESPACE])
+    )
+    response = sync(
+        pinned,
+        sync_body(k8s_namespace=PINNED_K8S_NAMESPACE, target_name="sample-credentials", apply=True),
+    )
+    assert response.status_code == 200
+    assert "name: sample-credentials" in cluster.streams[0]
+
+
+def test_sync_allows_the_same_target_name_spelled_out(client):
+    # Naming the target explicitly, identically, is not an override.
+    assert sync(client, sync_body(target_name="sample-demo")).status_code == 200
 
 
 # ── The rate limit ─────────────────────────────────────────────────────
@@ -541,7 +724,10 @@ def test_a_successful_write_is_audited_against_the_human_and_the_caller(client, 
     (row,) = rows(sessions, "service.put_secret")
     assert row.user_email == ACTING
     assert row.status == "ok"
-    assert row.redacted_args["caller"] == CALLER
+    # The row says a machine wrote it, and which one, so a query can tell a
+    # machine-on-behalf row from a person's own without matching on tool names.
+    assert row.redacted_args["lane"] == "service"
+    assert row.redacted_args["via"] == CALLER
     assert row.redacted_args["subject"] == SUBJECT
     assert row.redacted_args["path"] == PATH
     # The values went to OpenBao, never to the audit table.
@@ -558,7 +744,8 @@ def test_a_refused_token_is_audited(client, sessions):
     put(client, token_value=service_token(key=OTHER_KEY))
     (row,) = rows(sessions, "service.put_secret")
     assert row.status == "denied"
-    assert row.redacted_args["caller"] == CALLER
+    assert row.redacted_args["lane"] == "service"
+    assert row.redacted_args["via"] == CALLER
 
 
 def test_a_refused_namespace_is_audited(client, sessions):
@@ -566,12 +753,36 @@ def test_a_refused_namespace_is_audited(client, sessions):
     (row,) = rows(sessions, "service.put_secret")
     assert row.status == "denied"
     assert row.redacted_args["namespace"] == OTHER_NAMESPACE
-    assert row.redacted_args["caller"] == CALLER
+    assert row.redacted_args["via"] == CALLER
 
 
 def test_a_sync_is_audited(client, sessions):
     client.post("/api/service/sync", json=sync_body(apply=True), headers=bearer())
     (row,) = rows(sessions, "service.sync_secret")
     assert row.status == "ok"
-    assert row.redacted_args["caller"] == CALLER
-    assert row.redacted_args["k8s_namespace"] == "ladon-sample"
+    # Attributed to the person, like a write: the machine is the how, not the who.
+    assert row.user_email == ACTING
+    assert row.redacted_args["lane"] == "service"
+    assert row.redacted_args["via"] == CALLER
+    assert row.redacted_args["k8s_namespace"] == DEFAULT_K8S_NAMESPACE
+
+
+def test_a_denial_with_no_matching_caller_is_audited_as_unknown(client, sessions):
+    stray = service_token(audience="https://ladon.example.com/somewhere-else")
+    put(client, token_value=stray)
+    (row,) = rows(sessions, "service.put_secret")
+    assert row.status == "denied"
+    assert row.redacted_args["via"] == "unknown"
+
+
+def test_the_rate_limit_denial_is_audited_under_the_caller(sessions, store, cluster):
+    limited = build_client(
+        sessions, store, cluster, service_callers=callers(rate_limit_per_minute=1)
+    )
+    put(limited)
+    assert put(limited).status_code == 429
+    denied = [row for row in rows(sessions, "service.put_secret") if row.status == "denied"]
+    assert len(denied) == 1
+    # The caller is known by now, so the row says which machine ran out of budget.
+    assert denied[0].user_email == CALLER
+    assert denied[0].redacted_args["via"] == CALLER

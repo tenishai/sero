@@ -435,17 +435,33 @@ Proven live on a shared development cluster, against the platform vault:
   everything that decides what it can do is pinned in config beside it: the
   issuer, an audience that must differ from the human assertion's (a config that
   repeats it is refused at load, so a browser credential cannot be replayed on
-  this lane), the one subject the token may carry, and the namespaces it may
-  write. `acting_email` names the person the write is for; it is recorded and
-  never authorizes. The identity header and the development hatch are not read
-  on these routes, and a deployment that names no callers refuses the lane
-  outright. A caller may merge keys into one path under `apps/` (the human
-  lane's merge rules, from the same functions) and converge one `ExternalSecret`
-  against that application's own store, which is what makes the workload's
-  Kubernetes Secret exist. It cannot read a secret, reveal a value, administer
-  the deployment, write outside `apps/`, or touch a namespace it is not pinned
-  to. Each caller has a call budget, 60 a minute by default, and every call
-  including every denial leaves an audit row naming the caller and its subject.
+  this lane), the one subject the token may carry, the OpenBao namespaces it may
+  write, and the Kubernetes namespaces it may place an object in. Tokens must
+  also be fresh: this lane caps their age at 900 seconds from `iat`, whatever
+  the issuer's own expiry says, and keeps usable signing keys for ten minutes
+  rather than an hour once the key endpoint stops answering.
+  `acting_email` is required on both routes and names the person the call is
+  for. It is recorded and never authorizes: a caller may name any address,
+  including somebody who has never used Ladon, so audit rows carry `lane`,
+  `via` and `subject` alongside it to say which machine actually acted. The
+  identity header and the development hatch are not read on these routes, and a
+  deployment that names no callers refuses the lane outright. A caller may merge
+  keys into one path under `apps/` (the human lane's merge rules, from the same
+  functions) and converge one `ExternalSecret` against that application's own
+  store, which is what makes the workload's Kubernetes Secret exist. That
+  `ExternalSecret` lands in the application's own Kubernetes namespace unless
+  the caller's `k8s_namespaces` admits another: the store's selector governs
+  what ESO may read, and says nothing about where an object may be written, so
+  where a cluster object lands is pinned here instead. A differing
+  `target.name`, which is how an ExternalSecret adopts a Secret somebody else
+  named, needs the same admission. A caller cannot read a secret, reveal a
+  value, administer the deployment, write outside `apps/`, or touch a namespace
+  it is not pinned to. Each caller has a call budget, 60 a minute by default,
+  and every call including every denial leaves an audit row.
+  One deployment requirement comes with it: admit a machine caller through the
+  NetworkPolicy only where `identity.assertion` is configured. There is one port
+  for both lanes, so on a header-only deployment an admitted workload could set
+  the identity header and be any person on the human routes.
 - One deployment serves one environment (`deployment.environment`). A call
   naming another is refused with 400 and the name of the one that is served, on
   the agent surface as well as over HTTP; `/api/me` reports it and the UI offers

@@ -13,6 +13,7 @@ is rejected rather than quietly honoured.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,10 @@ SERVICE_REQUIRED_CLAIMS = ("exp", "iat", "iss", "aud", "sub")
 # deployment says otherwise. Generous for provisioning a handful of secrets,
 # small enough that a stuck loop stops rather than filling the vault.
 DEFAULT_SERVICE_RATE_LIMIT = 60
+
+# Kubernetes DNS-1123 label rules, which a namespace name obeys.
+_K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_K8S_NAME_MAX = 63
 
 # The proxy in front of the platform authenticates people and passes the result
 # in this header. Configurable, because the header name is proxy-specific.
@@ -90,15 +95,20 @@ class ServiceCaller:
 
     Everything that decides what this caller can do is pinned here and nowhere
     else: the token must come from ``assertion``'s issuer, carry its audience,
-    and name ``subject``; the write must land in one of ``namespaces``. The
-    acting email the call carries is attribution, never authorization, so no
-    field here depends on it.
+    and name ``subject``; the write must land in one of ``namespaces``; a
+    cluster object must land in the application's own Kubernetes namespace or
+    one of ``k8s_namespaces``. The acting email the call carries is attribution,
+    never authorization, so no field here depends on it.
     """
 
     name: str
     subject: str
     namespaces: tuple[str, ...]
     assertion: AssertionSettings
+    # Kubernetes namespaces this caller may place an ExternalSecret in, beyond
+    # the application's own name. Empty is the safe default and the common case:
+    # one application, one namespace named after it.
+    k8s_namespaces: tuple[str, ...] = ()
     rate_limit_per_minute: int = DEFAULT_SERVICE_RATE_LIMIT
 
     @property
@@ -262,8 +272,28 @@ def _service_caller(data: object, index: int, human_audience: str | None) -> Ser
             issuer=str(data["issuer"]),
             required_claims=SERVICE_REQUIRED_CLAIMS,
         ),
+        k8s_namespaces=_k8s_namespaces(data.get("k8s_namespaces"), where),
         rate_limit_per_minute=_rate_limit(data.get("rate_limit_per_minute"), where),
     )
+
+
+def _k8s_namespaces(value: object, where: str) -> tuple[str, ...]:
+    """Kubernetes namespaces this caller may place an object in, beyond the default.
+
+    Absent or empty is the safe answer, not an oversight: a caller with none
+    can still reach the application's own namespace, which is where onboarding
+    puts it. Each entry is validated as a Kubernetes name here, so a typo is a
+    config error rather than a document the API server rejects later.
+    """
+    field_path = f"{where}.k8s_namespaces"
+    names = _names(value, field_path)
+    for name in names:
+        if not _K8S_NAME_RE.match(name) or len(name) > _K8S_NAME_MAX:
+            raise ConfigError(
+                f"'{field_path}' entry {name!r} is not a Kubernetes namespace name "
+                "(lowercase letters, digits and hyphens, starting and ending alphanumeric)"
+            )
+    return tuple(names)
 
 
 def _rate_limit(value: object, where: str) -> int:

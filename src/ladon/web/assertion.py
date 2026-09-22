@@ -118,11 +118,13 @@ class JwksCache:
         *,
         fetch: JwksFetcher = fetch_jwks,
         ttl_seconds: int = DEFAULT_JWKS_TTL_SECONDS,
+        stale_max_seconds: int = STALE_KEYS_MAX_SECONDS,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._url = url
         self._fetch = fetch
         self._ttl = ttl_seconds
+        self._stale_max = stale_max_seconds
         self._now = now
         self._keys: dict[str, Any] = {}
         self._fetched_at: float | None = None
@@ -168,7 +170,7 @@ class JwksCache:
     def _expire_if_too_stale(self) -> None:
         if self._fetched_at is None:
             return
-        if (self._now() - self._fetched_at) >= STALE_KEYS_MAX_SECONDS:
+        if (self._now() - self._fetched_at) >= self._stale_max:
             self._keys = {}
 
     def _can_attempt(self) -> bool:
@@ -210,10 +212,17 @@ class AssertionVerifier:
         *,
         fetch: JwksFetcher = fetch_jwks,
         ttl_seconds: int = DEFAULT_JWKS_TTL_SECONDS,
+        stale_max_seconds: int = STALE_KEYS_MAX_SECONDS,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
-        self._jwks = JwksCache(settings.jwks_url, fetch=fetch, ttl_seconds=ttl_seconds, now=now)
+        self._jwks = JwksCache(
+            settings.jwks_url,
+            fetch=fetch,
+            ttl_seconds=ttl_seconds,
+            stale_max_seconds=stale_max_seconds,
+            now=now,
+        )
 
     @property
     def header(self) -> str:

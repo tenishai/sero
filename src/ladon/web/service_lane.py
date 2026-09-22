@@ -1,10 +1,11 @@
 """The machine lane: a service writing on a person's behalf (D16).
 
-A machine is not a person with a proxy in front of it. The assembly room needs
-to put an application's secret into OpenBao and then make sure the Kubernetes
-Secret exists, and it does that on behalf of whoever asked it to, hours after
-they asked. Letting it use the human lane would mean either a long-lived human
-credential or a header nobody signed, so it gets a lane of its own:
+A machine is not a person with a proxy in front of it. A provisioner that
+stands up an application needs to put that application's secret into OpenBao
+and then make sure the Kubernetes Secret exists, and it does that on behalf of
+whoever asked it to, hours after they asked. Letting it use the human lane
+would mean either a long-lived human credential or a header nobody signed, so
+it gets a lane of its own:
 
 * an OIDC ID token, verified with exactly the machinery the human assertion
   uses (allow-listed algorithms, a key published at an https JWKS URL, issuer,
@@ -25,9 +26,10 @@ refuses the lane outright: the lane opens because a deployment configured it,
 never because it forgot to.
 
 What a caller can do is deliberately small: merge keys into one application
-path under ``apps/``, and converge one ExternalSecret for one application.
-Reading a secret, revealing a value, touching the allow list, approving a
-namespace and running an apply phase are all somewhere else, behind a person.
+path under ``apps/``, and converge one ExternalSecret for one application, in
+that application's own Kubernetes namespace or one its config admits. Reading a
+secret, revealing a value, touching the allow list, approving a namespace and
+running an apply phase are all somewhere else, behind a person.
 """
 
 from __future__ import annotations
@@ -53,7 +55,13 @@ from ladon.mcp.server import (
     create_secret_write,
     update_secret_write,
 )
-from ladon.web.assertion import AssertionInvalid, AssertionVerifier, JwksFetcher, fetch_jwks
+from ladon.web.assertion import (
+    CLOCK_SKEW_LEEWAY_SECONDS,
+    AssertionInvalid,
+    AssertionVerifier,
+    JwksFetcher,
+    fetch_jwks,
+)
 from ladon.web.audit import DENIED, AuditRecorder
 from ladon.web.deps import (
     UNIDENTIFIED,
@@ -71,11 +79,28 @@ from ladon.web.settings import ServiceCaller
 PUT_TOOL = "service.put_secret"
 SYNC_TOOL = "service.sync_secret"
 
+# Stamped on every row this lane writes. The tool name says what happened and
+# this says who the "who" is: a row attributed to a person that a machine
+# actually made. ``via`` names which machine.
+LANE = "service"
+
 # What a denial is attributed to when the token named no configured caller.
 UNKNOWN_CALLER = "unknown"
 
 AUTHORIZATION_HEADER = "authorization"
 BEARER_PREFIX = "bearer "
+
+# How old a machine token may be, whatever its own expiry says. An issuer that
+# mints eight-hour tokens is not this lane's decision to live with: a token
+# that has been sitting in a log, an environment variable or a queue is one
+# somebody else may be holding by now.
+MAX_SERVICE_TOKEN_AGE_SECONDS = 900
+
+# How long this lane keeps using the last key set it fetched once refreshes
+# start failing. Shorter than the human lane's hour: logging every person out
+# of a UI during a key-endpoint outage is a real cost, and a machine retrying
+# its provisioning call in ten minutes is not.
+SERVICE_STALE_KEYS_MAX_SECONDS = 600
 
 # A deliberately loose address check. It is not authorization and never decides
 # anything; it catches a caller sending a username, an id or an empty string
@@ -85,6 +110,12 @@ ACTING_EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 # Kubernetes DNS-1123 label, the rule every name in a rendered document obeys.
 LABEL_PATTERN = r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
 LABEL_MAX = 63
+
+# An OpenBao namespace: one label, or several joined by "/", because namespaces
+# nest and a team under a parent namespace is a path rather than a name. The
+# same shape on both routes, so a nested deployment works on either.
+NAMESPACE_PATTERN = r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(/[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+NAMESPACE_MAX = 253
 
 # An ESO refresh interval: a whole number of seconds, minutes or hours. Bounded
 # here because it is written verbatim into a manifest.
@@ -159,6 +190,9 @@ class ServiceLane:
     )
     buckets: dict[str, TokenBucket] = field(default_factory=dict)
     cluster: ClusterSync = field(default_factory=ClusterSync)
+    # Wall-clock, for comparing against the token's own ``iat``. Separate from
+    # the buckets' monotonic clock, which measures elapsed time and nothing else.
+    clock: Callable[[], float] = time.time
 
     def authenticate(self, authorization: str | None) -> ServiceCaller:
         """The caller this token proves, or :class:`ServiceAuthError`.
@@ -188,6 +222,7 @@ class ServiceLane:
                 "the token's subject is not the one pinned to this caller",
                 caller=caller.name,
             )
+        self._require_fresh(claims, caller)
         return caller
 
     def allow(self, caller: ServiceCaller) -> bool:
@@ -195,17 +230,44 @@ class ServiceLane:
         bucket = self.buckets.get(caller.name)
         return bucket.take() if bucket is not None else False
 
+    def _require_fresh(self, claims: dict[str, Any], caller: ServiceCaller) -> None:
+        """Refuse a token that is valid but old, or minted in the future.
+
+        Expiry is the issuer's decision and issuers are generous with it. This
+        lane writes secrets, so it sets its own ceiling on how long a minted
+        token stays usable: past it, re-mint. A token stamped in the future is
+        refused for the mirror reason, since it would otherwise be usable for
+        its whole skew plus this window.
+        """
+        issued = claims.get("iat")
+        if not isinstance(issued, int | float):
+            raise ServiceAuthError("the token carries no usable 'iat'", caller=caller.name)
+        age = self.clock() - float(issued)
+        if age > MAX_SERVICE_TOKEN_AGE_SECONDS:
+            raise ServiceAuthError(
+                f"the token was issued more than {MAX_SERVICE_TOKEN_AGE_SECONDS} "
+                "seconds ago; mint a fresh one",
+                caller=caller.name,
+            )
+        if age < -CLOCK_SKEW_LEEWAY_SECONDS:
+            raise ServiceAuthError("the token is stamped in the future", caller=caller.name)
+
     def _match(self, claims: dict[str, Any]) -> tuple[ServiceCaller, AssertionVerifier] | None:
         issuer = claims.get("iss")
         audience = claims.get("aud")
-        # A token may carry several audiences; one of them matching a caller is
-        # what routes it, and the verification then requires that same one.
+        # A token may carry several audiences. Config already refuses two
+        # callers sharing an issuer and audience, so the only way to reach more
+        # than one here is a token naming several: whose subject and namespaces
+        # would apply is not a question worth guessing at, so it is refused.
         audiences = audience if isinstance(audience, list) else [audience]
-        for one in audiences:
-            found = self.verifiers.get((str(issuer), str(one)))
-            if found is not None:
-                return found
-        return None
+        found = {
+            (str(issuer), str(one))
+            for one in audiences
+            if (str(issuer), str(one)) in self.verifiers
+        }
+        if len(found) > 1:
+            raise ServiceAuthError("the token names more than one configured service caller")
+        return self.verifiers[found.pop()] if found else None
 
 
 def build_service_lane(
@@ -214,19 +276,25 @@ def build_service_lane(
     fetch: JwksFetcher = fetch_jwks,
     cluster: ClusterSync | None = None,
     now: Callable[[], float] = time.monotonic,
+    clock: Callable[[], float] = time.time,
 ) -> ServiceLane:
     """One verifier and one budget per configured caller.
 
     A verifier per caller rather than one shared: each has its own key set, and
     caching them separately is what stops one caller's key rotation refetching
-    everybody else's.
+    everybody else's. Each keeps usable keys for a shorter grace than the human
+    lane, because a retried provisioning call costs less than a logged-out UI.
     """
     callers = list(callers)
     return ServiceLane(
         verifiers={
             (caller.issuer, caller.audience): (
                 caller,
-                AssertionVerifier(caller.assertion, fetch=fetch),
+                AssertionVerifier(
+                    caller.assertion,
+                    fetch=fetch,
+                    stale_max_seconds=SERVICE_STALE_KEYS_MAX_SECONDS,
+                ),
             )
             for caller in callers
         },
@@ -234,6 +302,7 @@ def build_service_lane(
             caller.name: TokenBucket(caller.rate_limit_per_minute, now=now) for caller in callers
         },
         cluster=cluster or ClusterSync(),
+        clock=clock,
     )
 
 
@@ -245,7 +314,7 @@ class ServicePutBody(BaseModel):
 
     # Required: a machine write with nobody behind it is not one this lane does.
     acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
-    namespace: str
+    namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     path: str
     values: dict[str, str] = Field(default_factory=dict)
     remove_keys: list[str] = Field(default_factory=list)
@@ -256,10 +325,13 @@ class ServicePutBody(BaseModel):
 class ServiceSyncBody(BaseModel):
     """One ExternalSecret, converged against the application's own store."""
 
-    namespace: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
     path: str
-    k8s_namespace: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    # Absent means the application's own name, which is where onboarding puts
+    # it. Anywhere else has to be pinned to the caller in config.
+    k8s_namespace: str | None = Field(default=None, pattern=LABEL_PATTERN, max_length=LABEL_MAX)
     name: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
     # The Secret name the consumer already uses, when it is not the same as the
     # ExternalSecret's own name.
@@ -293,17 +365,20 @@ def _authenticated(request: Request, tool_name: str) -> ServiceCaller:
             user_email=UNIDENTIFIED,
             tool_name=tool_name,
             status=DENIED,
-            args={"caller": exc.caller or UNKNOWN_CALLER},
+            args={"lane": LANE, "via": exc.caller or UNKNOWN_CALLER},
             error=str(exc),
         )
         raise ApiError(401, "no service identity") from exc
 
     if not lane(request).allow(caller):
         recorder.record(
-            user_email=UNIDENTIFIED,
+            # The body has not been read yet, so there is no person to name;
+            # the caller is known, and filing it under the machine is what puts
+            # the row beside that caller's other rows.
+            user_email=caller.name,
             tool_name=tool_name,
             status=DENIED,
-            args={"caller": caller.name, "subject": caller.subject},
+            args={"lane": LANE, "via": caller.name, "subject": caller.subject},
             error="the caller has spent its call budget for this minute",
         )
         raise ApiError(429, f"too many calls from {caller.name!r}; try again shortly")
@@ -343,13 +418,12 @@ def put_secret(
     the MCP tools and the UI's routes reach are what write.
     """
     args = {
-        "caller": caller.name,
-        "subject": caller.subject,
+        **_attribution(caller),
         "acting_email": body.acting_email,
         "namespace": body.namespace,
         "path": body.path,
     }
-    extra = {"caller": caller.name, "subject": caller.subject}
+    extra = _attribution(caller)
     with audit.guard(PUT_TOOL, body.acting_email, args, session=session):
         _require_pinned(caller, body.namespace)
         path = _refuse_outside_apps(body.path)
@@ -408,27 +482,36 @@ def sync_secret(
     path must be inside that application's own prefix, so a document that points
     somewhere its identity cannot read is refused here rather than discovered in
     the operator's logs later.
+
+    Where the object lands is an authorization decision of its own. The store's
+    selector decides what ESO may read; it says nothing about where an object
+    may be written, and this process holds the ``ladon`` field manager, so an
+    unpinned Kubernetes namespace here would let one caller create or replace an
+    ExternalSecret anywhere on the cluster. The default is the application's own
+    namespace and anywhere else must be pinned to the caller in config.
     """
-    store = app_store_name(team=body.namespace, app=body.app)
+    k8s_namespace = body.k8s_namespace or body.app
     target = body.target_name or body.name
     args = {
-        "caller": caller.name,
-        "subject": caller.subject,
+        **_attribution(caller),
+        "acting_email": body.acting_email,
         "namespace": body.namespace,
         "app": body.app,
         "path": body.path,
-        "k8s_namespace": body.k8s_namespace,
+        "k8s_namespace": k8s_namespace,
         "name": body.name,
         "target_name": target,
-        "store": store,
     }
-    with audit.guard(SYNC_TOOL, caller.name, args, session=session):
+    with audit.guard(SYNC_TOOL, body.acting_email, args, session=session):
         _require_pinned(caller, body.namespace)
+        _require_cluster_target(caller, body.app, k8s_namespace, name=body.name, target=target)
         path = _refuse_outside_app(body.app, body.path)
+        store = _store_for(body.namespace, body.app)
+        args["store"] = store
         cluster = lane(request).cluster
         document = external_secret(
             name=body.name,
-            namespace=body.k8s_namespace,
+            namespace=k8s_namespace,
             store_name=store,
             kv_path=path,
             secret_name=target,
@@ -440,7 +523,7 @@ def sync_secret(
         report = _cluster_call(cluster.converge, [document], dry_run=not body.apply)
         _audit(
             session,
-            user_email=caller.name,
+            user_email=body.acting_email,
             tool_name=SYNC_TOOL,
             status="ok" if body.apply else "dry-run",
             args=args,
@@ -452,7 +535,7 @@ def sync_secret(
         "app": body.app,
         "path": path,
         "store": store,
-        "k8s_namespace": body.k8s_namespace,
+        "k8s_namespace": k8s_namespace,
         "name": body.name,
         "target_name": target,
         # Names and verbs only: what was converged, never what it carries.
@@ -474,6 +557,17 @@ def _bearer(authorization: str | None) -> str:
     return token
 
 
+def _attribution(caller: ServiceCaller) -> dict[str, str]:
+    """What every row this lane writes says about who made it.
+
+    The row is filed under the person the call names, because that is who the
+    write is for. These three say it was a machine that made it, which one, and
+    the identity that machine proved, so an audit query can separate a
+    machine-on-behalf row from a person's own without matching on tool names.
+    """
+    return {"lane": LANE, "via": caller.name, "subject": caller.subject}
+
+
 def _require_pinned(caller: ServiceCaller, namespace: str) -> None:
     """Refuse a namespace this caller's config does not pin to it.
 
@@ -485,6 +579,46 @@ def _require_pinned(caller: ServiceCaller, namespace: str) -> None:
         raise AccessDeniedError(
             f"the service caller {caller.name!r} may not write in namespace {namespace!r}"
         )
+
+
+def _require_cluster_target(
+    caller: ServiceCaller, app: str, k8s_namespace: str, *, name: str, target: str
+) -> None:
+    """Refuse a cluster object this caller may not place.
+
+    Two decisions, both about writing rather than reading. The namespace: a
+    caller may always use the application's own, which is where onboarding puts
+    it, and anywhere else has to be listed against the caller. The target: an
+    ExternalSecret whose ``target.name`` differs from its own name adopts a
+    Secret that already has a name somebody chose, which is also how it would
+    take one over, so it is allowed only in a namespace a deployment admitted
+    on purpose rather than in the default one every application gets.
+    """
+    if k8s_namespace != app and k8s_namespace not in caller.k8s_namespaces:
+        raise AccessDeniedError(
+            f"the service caller {caller.name!r} may not place an object in "
+            f"Kubernetes namespace {k8s_namespace!r}"
+        )
+    if target != name and k8s_namespace not in caller.k8s_namespaces:
+        raise AccessDeniedError(
+            f"the service caller {caller.name!r} may not name a target Secret "
+            f"in Kubernetes namespace {k8s_namespace!r}"
+        )
+
+
+def _store_for(namespace: str, app: str) -> str:
+    """The application's ClusterSecretStore name.
+
+    Named by the same function that named it at onboarding, from the team's own
+    label. An OpenBao namespace may be a nested path, and by the baseline
+    convention a team's namespace ends in that team's name, so the last segment
+    is the label onboarding used. A name the parts cannot make is a refusal
+    rather than a traceback.
+    """
+    try:
+        return app_store_name(team=namespace.rsplit("/", 1)[-1], app=app)
+    except ConfigError as exc:
+        raise WriteRefused(str(exc)) from exc
 
 
 def _refuse_outside_apps(path: str) -> str:

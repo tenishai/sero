@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from urllib.parse import unquote
 
 from ladon.config.auth import AuthRole, jwt_role
 from ladon.config.eso import DEFAULT_API_VERSION, ClusterSecretStore, vault_store
@@ -59,6 +60,11 @@ DEFAULT_SA_NAMESPACE = "ladon"
 
 # The one path prefix convention: <mount>/apps/<app>/<purpose>.
 APP_PATH_SEGMENT = "apps"
+
+# The longest KV path Ladon will address. Well past any real
+# apps/<app>/<purpose>, and short enough that nothing downstream has to hold an
+# unbounded string a caller chose.
+MAX_KV_PATH_LENGTH = 256
 
 # Kubernetes DNS-1123 label rules, which every name here must satisfy: the
 # service account and namespaces are Kubernetes objects, and the role, policy
@@ -140,13 +146,30 @@ def checked_apps_path(path: str, *, field: str = "path") -> str:
 
     A relative segment is refused before the prefix is tested: ``.`` and ``..``
     read as inside the prefix while naming something else, and whether a reader
-    resolves them at all differs between the policy engine and the store.
+    resolves them at all differs between the policy engine and the store. The
+    same segment is tested percent-decoded, because a path that travels through
+    one more decoding hop than expected is exactly how ``%2e%2e`` becomes
+    ``..`` after this function has approved it.
     """
-    segments = path.split("/")
-    if any(segment in ("", ".", "..") for segment in segments):
+    if len(path) > MAX_KV_PATH_LENGTH:
         raise ConfigError(
-            f"{field} {path!r} has an empty or relative segment; give the "
-            "path as it is stored, with no '.' or '..'"
+            f"{field} is {len(path)} characters; a stored path is at most {MAX_KV_PATH_LENGTH}"
+        )
+    segments = path.split("/")
+    for segment in segments:
+        for form in (segment, unquote(segment)):
+            if form in ("", ".", ".."):
+                raise ConfigError(
+                    f"{field} {path!r} has an empty or relative segment; give the "
+                    "path as it is stored, with no '.' or '..'"
+                )
+    if "%" in path:
+        # A stored path never needs one, and a percent escape only changes
+        # meaning somewhere downstream: refuse it rather than reason about
+        # which hop decodes it.
+        raise ConfigError(
+            f"{field} {path!r} contains a percent escape; give the path as it "
+            "is stored, with no escaping"
         )
     if len(segments) < 2 or segments[0] != APP_PATH_SEGMENT:
         raise ConfigError(
