@@ -12,7 +12,8 @@ Brand-neutral and secret-free by construction:
 * ``mcp_refresh_tokens`` - refresh-token *families* for the agent surface,
   recorded by ``jti`` and lifecycle timestamps. The token itself is never stored.
 * ``mcp_allow_list`` - which identities may use the MCP surface.
-* ``namespace_requests`` - the namespace-request workflow state.
+* ``namespace_requests`` - the namespace-request workflow state, including the
+  apply job an approval started.
 * ``reveal_grants`` / ``reveal_flows`` - step-up "reveal" grants: a record that
   access was granted (by identity, time, and identity-provider assertion id),
   not the secret that was revealed.
@@ -115,6 +116,11 @@ class NamespaceRequest(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     ticket_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The apply run an approval started, so the decision and the run that
+    # carries it out can be read together. Not a foreign key: a job is a
+    # record of an operation and is free to be pruned without taking the
+    # request's history with it.
+    job_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class Job(Base):
