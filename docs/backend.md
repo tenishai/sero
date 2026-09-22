@@ -256,6 +256,20 @@ would leave a machine write with no trace of a human, so `false` is refused
 rather than honoured. Two callers may not share an issuer and audience pair,
 because that pair is what picks the caller a token belongs to.
 
+### Reaching it from inside the cluster
+
+The trust boundary above says nothing but the proxy may reach this port, and
+`deploy/ladon/k8s/base/networkpolicy.yaml` enforces exactly that. A machine
+caller running in the cluster is not the proxy, so it is denied until the
+deployment admits it: add an ingress rule naming that workload, alongside the
+proxy rule, and nothing else.
+
+Admitting it is not a hole in requirement 1. The plain header buys nothing on
+these routes because they do not read it, so a caller that reaches the port
+still has to present a token signed by the configured issuer, for the
+configured audience, naming the pinned subject. Keep the rule as narrow as the
+lane is: one workload, one port.
+
 ### What the token must be
 
 `Authorization: Bearer <OIDC ID token>`, verified by the same machinery the
