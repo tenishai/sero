@@ -387,6 +387,34 @@ def test_a_kubernetes_namespace_that_is_not_a_label_is_refused():
         callers(k8s_namespaces=["Not A Label"])
 
 
+def test_two_pinned_namespaces_that_would_name_the_same_stores_are_refused():
+    # A store name is built from the last segment of the namespace, so these
+    # two produce identical names for identical application names, and the
+    # check that an ExternalSecret belongs to the application in the caller's
+    # namespace could not tell one team's object from the other's.
+    with pytest.raises(ConfigError, match="same segment"):
+        callers(namespaces=["platform/team-a", "other/team-a"])
+
+
+def test_the_collision_refusal_names_both_namespaces():
+    with pytest.raises(ConfigError) as excinfo:
+        callers(namespaces=["platform/team-a", "other/team-a"])
+    assert "platform/team-a" in str(excinfo.value)
+    assert "other/team-a" in str(excinfo.value)
+
+
+def test_nested_namespaces_that_end_differently_are_fine():
+    (caller,) = callers(namespaces=["platform/team-a", "platform/team-b"])
+    assert caller.namespaces == ("platform/team-a", "platform/team-b")
+
+
+def test_a_namespace_and_its_own_last_segment_collide():
+    # `team-a` and `platform/team-a` are different namespaces that name the
+    # same stores, which is the same problem wearing a different shape.
+    with pytest.raises(ConfigError, match="same segment"):
+        callers(namespaces=["team-a", "platform/team-a"])
+
+
 def test_a_caller_gets_a_separate_read_budget_by_default():
     (caller,) = callers()
     assert caller.rate_limit_per_minute == DEFAULT_SERVICE_RATE_LIMIT

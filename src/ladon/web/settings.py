@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ladon.config.apps import team_label_for_namespace
 from ladon.config.loader import (
     DeploymentConfig,
     load_deployment_config,
@@ -275,6 +276,7 @@ def _service_caller(data: object, index: int, human_audience: str | None) -> Ser
     namespaces = _names(data["namespaces"], f"{where}.namespaces")
     if not namespaces:
         raise ConfigError(f"'{where}.namespaces' must name at least one namespace")
+    _refuse_colliding_store_names(namespaces, where)
 
     return ServiceCaller(
         name=str(data["name"]).strip().lower(),
@@ -295,6 +297,34 @@ def _service_caller(data: object, index: int, human_audience: str | None) -> Ser
             default=DEFAULT_SERVICE_READ_LIMIT,
         ),
     )
+
+
+def _refuse_colliding_store_names(namespaces: list[str], where: str) -> None:
+    """Refuse two pinned namespaces that would derive the same store names.
+
+    A store name is built from the last segment of a namespace, because
+    namespaces nest and a team's own name is where its namespace ends. So
+    ``platform/team-a`` and ``other/team-a`` produce identical store names for
+    identical application names, and the machine lane's check that an
+    ExternalSecret belongs to the application in the caller's namespace cannot
+    tell the two apart: an object provisioned under one would read as the
+    other's, on both the sync and the delete.
+
+    Refused here rather than worked around later, because the alternative is a
+    deployment where that check silently means less than it says. Rename one of
+    the teams, or pin the caller to one of them.
+    """
+    seen: dict[str, str] = {}
+    for namespace in namespaces:
+        label = team_label_for_namespace(namespace)
+        first = seen.get(label)
+        if first is not None:
+            raise ConfigError(
+                f"'{where}.namespaces' pins both {first!r} and {namespace!r}, which end in "
+                f"the same segment {label!r} and would name the same stores; a caller "
+                "pinned to both could not be told which application's object is which"
+            )
+        seen[label] = namespace
 
 
 def _k8s_namespaces(value: object, where: str) -> tuple[str, ...]:

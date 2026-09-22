@@ -136,6 +136,22 @@ def app_store_name(*, team: str, app: str) -> str:
     return _store_name(_label(team, "team"), _label(app, "app"))
 
 
+def team_label_for_namespace(namespace: str) -> str:
+    """The team label an OpenBao namespace's store names are built from.
+
+    Namespaces nest, so a team can live at ``platform/team-a``, and by the
+    baseline convention a team's namespace ends in that team's own name. The
+    last segment is therefore the label onboarding used, and it is the only
+    part of the namespace that reaches a store name.
+
+    Which is exactly why it is a function and not an inline ``rsplit``: two
+    different namespaces ending in the same segment produce the same store
+    names, and every caller that derives one has to be asking the same
+    question as the config check that refuses that pair.
+    """
+    return namespace.rsplit("/", 1)[-1]
+
+
 def checked_apps_path(path: str, *, field: str = "path") -> str:
     """Refuse a KV path that is not an application's.
 

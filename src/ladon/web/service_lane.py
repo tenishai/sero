@@ -55,6 +55,7 @@ from ladon.config.apps import (
     app_store_name,
     checked_app_path,
     checked_apps_path,
+    team_label_for_namespace,
 )
 from ladon.config.eso import external_secret, external_secret_ref
 from ladon.config.teams import ConfigError
@@ -1119,7 +1120,7 @@ def _store_for(namespace: str, app: str) -> str:
     rather than a traceback.
     """
     try:
-        return app_store_name(team=namespace.rsplit("/", 1)[-1], app=app)
+        return app_store_name(team=team_label_for_namespace(namespace), app=app)
     except ConfigError as exc:
         raise WriteRefused(str(exc)) from exc
 
