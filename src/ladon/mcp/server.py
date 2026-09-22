@@ -25,8 +25,8 @@ from mcp.types import ToolAnnotations
 from sqlalchemy.orm import Session, sessionmaker
 
 from ladon.datastore import repositories as repo
-from ladon.hygiene import assert_not_placeholder
-from ladon.mcp.ports import SecretReader, SecretWriter
+from ladon.hygiene import WriteRefused, assert_not_placeholder
+from ladon.mcp.ports import SecretReader, SecretWriter, require_non_empty_merge
 
 INSTRUCTIONS = """You are connected to a Ladon secrets platform.
 
@@ -176,6 +176,20 @@ def _reject_placeholders(values: dict[str, str]) -> None:
         assert_not_placeholder(value, key=key)
 
 
+# The HTTP surface addresses a secret's plaintext at <path>/reveal, so a path
+# that ends this way would be unreachable through its own detail route. Refused
+# at creation, where it costs nothing, rather than discovered later.
+RESERVED_PATH_SUFFIX = "/reveal"
+
+
+def _reject_reserved_path(path: str) -> None:
+    """Refuse a secret path the read surfaces could not address."""
+    if path.rstrip("/").endswith(RESERVED_PATH_SUFFIX):
+        raise WriteRefused(
+            f"{RESERVED_PATH_SUFFIX!r} is a reserved path suffix; choose another name"
+        )
+
+
 def _write_summary(
     *,
     namespace: str,
@@ -218,6 +232,7 @@ def create_secret_impl(
     """
     _require_allowed(session, user_email)
     _require_namespace(reader, user_email, namespace)
+    _reject_reserved_path(path)
     _reject_placeholders(values)
     audit_args = {"namespace": namespace, "path": path, "env": env, "data": values}
 
@@ -288,12 +303,12 @@ def update_secret_impl(
     _require_namespace(reader, user_email, namespace)
     _reject_placeholders(values)
     if not values and not remove_keys:
-        raise ValueError("update_secret needs at least one of 'values' or 'remove_keys'")
+        raise WriteRefused("update_secret needs at least one of 'values' or 'remove_keys'")
     # A key on both sides is ambiguous: written then deleted, or the reverse,
     # depending on an order the caller cannot see. Refuse instead of guessing.
     both = sorted(set(values) & set(remove_keys))
     if both:
-        raise ValueError(f"keys named in both 'values' and 'remove_keys': {', '.join(both)}")
+        raise WriteRefused(f"keys named in both 'values' and 'remove_keys': {', '.join(both)}")
     audit_args = {
         "namespace": namespace,
         "path": path,
@@ -303,6 +318,17 @@ def update_secret_impl(
     }
 
     if not apply:
+        # Preview the writer's refusal too: a dry-run that says "this is what
+        # would happen" and then fails on apply is worse than no dry-run. The
+        # reader returns masked keys, so only key names are needed here.
+        current = reader.get_secret(user_email, namespace, path, env)
+        require_non_empty_merge(
+            namespace=namespace,
+            path=path,
+            current_keys=current.masked_keys if current.exists else {},
+            values=values,
+            remove_keys=remove_keys,
+        )
         _audit(
             session,
             user_email=user_email,

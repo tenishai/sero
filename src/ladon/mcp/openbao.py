@@ -27,7 +27,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ladon.hygiene import mask
-from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult
+from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult, require_non_empty_merge
 
 # KV v2 mount the tools operate on within a namespace. Matches the baseline.
 DEFAULT_KV_MOUNT = "kv"
@@ -130,15 +130,17 @@ class OpenBaoSecrets:
     ) -> WriteResult:
         client = self._client_for(namespace)
         current = self._read_raw(client, path)
+        require_non_empty_merge(
+            namespace=namespace,
+            path=path,
+            current_keys=current,
+            values=values,
+            remove_keys=remove_keys,
+        )
         merged = dict(current)
         merged.update(values)
         for key in remove_keys:
             merged.pop(key, None)
-        if not merged:
-            # An empty secret still exists, which reads as a path with nothing in
-            # it and is almost never what was meant. Deleting the path is a
-            # separate, explicit operation.
-            raise ValueError(f"refusing to leave {namespace}/{path} empty; delete the path instead")
         client.secrets.kv.v2.create_or_update_secret(
             path=path, secret=merged, mount_point=self._mount
         )

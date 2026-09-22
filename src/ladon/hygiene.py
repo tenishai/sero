@@ -4,6 +4,10 @@ These enforce rules from CONTRIBUTING.md: refuse placeholder secret values, neve
 expose a full secret value (mask to a few characters at most), and redact secret
 material out of structured data before it is stored or logged (the audit trail).
 Keep this module dependency-free so every layer can rely on it.
+
+:class:`WriteRefused` lives here for the same reason: it is the one exception
+type that says "we decided not to", and every layer needs to be able to raise it
+without reaching sideways for a definition.
 """
 
 from __future__ import annotations
@@ -40,7 +44,19 @@ _PLACEHOLDERS = frozenset(
 URL_USERINFO = re.compile(r"//[^/@\s]*:[^/@\s]*@")
 
 
-class PlaceholderSecretError(ValueError):
+class WriteRefused(ValueError):
+    """A write Ladon will not perform, for a reason the caller can act on.
+
+    Distinct from something going wrong: a refusal is a decision, and the
+    surfaces above answer it with "you asked for something we do not do" rather
+    than "we broke". The message names the key, path, or field at fault and
+    never a value.
+
+    A ``ValueError`` subclass so callers that predate it keep working.
+    """
+
+
+class PlaceholderSecretError(WriteRefused):
     """Raised when a supplied secret value looks like a placeholder."""
 
 

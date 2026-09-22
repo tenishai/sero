@@ -669,3 +669,51 @@ def test_a_denied_write_is_audited_as_denied(client, sessions):
     (row,) = audit_rows(sessions, "create_secret")
     assert row.status == "denied"
     assert row.user_email == STRANGER
+
+
+# ── Refusals, previewed and named ──────────────────────────────────────
+
+
+def test_a_dry_run_previews_the_refusal_to_empty_a_path(client, store):
+    resp = as_member(
+        client,
+        "PATCH",
+        "/api/namespaces/team-a/secrets/app",
+        json={"env": "dev", "remove_keys": ["API_KEY", "DB_URL"]},
+    )
+    assert resp.status_code == 400
+    assert "empty" in resp.json()["error"]
+    assert len(store["app"]) == 2
+
+
+def test_creating_a_path_ending_in_reveal_is_refused(client, store):
+    resp = as_member(
+        client,
+        "POST",
+        "/api/namespaces/team-a/secrets",
+        json={
+            "path": "app/reveal",
+            "env": "dev",
+            "values": {"TOKEN": "dummy-token-value"},
+            "apply": True,
+        },
+    )
+    assert resp.status_code == 400
+    assert "reserved" in resp.json()["error"]
+    assert "app/reveal" not in store
+
+
+def test_an_unexpected_value_error_is_not_reported_as_a_refusal(sessions, store, allowed):
+    # Only a deliberate refusal is a 400. A ValueError from anywhere else is a
+    # bug, and a bug is a 500 that says nothing.
+    class Exploding:
+        def list_namespaces(self, user_email):
+            raise ValueError("a sentinel from somewhere unexpected")
+
+    settings = build_settings()
+    app = create_app(settings, session_factory=sessions, secrets=Exploding())
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/api/namespaces", headers={HEADER: MEMBER})
+    assert resp.status_code == 500
+    assert resp.json() == {"error": "internal error"}
+    assert "sentinel" not in resp.text

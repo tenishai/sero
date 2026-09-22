@@ -29,7 +29,7 @@ from starlette.exceptions import HTTPException
 
 from ladon.apply.client import BaoConnection, BaoConnectionError, TokenAuth, connect
 from ladon.datastore import engine as datastore
-from ladon.hygiene import PlaceholderSecretError
+from ladon.hygiene import WriteRefused
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.mcp.server import AccessDeniedError
 from ladon.web import routes_admin, routes_secrets
@@ -142,12 +142,11 @@ def _register_error_handlers(app: FastAPI) -> None:
     def _reveal_denied(request: Request, exc: RevealDeniedError) -> JSONResponse:
         return error(403, str(exc))
 
-    @app.exception_handler(PlaceholderSecretError)
-    def _placeholder(request: Request, exc: PlaceholderSecretError) -> JSONResponse:
-        return error(400, str(exc))
-
-    @app.exception_handler(ValueError)
-    def _bad_request(request: Request, exc: ValueError) -> JSONResponse:
+    @app.exception_handler(WriteRefused)
+    def _refused(request: Request, exc: WriteRefused) -> JSONResponse:
+        # A refusal is a decision the caller can act on: a placeholder value, a
+        # key named twice, a merge that would empty a path, a reserved name.
+        # Any other ValueError is a bug and falls to the handler below.
         return error(400, str(exc))
 
     @app.exception_handler(KeyError)

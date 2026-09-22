@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from ladon.datastore import repositories as repo
 from ladon.datastore.models import Base
-from ladon.hygiene import REDACTED, PlaceholderSecretError
-from ladon.mcp.ports import SecretPath, WriteResult
+from ladon.hygiene import REDACTED, PlaceholderSecretError, WriteRefused, mask
+from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult
 from ladon.mcp.server import (
     AccessDeniedError,
     create_secret_impl,
@@ -23,14 +23,25 @@ USER = "op@example.com"
 
 
 class FakeReader:
+    def __init__(self, keys=("API_KEY",)):
+        # Key names only: the reader's contract is that values never reach here.
+        self._keys = {k: mask("dummy-value") for k in keys}
+
     def list_namespaces(self, user_email):
         return ["team-a"]
 
     def list_secrets(self, user_email, namespace):
         return [SecretPath("team-a/app", 1)]
 
-    def get_secret(self, user_email, namespace, path, env):  # pragma: no cover - unused here
-        raise NotImplementedError
+    def get_secret(self, user_email, namespace, path, env):
+        return SecretDetail(
+            namespace=namespace,
+            path=path,
+            env=env,
+            exists=bool(self._keys),
+            version=1,
+            masked_keys=dict(self._keys),
+        )
 
 
 class FakeWriter:
@@ -242,7 +253,7 @@ def test_update_refuses_a_key_in_both_values_and_remove_keys(session, allowed):
     # Naming one key on both sides is ambiguous, so it is refused rather than
     # resolved by an ordering the caller cannot see.
     reader, writer = FakeReader(), FakeWriter()
-    with pytest.raises(ValueError, match="both"):
+    with pytest.raises(WriteRefused, match="both"):
         update_secret_impl(
             reader,
             writer,
@@ -253,6 +264,60 @@ def test_update_refuses_a_key_in_both_values_and_remove_keys(session, allowed):
             env="dev",
             values={"API_KEY": "fresh-dummy-value"},
             remove_keys=["API_KEY"],
+            apply=True,
+        )
+    assert writer.calls == []
+
+
+def test_dry_run_previews_the_refusal_to_empty_a_path(session, allowed):
+    # A dry-run that reports what would happen and then fails on apply is worse
+    # than no dry-run, so the preview runs the writer's rule against the keys
+    # the reader reports.
+    reader, writer = FakeReader(keys=("ONLY",)), FakeWriter()
+    with pytest.raises(WriteRefused, match="empty"):
+        update_secret_impl(
+            reader,
+            writer,
+            session,
+            user_email=USER,
+            namespace="team-a",
+            path="team-a/app",
+            env="dev",
+            remove_keys=["ONLY"],
+            apply=False,
+        )
+    assert writer.calls == []
+
+
+def test_dry_run_allows_a_merge_that_leaves_something(session, allowed):
+    reader, writer = FakeReader(keys=("ONE", "TWO")), FakeWriter()
+    summary = update_secret_impl(
+        reader,
+        writer,
+        session,
+        user_email=USER,
+        namespace="team-a",
+        path="team-a/app",
+        env="dev",
+        remove_keys=["ONE"],
+        apply=False,
+    )
+    assert summary["applied"] is False
+    assert summary["removed_keys"] == ["ONE"]
+
+
+def test_create_refuses_the_reserved_reveal_suffix(session, allowed):
+    reader, writer = FakeReader(), FakeWriter()
+    with pytest.raises(WriteRefused, match="reserved"):
+        create_secret_impl(
+            reader,
+            writer,
+            session,
+            user_email=USER,
+            namespace="team-a",
+            path="team-a/app/reveal",
+            env="dev",
+            values={"TOKEN": "dummy-token-value"},
             apply=True,
         )
     assert writer.calls == []
