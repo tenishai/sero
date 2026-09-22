@@ -10,18 +10,46 @@
 # Three policies, applied together:
 #   1. default-deny: nothing in the namespace talks to anything, in or out.
 #   2. the backend: ingress only from the proxy, egress only to what it needs.
-#   3. OpenBao: ingress from the backend, since (1) closed that path too.
+#   3. OpenBao: ingress from the backend and from ESO, egress to what its auth
+#      methods need. A default deny covers egress too, so a policy that only
+#      lists ingress leaves the pod unable to make a single outbound call.
 #
-# The proxy is identified by a label on its namespace, `ladon.dev/proxy=true`,
-# rather than by name: the namespace an ingress controller lives in differs per
-# cluster, and a label is a deliberate act by whoever owns that namespace. Label
-# it before applying these, or the backend is unreachable:
+# ## Two namespace labels to apply before this works
+#
+# Neither is a namespace name, because which namespace an ingress controller or
+# the External Secrets Operator lives in differs per cluster, and a label is a
+# deliberate act by whoever owns that namespace rather than a name this
+# repository has to guess.
 #
 #   kubectl label namespace <proxy-namespace> ladon.dev/proxy=true
+#   kubectl label namespace <eso-namespace>   ladon.dev/eso=true
 #
-# Placeholders to replace for a given cluster are marked below. A policy is
-# rejected by the API server if its selectors are malformed, but a placeholder
-# CIDR is syntactically valid and silently wrong, so check it.
+# Without the first, the backend is unreachable. Without the second, every
+# ExternalSecret on the cluster fails to read from OpenBao.
+#
+# ## Placeholders to replace, all marked REPLACE below
+#
+# A NetworkPolicy with a wrong address range is accepted by the API server and
+# silently wrong, so none of these fails loudly. Check each one.
+#
+# The `0.0.0.0/0` rules on TCP 443 are the deliberate wide default: OpenBao's
+# JWT auth fetches the cluster's OIDC discovery document and JWKS, and the
+# backend fetches the proxy's JWKS and reaches Helm chart repositories. All are
+# external https endpoints whose addresses are not knowable from here. Narrow
+# each to the hosts your deployment actually uses.
+#
+# The API-server rules name an address range because a control plane endpoint
+# is not a pod and cannot be selected. Two things to know:
+#
+#   * One rule per cluster endpoint. A single range cannot cover several
+#     clusters, so a deployment that manages more than the cluster it runs on
+#     needs one `ipBlock` entry per endpoint.
+#   * Name the endpoint, not the Service. In-cluster traffic to
+#     `kubernetes.default.svc` is DNAT'd from the Service ClusterIP to the real
+#     control plane address before most CNI plugins evaluate egress, so a rule
+#     naming the Service CIDR matches nothing. Use the control plane address.
+#     Some CNI plugins evaluate before DNAT instead; if egress to the API
+#     server is denied with the endpoint allowed, try the Service CIDR.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -54,6 +82,11 @@ spec:
   ingress:
     # The proxy, and only the proxy. The Service is ClusterIP, so this is the
     # whole of the backend's reachable surface.
+    #
+    # Both ports, because the two deploy paths bind different ones: the
+    # standalone Deployment takes the image's default 8000, and gojira.yaml
+    # sets LADON_PORT to 8080 for the generated one. Drop whichever port your
+    # deployment does not use.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -61,6 +94,8 @@ spec:
       ports:
         - protocol: TCP
           port: 8000
+        - protocol: TCP
+          port: 8080
   egress:
     # Name resolution. Without this every other rule below fails on a lookup.
     - to:
@@ -83,11 +118,19 @@ spec:
       ports:
         - protocol: TCP
           port: 8200
-    # The Kubernetes API server, for the cluster-apply layer (D18). A cluster's
-    # control plane endpoint is not a pod, so it can only be named as an
-    # address. REPLACE THIS with the endpoint your cluster actually uses; the
-    # value below is the documentation-reserved range from RFC 5737 and routes
-    # nowhere.
+    # REPLACE: outbound https. The backend fetches the proxy's JWKS to verify
+    # what the proxy asserted, and `helm repo add` reaches the chart
+    # repositories the install layer pins. Narrow this to those hosts.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # REPLACE: the Kubernetes API server, for the cluster-apply layer (D18).
+    # One rule per cluster endpoint; see the note at the top of this file. The
+    # committed value is the documentation-reserved range from RFC 5737 and
+    # routes nowhere.
     - to:
         - ipBlock:
             cidr: 198.51.100.0/24
@@ -106,16 +149,53 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openbao
+  # Egress as well as ingress. The default-deny above covers both, and OpenBao
+  # is not a passive server: its JWT auth method calls out to verify what a
+  # workload presented. Listing only ingress here leaves those calls blocked
+  # and every ESO authentication failing on a timeout.
   policyTypes:
     - Ingress
+    - Egress
   ingress:
-    # The backend. Raft peer traffic between OpenBao replicas is allowed too,
-    # so a later move off the single-node shape (D13a) does not break the
-    # cluster the moment a second replica appears.
     - from:
+        # The backend.
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: ladon
+        # Raft peer traffic between OpenBao replicas, so a later move off the
+        # single-node shape (D13a) does not break the cluster the moment a
+        # second replica appears.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openbao
+        # The External Secrets Operator, which is the whole point of the
+        # platform: it authenticates here and reads the values it syncs. It
+        # runs in its own namespace, so a same-namespace selector never
+        # matches it.
+        - namespaceSelector:
+            matchLabels:
+              ladon.dev/eso: "true"
+      ports:
+        - protocol: TCP
+          port: 8200
+        - protocol: TCP
+          port: 8201
+  egress:
+    # Name resolution, for everything below.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Raft peers, once there is more than one replica.
+    - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: openbao
@@ -124,3 +204,22 @@ spec:
           port: 8200
         - protocol: TCP
           port: 8201
+    # REPLACE: outbound https. The JWT auth method fetches the cluster's OIDC
+    # discovery document and its JWKS to verify a workload's token, and on this
+    # platform that issuer is an external endpoint, not an in-cluster Service.
+    # Narrow this to the issuer host.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # REPLACE: the Kubernetes API server, for auth methods that call it (a
+    # TokenReview-style verification rather than offline JWT validation). One
+    # rule per cluster endpoint; see the note at the top of this file.
+    - to:
+        - ipBlock:
+            cidr: 198.51.100.0/24
+      ports:
+        - protocol: TCP
+          port: 443
