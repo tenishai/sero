@@ -145,6 +145,16 @@ def read(client, *, headers=None, **overrides):
 # ── Fakes ──────────────────────────────────────────────────────────────
 
 
+class InvalidPath(Exception):
+    """What hvac raises for a 404. The only failure that means "not there"."""
+
+
+class Forbidden(Exception):
+    """A denial from OpenBao, shaped like hvac's, with its status code."""
+
+    status_code = 403
+
+
 class FakeKvV2:
     """The ``client.secrets.kv.v2`` surface, over a plain dict of paths."""
 
@@ -156,7 +166,7 @@ class FakeKvV2:
 
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
         if path not in self._store:
-            raise KeyError("not found")
+            raise InvalidPath(f"no secret at {path!r}")
         return {
             "data": {
                 "data": dict(self._store[path]),
@@ -173,9 +183,9 @@ class FakeKvV2:
 
 
 class FakeClient:
-    def __init__(self, store):
-        kv = FakeKvV2(store)
-        self.secrets = type("S", (), {"kv": type("K", (), {"v2": kv})()})()
+    def __init__(self, store, kv=None):
+        self.kv = kv if kv is not None else FakeKvV2(store)
+        self.secrets = type("S", (), {"kv": type("K", (), {"v2": self.kv})()})()
 
 
 class FakeClock:
@@ -211,6 +221,13 @@ def cluster():
     return FakeCluster()
 
 
+class DenyingKvV2(FakeKvV2):
+    """A store that refuses every read. Not a 404: Ladon could not look."""
+
+    def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
+        raise Forbidden("permission denied")
+
+
 def build_client(
     sessions,
     store,
@@ -221,6 +238,8 @@ def build_client(
     identity=None,
     env=None,
     assertion_verifier=None,
+    kv=None,
+    raise_server_exceptions=True,
 ):
     settings = WebSettings(
         identity=identity or IdentitySettings(),
@@ -233,7 +252,7 @@ def build_client(
         service_callers=service_callers,
     )
     secrets = OpenBaoSecrets(
-        client_for=lambda namespace: FakeClient(store),
+        client_for=lambda namespace: FakeClient(store, kv=kv),
         # The acting human holds nothing. A write that lands proves the lane
         # authorized on the caller's pinned namespaces and not on this.
         namespaces_for=lambda email: [],
@@ -257,7 +276,7 @@ def build_client(
         assertion_verifier=assertion_verifier,
         env=env or {},
     )
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 @pytest.fixture
@@ -1241,3 +1260,58 @@ def test_an_unsync_spends_the_callers_budget(sessions, store, cluster):
     )
     assert unsync(limited).status_code == 200
     assert unsync(limited).status_code == 429
+
+
+# ── When OpenBao cannot be read ────────────────────────────────────────
+
+
+@pytest.fixture
+def denied(sessions, store, cluster):
+    """A lane whose vault refuses every read."""
+    # Errors are rendered rather than re-raised, which is what a real caller
+    # sees: the application's handler turns an unexpected failure into a 500.
+    return build_client(
+        sessions,
+        store,
+        cluster,
+        service_callers=callers(),
+        kv=DenyingKvV2(store),
+        raise_server_exceptions=False,
+    )
+
+
+def test_a_read_that_openbao_refuses_is_not_a_404(denied):
+    # "I could not look" is never "there is nothing there": answering 404 here
+    # would report a secret that exists as gone.
+    response = read(denied)
+    assert response.status_code == 500
+    assert response.json() == {"error": "internal error"}
+
+
+def test_a_read_that_openbao_refuses_is_audited_as_an_error(denied, sessions):
+    read(denied)
+    (row,) = rows(sessions, "service.get_secret")
+    assert row.status == "error"
+    assert row.redacted_args["via"] == CALLER
+
+
+def test_a_delete_whose_read_fails_does_not_report_a_deletion(denied, store):
+    # The answer would otherwise be `deleted: false` and a 200, which tells a
+    # caller a path is gone when nothing was even looked at.
+    response = erase(denied, erase_body(apply=True))
+    assert response.status_code == 500
+    assert PATH in store
+
+
+def test_a_delete_whose_read_fails_is_audited_as_an_error(denied, sessions):
+    erase(denied, erase_body(apply=True))
+    (row,) = rows(sessions, "service.delete_secret")
+    assert row.status == "error"
+
+
+def test_the_delete_runs_whether_or_not_the_read_found_anything(client, store):
+    # Unconditional on apply: OpenBao's metadata delete answers the same either
+    # way, so skipping it on the strength of an earlier read only adds a race.
+    response = erase(client, erase_body(path=f"apps/{APP}/nowhere", apply=True))
+    assert response.status_code == 200
+    assert response.json()["deleted"] is False

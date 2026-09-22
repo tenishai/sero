@@ -161,11 +161,16 @@ class SecretEraser(Protocol):
     and keeping them apart is what lets a deployment wire only one of them.
     """
 
-    def delete_secret(self, user_email: str, namespace: str, path: str) -> bool:
-        """Remove a path and all of its versions. True when one was there.
+    def delete_secret(self, user_email: str, namespace: str, path: str) -> None:
+        """Remove a path and all of its versions, and confirm it is gone.
 
-        Idempotent: a path that is already gone is False, not an error. No
-        ``env``, because a deployment serves one and a delete has nothing to
+        Idempotent, and unconditional with it: a path that is already absent is
+        not an error, so there is nothing for an implementation to gain by
+        checking first. Whether anything was there is what the caller's own
+        read says, which is why nothing is returned; an implementation that
+        cannot confirm the path is gone afterwards raises.
+
+        No ``env``, because a deployment serves one and a delete has nothing to
         label. Returns no key names; the caller read those before it asked.
         """
         ...

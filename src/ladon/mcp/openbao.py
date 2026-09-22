@@ -47,6 +47,16 @@ def _is_not_found(exc: BaseException) -> bool:
     return type(exc).__name__ == "InvalidPath" or getattr(exc, "status_code", None) == 404
 
 
+class SecretNotDeleted(RuntimeError):
+    """OpenBao accepted a delete and the path is still readable.
+
+    Not a refusal the caller can act on: Ladon said it would remove a path,
+    the store answered, and the secret is still there. It surfaces as a 500
+    and an audit row, which is the honest answer, because the alternative is
+    reporting a destroy that did not happen.
+    """
+
+
 ClientFor = Callable[[str], Any]
 NamespacesFor = Callable[[str], list[str]]
 
@@ -120,11 +130,21 @@ class OpenBaoSecrets:
         return self._read(client, namespace, path, env=env)
 
     def _read(self, client: Any, namespace: str, path: str, *, env: str) -> SecretDetail:
+        """One path's state, or ``exists=False`` when OpenBao says it is absent.
+
+        Only a 404 is absence. Every other failure is raised: a denial, an
+        expired token, a vault that is sealed or unreachable all mean Ladon
+        could not look, and reporting that as "there is nothing there" is how a
+        read answers 404 for a secret that exists and a delete reports success
+        over a path it never touched.
+        """
         try:
             resp = client.secrets.kv.v2.read_secret_version(
                 path=path, mount_point=self._mount, raise_on_deleted_version=False
             )
-        except Exception:
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
             return SecretDetail(namespace=namespace, path=path, env=env, exists=False)
         if not resp:
             return SecretDetail(namespace=namespace, path=path, env=env, exists=False)
@@ -200,22 +220,30 @@ class OpenBaoSecrets:
 
     # ── SecretEraser ─────────────────────────────────────────────────────
 
-    def delete_secret(self, user_email: str, namespace: str, path: str) -> bool:
-        """Remove a path and every version of it. True when one was there.
+    def delete_secret(self, user_email: str, namespace: str, path: str) -> None:
+        """Remove a path and every version of it, then prove it is gone.
 
         Metadata and all versions, not the soft delete KV v2 does by default: a
         soft-deleted path still exists, still lists, and can be undeleted, which
         is not what a caller asking for the path to be gone means. The versions
         hold the values, so leaving them is leaving the secret.
 
-        Read first, so the answer distinguishes a path that was removed from one
-        that was already absent. Asking twice is not an error either way.
+        Unconditional: the metadata delete answers 204 whether or not the path
+        was there, so there is nothing to gain by reading first and a race to
+        lose by it. Whether anything was there is a question the caller's own
+        read answers, which is why this returns nothing.
+
+        The read-back is the part that matters. A delete Ladon reported and
+        OpenBao did not perform is the failure worth catching here rather than
+        the next time somebody reads the path and finds the credential still
+        live, so a path that is still readable afterwards raises.
         """
         client = self._client_for(namespace)
-        if not self._read(client, namespace, path, env="").exists:
-            return False
         client.secrets.kv.v2.delete_metadata_and_all_versions(path=path, mount_point=self._mount)
-        return True
+        if self._read(client, namespace, path, env="").exists:
+            raise SecretNotDeleted(
+                f"{namespace}/{path} is still readable after OpenBao accepted the delete"
+            )
 
     # ── Reveal (the one plaintext exit, gated above this layer) ──────────
 
@@ -234,12 +262,20 @@ class OpenBaoSecrets:
         return str(current[key])
 
     def _read_raw(self, client: Any, path: str) -> dict[str, str]:
-        """Read the current plaintext for a merge. Never returned or logged."""
+        """Read the current plaintext for a merge. Never returned or logged.
+
+        Only a 404 reads as an empty path, for the same reason as ``_read`` and
+        with more at stake: an update merges into what this returns and writes
+        the result back, so a denial or an unreachable vault swallowed here
+        would merge into nothing and overwrite every key the path holds.
+        """
         try:
             resp = client.secrets.kv.v2.read_secret_version(
                 path=path, mount_point=self._mount, raise_on_deleted_version=False
             )
-        except Exception:
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
             return {}
         if not resp:
             return {}

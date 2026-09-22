@@ -6,7 +6,7 @@ stores plaintext; the reader must only ever return masked values.
 
 import pytest
 
-from ladon.mcp.openbao import OpenBaoSecrets
+from ladon.mcp.openbao import OpenBaoSecrets, SecretNotDeleted
 
 # What the store says about when the current version was written.
 WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
@@ -14,6 +14,12 @@ WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
 
 class InvalidPath(Exception):
     """Named like hvac's: an empty KV listing is a 404 from OpenBao."""
+
+
+class Forbidden(Exception):
+    """A denial from OpenBao. Shaped like hvac's, with its status code."""
+
+    status_code = 403
 
 
 class FakeKvV2:
@@ -41,7 +47,9 @@ class FakeKvV2:
 
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
         if path not in self._store:
-            raise KeyError("not found")
+            # What hvac raises for a 404, which is the only failure that means
+            # the path is not there.
+            raise InvalidPath(f"no secret at {path!r}")
         return {
             "data": {
                 "data": dict(self._store[path]),
@@ -231,20 +239,91 @@ def test_get_secret_reports_no_timestamp_when_the_store_gives_none():
 def test_delete_secret_removes_the_metadata_and_every_version():
     store = {"app": {"API_KEY": "supersecretvalue"}}
     obs, client = make_secrets_and_client(store)
-    assert obs.delete_secret("op@example.com", "team-a", "app") is True
+    obs.delete_secret("op@example.com", "team-a", "app")
     # The metadata call, not a soft delete: a soft-deleted path still exists.
     assert client.kv.destroyed == ["app"]
     assert store == {}
 
 
-def test_deleting_a_path_that_is_not_there_is_false_and_touches_nothing():
+def test_deleting_a_path_that_is_not_there_is_not_an_error():
+    # Unconditional: OpenBao answers a metadata delete the same either way, so
+    # reading first to decide would only add a race.
     obs, client = make_secrets_and_client({"app": {"API_KEY": "v"}})
-    assert obs.delete_secret("op@example.com", "team-a", "nope") is False
-    assert client.kv.destroyed == []
+    obs.delete_secret("op@example.com", "team-a", "nope")
+    assert client.kv.destroyed == ["nope"]
 
 
 def test_deleting_twice_is_not_an_error():
     obs, client = make_secrets_and_client({"app": {"API_KEY": "v"}})
-    assert obs.delete_secret("op@example.com", "team-a", "app") is True
-    assert obs.delete_secret("op@example.com", "team-a", "app") is False
-    assert client.kv.destroyed == ["app"]
+    obs.delete_secret("op@example.com", "team-a", "app")
+    obs.delete_secret("op@example.com", "team-a", "app")
+    assert client.kv.destroyed == ["app", "app"]
+
+
+def test_a_delete_that_leaves_the_path_readable_raises():
+    # The failure worth catching here rather than the next time somebody reads
+    # the path and finds the credential still live.
+    class KeepsIt(FakeKvV2):
+        def delete_metadata_and_all_versions(self, *, path, mount_point):
+            self.destroyed.append(path)
+
+    client = FakeClient({"app": {"API_KEY": "v"}})
+    client.secrets.kv.v2 = KeepsIt({"app": {"API_KEY": "v"}})
+    obs = OpenBaoSecrets(client_for=lambda ns: client, namespaces_for=lambda email: ["team-a"])
+    with pytest.raises(SecretNotDeleted, match="still readable"):
+        obs.delete_secret("op@example.com", "team-a", "app")
+
+
+# Only a 404 is absence ---------------------------------------------------------
+
+
+class Denies(FakeKvV2):
+    """A store that refuses the read. Not a 404: Ladon could not look."""
+
+    def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
+        raise Forbidden("permission denied")
+
+
+def denying_secrets():
+    client = FakeClient({})
+    client.secrets.kv.v2 = Denies({})
+    return OpenBaoSecrets(client_for=lambda ns: client, namespaces_for=lambda email: ["team-a"])
+
+
+def test_a_denied_read_is_raised_not_reported_as_absent():
+    # Reporting "I could not look" as "there is nothing there" is how a read
+    # answers 404 for a secret that exists.
+    with pytest.raises(Forbidden):
+        denying_secrets().get_secret("op@example.com", "team-a", "app", "dev")
+
+
+def test_a_denied_read_stops_a_delete_before_the_read_back():
+    with pytest.raises(Forbidden):
+        denying_secrets().delete_secret("op@example.com", "team-a", "app")
+
+
+def test_a_denied_read_stops_an_update_rather_than_overwriting():
+    # An update merges into what the read returns and writes the result back,
+    # so a swallowed denial would merge into nothing and destroy every key.
+    class DeniesRead(Denies):
+        pass
+
+    store = {"app": {"KEEP": "old"}}
+    client = FakeClient(store)
+    client.secrets.kv.v2 = DeniesRead(store)
+    obs = OpenBaoSecrets(client_for=lambda ns: client, namespaces_for=lambda email: ["team-a"])
+    with pytest.raises(Forbidden):
+        obs.update_secret("op@example.com", "team-a", "app", "dev", {"ADD": "new"}, [])
+    assert store == {"app": {"KEEP": "old"}}
+
+
+def test_a_denied_listing_is_raised_not_reported_as_empty():
+    class DeniesList(FakeKvV2):
+        def list_secrets(self, *, path, mount_point):
+            raise Forbidden("permission denied")
+
+    client = FakeClient({})
+    client.secrets.kv.v2 = DeniesList({})
+    obs = OpenBaoSecrets(client_for=lambda ns: client, namespaces_for=lambda email: ["team-a"])
+    with pytest.raises(Forbidden):
+        obs.list_secrets("op@example.com", "team-a")

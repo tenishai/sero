@@ -616,6 +616,15 @@ def delete_secret(
     With it, deleting a path that is already gone is ``deleted: false`` and a
     200, because a destroy step that fails when it is run twice is a destroy
     step nobody can retry.
+
+    ``deleted`` comes from the read this route does first, and the delete runs
+    whether or not that read found anything. The two are separate on purpose:
+    the read is what the answer describes, and the delete is unconditional
+    because OpenBao's metadata delete is already idempotent, so skipping it on
+    the strength of a read taken a moment earlier only adds a race. A read that
+    fails for any reason other than "not there" stops the call: a caller told
+    ``deleted: false`` because Ladon could not look would believe a path was
+    gone that is still live.
     """
     args = {
         **_attribution(caller),
@@ -631,11 +640,8 @@ def delete_secret(
         # Names only, read before the delete: afterwards there is nothing left
         # to ask, and a row that cannot say what was removed is half a record.
         keys = sorted(detail.masked_keys)
-        deleted = (
+        if body.apply:
             secrets.delete_secret(body.acting_email, body.namespace, path)
-            if body.apply and detail.exists
-            else False
-        )
         _audit(
             session,
             user_email=body.acting_email,
@@ -650,10 +656,7 @@ def delete_secret(
         "path": path,
         "keys": keys,
     }
-    if body.apply:
-        answer["deleted"] = deleted
-    else:
-        answer["would_delete"] = detail.exists
+    answer["deleted" if body.apply else "would_delete"] = detail.exists
     return answer
 
 
