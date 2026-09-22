@@ -206,6 +206,273 @@ That ordering means a new deployment bootstraps through its admins: an admin
 comes from the config, `/api/me` is outside the allow list so they can see
 themselves, and `POST /api/admin/allow-list` is how the first person gets on.
 
+## The machine lane
+
+Some writers are not people. A provisioner that stands up an application
+provisions that application's secret on behalf of whoever asked it to, minutes
+or hours later, with nobody's browser in the loop. There are only bad ways to do
+that on the human lane: hold a person's credential past their session, or let
+the proxy header be set by something the proxy never authenticated.
+
+So machines get their own lane (D16), reachable at `/api/service/*` and nowhere
+else. It shares the human lane's token verification and shares nothing else.
+
+### Why it is separate
+
+- **A different audience.** A caller whose `audience` equals the human
+  assertion's is refused at config load, not at request time. Share the audience
+  and a person's proxy assertion is a machine credential, which is the failure
+  the separation exists to prevent.
+- **A pinned subject.** Trusting an issuer is not trusting every workload that
+  issuer will sign for. The lane accepts exactly one `sub` per caller.
+- **Pinned namespaces.** A machine that can reach one namespace must not thereby
+  reach all of them. The namespaces a caller may write are config, next to its
+  subject, and so are the Kubernetes namespaces it may place an object in.
+- **A named human.** `acting_email` says who the write is for. It is recorded
+  and never authorizes: the caller supplies it, so it could say anything, and
+  nothing this lane decides depends on it. Read it as "this machine says it
+  acted for this person", which is what it is.
+- **A short-lived token.** An issuer's own expiry is the issuer's decision, and
+  issuers are generous with it. This lane sets its own ceiling.
+
+The plain identity header is not read on these routes, the development hatch is
+not read, and a deployment that configures no callers refuses the lane entirely.
+The lane opens because somebody configured it, never because somebody forgot to.
+
+### Configuration
+
+```yaml
+service_callers:
+  - name: provisioner
+    issuer: https://issuer.example.com
+    jwks_url: https://issuer.example.com/keys
+    audience: https://ladon.example.com/service
+    subject: system:serviceaccount:ladon:provisioner
+    namespaces: [team-a]
+    k8s_namespaces: []
+    acting_email_required: true
+    rate_limit_per_minute: 60
+```
+
+`name`, `issuer`, `jwks_url`, `audience`, `subject` and `namespaces` are all
+required, because each one is a boundary. `jwks_url` must be https: over plain
+HTTP anyone on the path chooses the signer. `acting_email_required` may only be
+`true`; a lane that wrote on nobody's behalf would leave a machine write with no
+trace of a human, so `false` is refused rather than honoured, and both routes
+require the field. Two callers may not share an issuer and audience pair,
+because that pair is what picks the caller a token belongs to.
+
+`k8s_namespaces` is where this caller may place an ExternalSecret beyond the
+application's own name. Leaving it empty is the right answer for the common
+deployment, not an oversight: one application, one namespace named after it.
+
+`namespaces` entries may be nested OpenBao paths (`platform/team-a`), and both
+routes accept the same shape.
+
+### Reaching it from inside the cluster
+
+The trust boundary above says nothing but the proxy may reach this port, and
+`deploy/ladon/k8s/base/networkpolicy.yaml` enforces exactly that. A machine
+caller running in the cluster is not the proxy, so it is denied until the
+deployment admits it: add an ingress rule naming that workload, alongside the
+proxy rule, and nothing else.
+
+**Do not do this unless `identity.assertion` is configured.** There is one port,
+not one port per lane. A NetworkPolicy admits a workload to the whole process,
+including `/api/namespaces/*` and `/api/admin/*`, and on a header-only
+deployment those routes believe whatever `identity.header` says. An admitted
+machine could therefore set that header to any address and be any person: read
+every namespace that person holds, reveal where reveal is on, and put itself on
+the allow list through the admin routes. None of the machine lane's pins apply,
+because none of those routes are the machine lane.
+
+With an assertion configured the human routes want a signed proof instead, and
+the machine's own token does not verify as one: the audiences must differ, which
+config enforces. That is what makes admitting the workload safe, and it is why
+the two requirements go together rather than either one alone.
+
+Given that, admitting it is not a hole in requirement 1: a caller that reaches
+the port still has to present a token signed by the configured issuer, for the
+configured audience, naming the pinned subject. Keep the rule as narrow as the
+lane is: one workload, one port.
+
+### What the token must be
+
+`Authorization: Bearer <OIDC ID token>`, verified by the same machinery the
+human assertion uses: ES256 or RS256 only (which is what refuses an `alg: none`
+downgrade) over a key published at `jwks_url`, the configured issuer and
+audience, thirty seconds of clock leeway, and the same key cache. On top of that
+the lane requires `iat` and `sub`, and the subject must equal the caller's
+pinned one.
+
+Two things are stricter here than on the human lane:
+
+- **A maximum token age of 900 seconds**, measured from `iat` and independent of
+  the token's own `exp`. A token minted eight hours ago and still unexpired has
+  had eight hours to end up in a log, an environment variable or a queue. Mint a
+  fresh one per call; that is what the issuer is for. A token stamped in the
+  future, past the leeway, is refused for the mirror reason.
+- **A ten-minute stale-key grace**, not the human lane's hour. Keeping a UI
+  usable through a key-endpoint outage is worth an hour of risk; letting a
+  machine retry its provisioning call later is not. In practice this means the
+  first refresh that fails after the cache's fifteen-minute lifetime empties it,
+  rather than the keys riding out an hour of outage.
+
+Anything else is `401 {"error": "no service identity"}`: an absent token, a
+token for the human lane, another audience, another issuer, another subject, an
+expired token, one not yet valid, one too old, a signature from a key that is
+not published, or a token naming the audiences of two configured callers at
+once (whose subject and namespaces would apply is not a question this lane
+guesses at).
+
+### What a caller can do
+
+Two things.
+
+**`POST /api/service/secrets`** merges keys into one application path. The
+semantics are the human lane's, because they are the same two functions: values
+merge into what is there, `remove_keys` removes, a key named on both sides is
+refused, a merge that would empty the path is refused, placeholder values are
+refused, and nothing is written without `apply`.
+
+```json
+{
+  "acting_email": "operator@example.com",
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "values": {"DB_URL": "<the value, never logged or stored by Ladon>"},
+  "remove_keys": [],
+  "apply": false
+}
+```
+
+The answer is the write summary the other surfaces return, key names only:
+
+```json
+{
+  "applied": false,
+  "action": "update",
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "env": "dev",
+  "written_keys": ["DB_URL"],
+  "removed_keys": []
+}
+```
+
+**`POST /api/service/sync`** makes sure the Kubernetes Secret exists. Writing
+the value into OpenBao is half the job; until an `ExternalSecret` reads the path,
+the workload's Secret is not there and the pod does not start. One document,
+converged, so a second call over the same application reports it already current
+and writes nothing.
+
+```json
+{
+  "acting_email": "operator@example.com",
+  "namespace": "team-a",
+  "app": "sample",
+  "path": "apps/sample/demo",
+  "name": "sample-demo",
+  "refresh_interval": "1h",
+  "apply": true
+}
+```
+
+The answer carries the store it pointed at and the converge report, which is
+verbs and object names:
+
+```json
+{
+  "applied": true,
+  "namespace": "team-a",
+  "app": "sample",
+  "path": "apps/sample/demo",
+  "store": "ladon-team-a-sample-<digest>",
+  "k8s_namespace": "sample",
+  "name": "sample-demo",
+  "target_name": "sample-demo",
+  "report": ["ExternalSecret/sample/sample-demo: create"],
+  "blocked": []
+}
+```
+
+The store name comes from the same function that named it at onboarding, so a
+typo cannot point a document at a store nothing created.
+
+#### Where the object lands
+
+`k8s_namespace` is optional and defaults to the application's name, which is
+where onboarding puts it. Naming a different one requires that namespace to be
+listed in the caller's `k8s_namespaces`; otherwise it is `403`.
+
+This is not the same gate as the store's `namespaceSelector`, and it is worth
+being precise about which does what:
+
+- The store's selector, pinned at onboarding to the application's Kubernetes
+  namespace, decides **what ESO may read through it**. An ExternalSecret in
+  another namespace referencing that store gets nothing.
+- This pinning decides **where an object may be written on the cluster**. That
+  is a separate question, and nothing in ESO answers it: the backend holds the
+  `ladon` field manager, so without this an admitted caller could create or
+  replace an ExternalSecret in any namespace on the cluster. The object would
+  read no secrets, but creating and taking ownership of objects in namespaces
+  the caller has no business in is its own problem.
+
+`target_name` is subject to the same list. Naming a target different from `name`
+is how an ExternalSecret adopts a Secret the consumer already uses, which is
+also how it would take over one it should not, so it is allowed only in a
+namespace the deployment admitted on purpose. In the default namespace, the
+target is the ExternalSecret's own name.
+
+### What a caller cannot do
+
+- Write outside `apps/`. This lane provisions application secrets and nothing
+  else; any other path is `400`. A path with an empty or relative segment is
+  refused too, because `..` reads as inside the prefix while naming something
+  outside it, and so is one carrying a percent escape (`%2e%2e` becomes `..`
+  one decoding hop later) or one longer than 256 characters.
+- Write outside the application's own prefix, on sync: `apps/<app>` is the only
+  prefix that application's identity can read.
+- Write in an OpenBao namespace its config does not pin to it. That is `403`,
+  whatever the acting email holds on the human lane.
+- Place a cluster object in a Kubernetes namespace its config does not pin to
+  it, or name a target Secret outside one. Also `403`; see above.
+- Read a secret, reveal a value, touch the allow list, approve a namespace
+  request, or run an apply phase. Those are human routes and stay human.
+- Exceed its call budget. Each caller has an in-process token bucket, 60 calls a
+  minute by default, shared across both routes; past it the answer is `429`. It
+  is a guard against a stuck loop filling the vault, not a distributed quota: a
+  second replica has a second bucket.
+
+### Auditing
+
+One row per call, in the same table as everything else. Both routes record
+against `acting_email`, under `service.put_secret` and `service.sync_secret`,
+and every row this lane writes carries three arguments saying how it got there:
+
+| Argument | What it says |
+| --- | --- |
+| `lane` | Always `service`. One predicate separates every machine-on-behalf row from a person's own. |
+| `via` | The caller's configured name: which machine. |
+| `subject` | The identity that machine proved. |
+
+`user_email` is the person the call named, not the person Ladon authenticated,
+and the difference matters when reading these rows. On the human lane that
+column is an address a proxy verified. Here it is an address a machine supplied,
+and nothing the lane decided depended on it: a caller may name any address at
+all, including one that has never used Ladon. The three arguments above are what
+is actually proven, so read such a row as "`via` acted, and said it acted for
+`user_email`". A row with no `lane` is a person's own.
+
+Ladon does not require the acting email to be on the allow list, on purpose. The
+lane exists to provision secrets for people at the moment they ask an automated
+system for something, and many of those people never touch Ladon directly.
+
+Denials are recorded too, including the ones that never got past the token.
+Those carry `via` as the caller the token claimed to be, or `unknown` when it
+matched none, and are filed under `unidentified`. A `429` is filed under the
+caller's name, which is known by then.
+
 ## Migrations
 
 Migrations run at boot, from `LADON_DATABASE_URL`. SQLite is the development
@@ -225,11 +492,12 @@ Every failure is one JSON object with an `error` string:
 | Status | When |
 | --- | --- |
 | 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name) or the request named another environment. |
-| 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. |
-| 403 | Not on the allow list, not a member of the namespace, not an admin, or reveal is not enabled. |
+| 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. On `/api/service/*`, no token, or one that is not the configured caller's. |
+| 403 | Not on the allow list, not a member of the namespace, not an admin, reveal is not enabled, or a machine caller is not pinned to the namespace. |
 | 404 | No such namespace request, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
 | 405 | A real route, asked with the wrong method. |
 | 422 | The request body does not match the route. The message names the field and never quotes what was sent. |
+| 429 | A machine caller has spent its call budget for this minute. |
 | 500 | Something broke. The body says only `internal error`; the traceback is in the log. |
 | 503 | The datastore or OpenBao is not configured, or OpenBao cannot be reached. |
 

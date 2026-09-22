@@ -57,6 +57,12 @@ DEFAULT_ASSERTION_HEADER = "x-goog-iap-jwt-assertion"
 DEFAULT_EMAIL_CLAIM = "email"
 DEFAULT_FETCH_TIMEOUT = 5
 
+# Claims a token must carry to be considered at all. A token with no expiry is
+# a permanent credential; one with no issuer or audience is a token for
+# somewhere else that happens to verify here. A caller that needs more (the
+# machine lane pins a subject, so it requires ``sub``) says so in its settings.
+DEFAULT_REQUIRED_CLAIMS = ("exp", "iss", "aud")
+
 log = logging.getLogger(__name__)
 
 # url -> the parsed JWKS document.
@@ -76,6 +82,8 @@ class AssertionSettings:
     issuer: str
     header: str = DEFAULT_ASSERTION_HEADER
     email_claim: str = DEFAULT_EMAIL_CLAIM
+    # Claims whose absence makes the token unacceptable, whatever else verifies.
+    required_claims: tuple[str, ...] = DEFAULT_REQUIRED_CLAIMS
 
 
 def require_https(url: str) -> None:
@@ -110,11 +118,13 @@ class JwksCache:
         *,
         fetch: JwksFetcher = fetch_jwks,
         ttl_seconds: int = DEFAULT_JWKS_TTL_SECONDS,
+        stale_max_seconds: int = STALE_KEYS_MAX_SECONDS,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._url = url
         self._fetch = fetch
         self._ttl = ttl_seconds
+        self._stale_max = stale_max_seconds
         self._now = now
         self._keys: dict[str, Any] = {}
         self._fetched_at: float | None = None
@@ -160,7 +170,7 @@ class JwksCache:
     def _expire_if_too_stale(self) -> None:
         if self._fetched_at is None:
             return
-        if (self._now() - self._fetched_at) >= STALE_KEYS_MAX_SECONDS:
+        if (self._now() - self._fetched_at) >= self._stale_max:
             self._keys = {}
 
     def _can_attempt(self) -> bool:
@@ -202,10 +212,17 @@ class AssertionVerifier:
         *,
         fetch: JwksFetcher = fetch_jwks,
         ttl_seconds: int = DEFAULT_JWKS_TTL_SECONDS,
+        stale_max_seconds: int = STALE_KEYS_MAX_SECONDS,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
-        self._jwks = JwksCache(settings.jwks_url, fetch=fetch, ttl_seconds=ttl_seconds, now=now)
+        self._jwks = JwksCache(
+            settings.jwks_url,
+            fetch=fetch,
+            ttl_seconds=ttl_seconds,
+            stale_max_seconds=stale_max_seconds,
+            now=now,
+        )
 
     @property
     def header(self) -> str:
@@ -217,6 +234,21 @@ class AssertionVerifier:
         Raises :class:`AssertionInvalid` for anything that does not verify, so a
         forged, expired, misaddressed or unsigned assertion is indistinguishable
         from no identity at all.
+        """
+        claims = self.claims(token)
+        address = claims.get(self._settings.email_claim)
+        if not address or not isinstance(address, str):
+            raise AssertionInvalid(f"the assertion carries no {self._settings.email_claim!r} claim")
+        return address
+
+    def claims(self, token: str) -> dict[str, Any]:
+        """Verify ``token`` and return every claim it carries.
+
+        The verification is the same one :meth:`email` rests on: an allow-listed
+        algorithm, a key currently published at the JWKS URL, and a matching
+        issuer, audience and expiry. Callers that authorize on a claim other
+        than the address (the machine lane pins ``sub``) read it from here, so
+        there is one verification and not two.
         """
         try:
             kid = jwt.get_unverified_header(token).get("kid")
@@ -231,7 +263,7 @@ class AssertionVerifier:
                 algorithms=list(ALLOWED_ALGORITHMS),
                 audience=self._settings.audience,
                 issuer=self._settings.issuer,
-                options={"require": ["exp", "iss", "aud"]},
+                options={"require": list(self._settings.required_claims)},
                 # The proxy's clock and ours are not the same clock. A few
                 # seconds either side is skew, not an attack; an assertion this
                 # short-lived gains nothing meaningful from the slack.
@@ -242,8 +274,4 @@ class AssertionVerifier:
             # credential and may be valid somewhere else.
             log.warning("rejected a proxy assertion: %s", type(exc).__name__)
             raise AssertionInvalid(f"the assertion did not verify: {type(exc).__name__}") from exc
-
-        address = claims.get(self._settings.email_claim)
-        if not address or not isinstance(address, str):
-            raise AssertionInvalid(f"the assertion carries no {self._settings.email_claim!r} claim")
-        return address
+        return dict(claims)

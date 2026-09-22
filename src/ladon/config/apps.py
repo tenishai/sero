@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from urllib.parse import unquote
 
 from ladon.config.auth import AuthRole, jwt_role
 from ladon.config.eso import DEFAULT_API_VERSION, ClusterSecretStore, vault_store
@@ -59,6 +60,11 @@ DEFAULT_SA_NAMESPACE = "ladon"
 
 # The one path prefix convention: <mount>/apps/<app>/<purpose>.
 APP_PATH_SEGMENT = "apps"
+
+# The longest KV path Ladon will address. Well past any real
+# apps/<app>/<purpose>, and short enough that nothing downstream has to hold an
+# unbounded string a caller chose.
+MAX_KV_PATH_LENGTH = 256
 
 # Kubernetes DNS-1123 label rules, which every name here must satisfy: the
 # service account and namespaces are Kubernetes objects, and the role, policy
@@ -128,6 +134,67 @@ def app_store_name(*, team: str, app: str) -> str:
     the team and the application can compute it without guessing the rest.
     """
     return _store_name(_label(team, "team"), _label(app, "app"))
+
+
+def checked_apps_path(path: str, *, field: str = "path") -> str:
+    """Refuse a KV path that is not an application's.
+
+    ``apps/`` is the only prefix any application identity can read, so a path
+    outside it produces a document that looks right and is refused at refresh
+    time, in the operator's logs, later. The machine lane uses this on its own:
+    it provisions application secrets and nothing else.
+
+    A relative segment is refused before the prefix is tested: ``.`` and ``..``
+    read as inside the prefix while naming something else, and whether a reader
+    resolves them at all differs between the policy engine and the store. The
+    same segment is tested percent-decoded, because a path that travels through
+    one more decoding hop than expected is exactly how ``%2e%2e`` becomes
+    ``..`` after this function has approved it.
+    """
+    if len(path) > MAX_KV_PATH_LENGTH:
+        raise ConfigError(
+            f"{field} is {len(path)} characters; a stored path is at most {MAX_KV_PATH_LENGTH}"
+        )
+    segments = path.split("/")
+    for segment in segments:
+        for form in (segment, unquote(segment)):
+            if form in ("", ".", ".."):
+                raise ConfigError(
+                    f"{field} {path!r} has an empty or relative segment; give the "
+                    "path as it is stored, with no '.' or '..'"
+                )
+    if "%" in path:
+        # A stored path never needs one, and a percent escape only changes
+        # meaning somewhere downstream: refuse it rather than reason about
+        # which hop decodes it.
+        raise ConfigError(
+            f"{field} {path!r} contains a percent escape; give the path as it "
+            "is stored, with no escaping"
+        )
+    if len(segments) < 2 or segments[0] != APP_PATH_SEGMENT:
+        raise ConfigError(
+            f"{field} {path!r} is outside {APP_PATH_SEGMENT + '/'!r}, which is "
+            "where every application's secrets live"
+        )
+    return path
+
+
+def checked_app_path(app: str, path: str, *, field: str = "path") -> str:
+    """Refuse a path outside one application's own prefix.
+
+    The application's policy grants read on ``apps/<app>`` and nothing else, so
+    naming another application's prefix renders a document its identity cannot
+    read. Shared by the CLI's sync phase and the machine lane, so both refuse
+    the same paths for the same reason.
+    """
+    checked_apps_path(path, field=field)
+    prefix = f"{APP_PATH_SEGMENT}/{app}"
+    if path != prefix and not path.startswith(f"{prefix}/"):
+        raise ConfigError(
+            f"{field} {path!r} is outside the application's own prefix "
+            f"{prefix!r}, which is the only prefix its identity can read"
+        )
+    return path
 
 
 @dataclass(frozen=True)

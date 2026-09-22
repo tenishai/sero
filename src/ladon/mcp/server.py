@@ -244,24 +244,69 @@ def create_secret_impl(
     apply: bool = False,
     deployment_environment: str | None = None,
 ) -> dict[str, Any]:
-    """Create a secret path. Dry-run unless ``apply=True``.
+    """Create a secret path for a signed-in person. Dry-run unless ``apply=True``.
 
-    Gated by the allow list and namespace authorization; placeholder values are
-    refused. A dry-run returns the value-free plan and writes nothing. The audit
-    row records key names only (args are redacted before storage).
+    Gated by the allow list and namespace authorization; the write itself, and
+    every refusal in it, is :func:`create_secret_write`.
     """
     _require_allowed(session, user_email)
     _require_namespace(reader, user_email, namespace)
+    return create_secret_write(
+        writer,
+        session,
+        user_email=user_email,
+        namespace=namespace,
+        path=path,
+        env=env,
+        values=values,
+        apply=apply,
+        deployment_environment=deployment_environment,
+    )
+
+
+def create_secret_write(
+    writer: SecretWriter,
+    session: Session,
+    *,
+    user_email: str,
+    namespace: str,
+    path: str,
+    env: str,
+    values: dict[str, str],
+    apply: bool = False,
+    deployment_environment: str | None = None,
+    tool_name: str = "create_secret",
+    audit_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create a secret path, for a caller already authorized to write here.
+
+    Everything a write refuses lives here: an environment this deployment does
+    not serve, a reserved path, a placeholder value. A dry-run returns the
+    value-free plan and writes nothing. The audit row records key names only
+    (args are redacted before storage).
+
+    How the caller was authorized is the caller's business: the human surfaces
+    gate on the allow list and namespace membership before calling, while the
+    machine lane gates on the namespaces its config pins to one subject. Both
+    reach the same rules, which is what keeps them from drifting. ``tool_name``
+    and ``audit_extra`` let a surface say which lane wrote and on whose token.
+    """
     require_environment(env, deployment_environment)
     _reject_reserved_path(path)
     _reject_placeholders(values)
-    audit_args = {"namespace": namespace, "path": path, "env": env, "data": values}
+    audit_args = {
+        "namespace": namespace,
+        "path": path,
+        "env": env,
+        "data": values,
+        **(audit_extra or {}),
+    }
 
     if not apply:
         _audit(
             session,
             user_email=user_email,
-            tool_name="create_secret",
+            tool_name=tool_name,
             status="dry-run",
             args=audit_args,
         )
@@ -280,13 +325,13 @@ def create_secret_impl(
         _audit(
             session,
             user_email=user_email,
-            tool_name="create_secret",
+            tool_name=tool_name,
             status="error",
             args=audit_args,
             error=str(exc),
         )
         raise
-    _audit(session, user_email=user_email, tool_name="create_secret", status="ok", args=audit_args)
+    _audit(session, user_email=user_email, tool_name=tool_name, status="ok", args=audit_args)
     return _write_summary(
         namespace=namespace,
         path=path,
@@ -312,17 +357,56 @@ def update_secret_impl(
     apply: bool = False,
     deployment_environment: str | None = None,
 ) -> dict[str, Any]:
-    """Merge ``values`` into a path and delete ``remove_keys``. Dry-run unless apply.
+    """Merge into a path for a signed-in person. Dry-run unless ``apply=True``.
 
-    Merges: only the named keys change; other existing keys are untouched. Gated
-    and placeholder-refusing like create. A key named in both ``values`` and
+    Gated by the allow list and namespace authorization; the merge itself, and
+    every refusal in it, is :func:`update_secret_write`.
+    """
+    _require_allowed(session, user_email)
+    _require_namespace(reader, user_email, namespace)
+    return update_secret_write(
+        reader,
+        writer,
+        session,
+        user_email=user_email,
+        namespace=namespace,
+        path=path,
+        env=env,
+        values=values,
+        remove_keys=remove_keys,
+        apply=apply,
+        deployment_environment=deployment_environment,
+    )
+
+
+def update_secret_write(
+    reader: SecretReader,
+    writer: SecretWriter,
+    session: Session,
+    *,
+    user_email: str,
+    namespace: str,
+    path: str,
+    env: str,
+    values: dict[str, str] | None = None,
+    remove_keys: list[str] | None = None,
+    apply: bool = False,
+    deployment_environment: str | None = None,
+    tool_name: str = "update_secret",
+    audit_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge ``values`` into a path and delete ``remove_keys``, already authorized.
+
+    Merges: only the named keys change; other existing keys are untouched.
+    Placeholder-refusing like create. A key named in both ``values`` and
     ``remove_keys`` is refused. A dry-run writes nothing. Emptying a path is
     refused by the writer, which is where the merged result is known.
+
+    The counterpart to :func:`create_secret_write`: one copy of the merge rules,
+    reached by the human surfaces and by the machine lane alike.
     """
     values = values or {}
     remove_keys = remove_keys or []
-    _require_allowed(session, user_email)
-    _require_namespace(reader, user_email, namespace)
     require_environment(env, deployment_environment)
     _reject_reserved_path(path)
     _reject_placeholders(values)
@@ -339,6 +423,7 @@ def update_secret_impl(
         "env": env,
         "data": values,
         "remove_keys": remove_keys,
+        **(audit_extra or {}),
     }
 
     if not apply:
@@ -356,7 +441,7 @@ def update_secret_impl(
         _audit(
             session,
             user_email=user_email,
-            tool_name="update_secret",
+            tool_name=tool_name,
             status="dry-run",
             args=audit_args,
         )
@@ -375,13 +460,13 @@ def update_secret_impl(
         _audit(
             session,
             user_email=user_email,
-            tool_name="update_secret",
+            tool_name=tool_name,
             status="error",
             args=audit_args,
             error=str(exc),
         )
         raise
-    _audit(session, user_email=user_email, tool_name="update_secret", status="ok", args=audit_args)
+    _audit(session, user_email=user_email, tool_name=tool_name, status="ok", args=audit_args)
     return _write_summary(
         namespace=namespace,
         path=path,
