@@ -16,6 +16,12 @@ them in one call, and it is what gives the cluster half the same no-op signal
 the OpenBao half has: a document that already matches is reported
 ``already current`` and never reaches kubectl at all.
 
+``delete_documents`` is the other direction, and it is deliberately narrower
+than an apply: an object is removed only when the live object records Ladon as
+one of its field managers. Server-side apply is what makes that knowable, and
+the rule is the mirror of never passing ``--force-conflicts``. Taking a field
+from another manager needs an operator; so does deleting that manager's object.
+
 Two probes support the ESO work (D18a): ``eso_api_version`` reports which CRD
 version the cluster stores, and ``detect_eso`` finds an operator somebody else
 already installed so Ladon can reuse it instead of fighting it for the CRDs.
@@ -38,6 +44,8 @@ from typing import Any
 
 import yaml
 
+from ladon.hygiene import WriteRefused
+
 DEFAULT_FIELD_MANAGER = "ladon"
 
 # What a document needs, in the vocabulary the OpenBao apply layer already uses.
@@ -48,6 +56,11 @@ CREATE = "create"
 UPDATE = "update"
 ALREADY_CURRENT = "already current"
 BLOCKED = "blocked"
+
+# The two a removal reports. ``ABSENT`` is the no-op signal a delete needs, the
+# way ``ALREADY_CURRENT`` is an apply's: asking twice is not an error.
+DELETE = "delete"
+ABSENT = "absent"
 
 # The API server's reason code for an object that is not there. Only this counts
 # as absent: any other refusal (a denial, an unknown resource type) means Ladon
@@ -151,6 +164,17 @@ class ClusterApplyError(K8sError):
     def __init__(self, message: str, *, report: ApplyReport):
         super().__init__(message)
         self.report = report
+
+
+class ForeignObjectError(WriteRefused):
+    """The live object is there, and Ladon is not among its field managers.
+
+    A refusal rather than an error: the cluster is reachable and the object is
+    exactly what was named, and Ladon still will not remove something it did
+    not create. Server-side apply records who owns what, so this is knowable
+    rather than guessed, and the message names the managers that do own it so
+    an operator knows who to ask.
+    """
 
 
 class ESONotInstalledError(K8sError):
@@ -375,6 +399,93 @@ def converge_documents(
                 report=report,
             )
     return report
+
+
+def delete_argv(doc: dict) -> list[str]:
+    """Build the ``kubectl delete`` command for one document's object.
+
+    Always ``--ignore-not-found``: the object is read before this runs, and
+    between the read and the delete somebody else may have removed it. That
+    is the outcome asked for, not a failure.
+    """
+    _, namespace, name = _identify(doc)
+    argv = ["kubectl", "delete", f"{_resource_token(doc)}/{name}"]
+    if namespace:
+        argv += ["-n", namespace]
+    return argv + ["--ignore-not-found"]
+
+
+def field_managers(live: dict) -> tuple[str, ...]:
+    """Every manager recorded on a live object, in the order it lists them.
+
+    Server-side apply writes one ``managedFields`` entry per manager and
+    operation, so a manager can appear more than once; this reports each once.
+    An object with no entries at all belongs to nobody Ladon can name, and the
+    empty tuple is what says so.
+    """
+    entries = (live.get("metadata") or {}).get("managedFields") or []
+    seen: dict[str, None] = {}
+    for entry in entries:
+        manager = entry.get("manager")
+        if manager:
+            seen.setdefault(str(manager), None)
+    return tuple(seen)
+
+
+def delete_documents(
+    docs: Iterable[dict],
+    *,
+    field_manager: str = DEFAULT_FIELD_MANAGER,
+    dry_run: bool = True,
+    run: Runner = run,
+) -> ApplyReport:
+    """Remove the objects these documents name, and report what happened to each.
+
+    Only the identity of a document matters here: kind, name and namespace. The
+    spec is not read, so a caller removing an object it created earlier does not
+    have to be able to render it again.
+
+    Every object is read first, which is what makes this both safe and
+    idempotent. An object that is not there is reported ``absent`` and no delete
+    runs. An object whose live ``managedFields`` do not record ``field_manager``
+    raises :class:`ForeignObjectError` and nothing at all is deleted, including
+    the documents that would have come after it: a caller pointed at the wrong
+    object should find the whole request refused rather than half done.
+
+    Defaults to a dry run, like every other write surface. A dry run does the
+    reads and the ownership check, so it answers the same refusals an apply
+    would, and runs no delete.
+    """
+    docs = [_checked(doc) for doc in docs]
+    live = [(doc, read_one(doc, missing_ok=True, run=run)) for doc in docs]
+
+    for doc, obj in live:
+        if obj is None:
+            continue
+        managers = field_managers(obj)
+        if field_manager not in managers:
+            kind, _, name = _identify(doc)
+            raise ForeignObjectError(
+                f"{kind}/{name} is managed by "
+                f"{', '.join(managers) if managers else 'no recorded manager'}, "
+                f"not by {field_manager!r}; Ladon does not delete what it did not apply"
+            )
+
+    results: list[ApplyResult] = []
+    for doc, obj in live:
+        kind, namespace, name = _identify(doc)
+        if obj is None:
+            results.append(ApplyResult(kind, namespace, name, ABSENT))
+            continue
+        if not dry_run:
+            outcome = run(delete_argv(doc))
+            if outcome.returncode != 0:
+                message = outcome.stderr or outcome.stdout
+                raise K8sError(
+                    f"deleting {kind}/{name} failed ({outcome.returncode}): {_first_line(message)}"
+                )
+        results.append(ApplyResult(kind, namespace, name, DELETE))
+    return ApplyReport(results=tuple(results), dry_run=dry_run)
 
 
 def read_one(doc: dict, *, missing_ok: bool = False, run: Runner = run) -> dict | None:

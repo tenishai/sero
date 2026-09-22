@@ -76,11 +76,17 @@ class FakeCluster:
             return self._get(argv)
         if argv[1] == "apply":
             return self._apply(argv, stdin)
+        if argv[1] == "delete":
+            return self._delete(argv)
         raise AssertionError(f"unexpected kubectl command: {argv}")
 
     @property
     def applies(self) -> list[list[str]]:
         return [call for call in self.calls if call[1] == "apply"]
+
+    @property
+    def deletes(self) -> list[list[str]]:
+        return [call for call in self.calls if call[1] == "delete"]
 
     @property
     def streams(self) -> list[str]:
@@ -113,7 +119,8 @@ class FakeCluster:
             key = self.key(doc)
             verb = "configured" if key in self.objects else "created"
             if not dry_run:
-                self.objects[key] = self._mutate(doc) if self._mutate else copy.deepcopy(doc)
+                stored = self._mutate(doc) if self._mutate else copy.deepcopy(doc)
+                self.objects[key] = _managed_by(stored, _manager(argv))
             lines.append(f"{key[2]} {verb}{suffix}\n")
         return Result(
             argv,
@@ -121,3 +128,47 @@ class FakeCluster:
             stdout="".join(lines),
             stderr=CONFLICT if refused else "",
         )
+
+    def _delete(self, argv: list[str]) -> Result:
+        target = argv[2]
+        namespace = argv[argv.index("-n") + 1] if "-n" in argv else None
+        key = self._key_for(target, namespace)
+        if key is None:
+            if "--ignore-not-found" in argv:
+                return Result(argv)
+            resource, _, name = target.partition("/")
+            return Result(
+                argv, returncode=1, stderr=NOT_FOUND.format(resource=resource, name=name) + "\n"
+            )
+        del self.objects[key]
+        return Result(argv, stdout=f"{target} deleted\n")
+
+    def _key_for(self, target: str, namespace: str | None) -> tuple[str, ...] | None:
+        """The stored object a delete's argv names, by resource, name and namespace."""
+        for key in self.objects:
+            if key[2] != target:
+                continue
+            stored = key[key.index("-n") + 1] if "-n" in key else None
+            if stored == namespace:
+                return key
+        return None
+
+
+def _manager(argv: list[str]) -> str:
+    """The field manager an apply argv carries."""
+    flag = "--field-manager="
+    return next((a[len(flag) :] for a in argv if a.startswith(flag)), "kubectl")
+
+
+def _managed_by(doc: dict, manager: str) -> dict:
+    """Stamp a stored object the way server-side apply records its owner.
+
+    The real API server writes one ``managedFields`` entry per manager, and the
+    delete path reads them to decide whether an object is Ladon's. Without this
+    the fake would answer that question for nobody.
+    """
+    metadata = doc.setdefault("metadata", {})
+    entries = metadata.setdefault("managedFields", [])
+    if not any(entry.get("manager") == manager for entry in entries):
+        entries.append({"manager": manager, "operation": "Apply"})
+    return doc
