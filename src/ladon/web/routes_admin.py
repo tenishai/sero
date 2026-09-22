@@ -33,7 +33,7 @@ from ladon.mcp.server import _audit
 from ladon.web.deps import AdminEmail, Auditor, DbSession, Jobs, services
 from ladon.web.errors import ApiError
 from ladon.web.identity import normalize_email
-from ladon.web.jobs import JobConflict, JobOutcome
+from ladon.web.jobs import JobConflict, JobOutcome, JobRunner, OnFinish, Work
 from ladon.web.serializers import allow_list_entry, job_row, namespace_request_row
 from ladon.web.settings import WebSettings
 
@@ -312,7 +312,14 @@ def list_jobs(
     return {"jobs": [job_row(row) for row in rows]}
 
 
-def _submit(jobs: Jobs, *, phase: str, email: str, work, on_finish=None) -> int:
+def _submit(
+    jobs: JobRunner,
+    *,
+    phase: str,
+    email: str,
+    work: Work,
+    on_finish: OnFinish | None = None,
+) -> int:
     """Claim the phase, or answer with the job that already holds it."""
     try:
         return jobs.submit(kind=phase, requested_by=email, work=work, on_finish=on_finish)
@@ -348,7 +355,7 @@ def _phase_args(phase: str, body: ApplyBody, settings: WebSettings) -> argparse.
     )
 
 
-def _work(phase: str, args: argparse.Namespace, body: ApplyBody, settings: WebSettings):
+def _work(phase: str, args: argparse.Namespace, body: ApplyBody, settings: WebSettings) -> Work:
     """What the job's thread runs. Closes over inputs, never over the request."""
     if phase == ESO_INSTALL:
         namespace = body.namespace or ESO_NAMESPACE
