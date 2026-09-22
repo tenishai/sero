@@ -48,6 +48,9 @@ def now_epoch():
     return datetime.now(UTC).timestamp()
 
 
+# What the store says about when the current version of PATH was written.
+WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
+
 CALLER = "provisioner"
 SUBJECT = "system:serviceaccount:ladon:provisioner"
 SERVICE_AUDIENCE = "https://ladon.example.com/service"
@@ -109,6 +112,16 @@ def sync(client, body=None, *, headers=None):
     )
 
 
+def read(client, *, headers=None, **overrides):
+    """GET one path's key names. Arguments travel in the query string."""
+    params = {"acting_email": ACTING, "namespace": NAMESPACE, "path": PATH, **overrides}
+    return client.get(
+        "/api/service/secrets",
+        params={k: v for k, v in params.items() if v is not None},
+        headers=bearer() if headers is None else headers,
+    )
+
+
 # ── Fakes ──────────────────────────────────────────────────────────────
 
 
@@ -124,7 +137,12 @@ class FakeKvV2:
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
         if path not in self._store:
             raise KeyError("not found")
-        return {"data": {"data": dict(self._store[path]), "metadata": {"version": 2}}}
+        return {
+            "data": {
+                "data": dict(self._store[path]),
+                "metadata": {"version": 2, "created_time": WRITTEN_AT},
+            }
+        }
 
     def create_or_update_secret(self, *, path, secret, mount_point):
         self._store[path] = dict(secret)
@@ -797,3 +815,90 @@ def test_the_rate_limit_denial_is_audited_under_the_caller(sessions, store, clus
     # The caller is known by now, so the row says which machine ran out of budget.
     assert denied[0].user_email == CALLER
     assert denied[0].redacted_args["via"] == CALLER
+
+
+# ── Reading which keys exist ───────────────────────────────────────────
+
+
+def test_a_read_returns_the_key_names_the_version_and_the_timestamp(client):
+    response = read(client)
+    assert response.status_code == 200
+    assert response.json() == {
+        "namespace": NAMESPACE,
+        "path": PATH,
+        "keys": ["API_KEY", "DB_URL"],
+        "version": 2,
+        "updated_at": WRITTEN_AT,
+    }
+
+
+def test_a_read_never_returns_a_value_not_even_masked(client):
+    # The human surface answers with a masked preview of every value. This one
+    # does not: a mask is a hint about a value, and this lane hands out names.
+    response = read(client)
+    assert "dummy-api-key-value" not in response.text
+    assert "dum" not in response.text
+    assert "masked_keys" not in response.json()
+
+
+def test_a_read_of_a_path_that_is_not_there_is_a_plain_404(client):
+    response = read(client, path=f"apps/{APP}/nowhere")
+    assert response.status_code == 404
+    assert response.json() == {"error": f"there is no secret at {NAMESPACE}/apps/{APP}/nowhere"}
+
+
+def test_a_read_needs_a_service_token(client):
+    assert client.get("/api/service/secrets", params={"namespace": NAMESPACE}).status_code == 401
+
+
+def test_a_read_needs_an_acting_email(client):
+    assert read(client, acting_email=None).status_code == 422
+
+
+def test_a_read_refuses_a_namespace_the_caller_is_not_pinned_to(client):
+    response = read(client, namespace=OTHER_NAMESPACE)
+    assert response.status_code == 403
+    assert "read" in response.json()["error"]
+
+
+def test_a_read_refuses_a_path_outside_the_applications_prefix(client):
+    assert read(client, path="platform/demo").status_code == 400
+    assert read(client, path="apps/../platform/demo").status_code == 400
+
+
+def test_a_read_is_audited_against_the_human_and_the_caller(client, sessions):
+    read(client)
+    (row,) = rows(sessions, "service.get_secret")
+    assert row.status == "ok"
+    assert row.user_email == ACTING
+    assert row.redacted_args["lane"] == "service"
+    assert row.redacted_args["via"] == CALLER
+    assert row.redacted_args["subject"] == SUBJECT
+    assert row.redacted_args["path"] == PATH
+    assert row.redacted_args["exists"] is True
+
+
+def test_a_read_that_finds_nothing_is_still_an_audited_read(client, sessions):
+    # The request was authorized and the lookup happened. Who asked about a
+    # path that does not exist is worth being able to answer.
+    read(client, path=f"apps/{APP}/nowhere")
+    (row,) = rows(sessions, "service.get_secret")
+    assert row.status == "ok"
+    assert row.redacted_args["exists"] is False
+
+
+def test_a_refused_read_is_audited(client, sessions):
+    read(client, namespace=OTHER_NAMESPACE)
+    (row,) = rows(sessions, "service.get_secret")
+    assert row.status == "denied"
+    assert row.redacted_args["namespace"] == OTHER_NAMESPACE
+    assert row.redacted_args["via"] == CALLER
+
+
+def test_a_read_spends_the_callers_budget(sessions, store, cluster):
+    limited = build_client(
+        sessions, store, cluster, service_callers=callers(rate_limit_per_minute=1)
+    )
+    assert read(limited).status_code == 200
+    assert read(limited).status_code == 429
+    assert put(limited).status_code == 429

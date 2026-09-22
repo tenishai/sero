@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 import jwt
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from ladon.config.apps import app_store_name, checked_app_path, checked_apps_path
@@ -74,10 +74,14 @@ from ladon.web.deps import (
 from ladon.web.errors import ApiError
 from ladon.web.settings import ServiceCaller
 
-# The audit names for the two things a machine may do. Prefixed, so one query
-# separates what a machine wrote from what a person wrote.
+# The audit names for the things a machine may do. Prefixed, so one query
+# separates what a machine did from what a person did. Each names its route, so
+# an investigator reading a row does not have to know which verb it was.
 PUT_TOOL = "service.put_secret"
 SYNC_TOOL = "service.sync_secret"
+READ_TOOL = "service.get_secret"
+DELETE_TOOL = "service.delete_secret"
+UNSYNC_TOOL = "service.delete_sync"
 
 # Stamped on every row this lane writes. The tool name says what happened and
 # this says who the "who" is: a row attributed to a person that a machine
@@ -309,6 +313,16 @@ def build_service_lane(
 # ── Request bodies ─────────────────────────────────────────────────────
 
 
+# The read takes its arguments in the query string rather than a body, so the
+# same three fields are declared once here. ``acting_email`` is required on the
+# read too: config refuses a caller that would not record who it acts for, and
+# a read of which keys an application holds is as much that caller's business
+# as a write is.
+ActingEmailQuery = Annotated[str, Query(pattern=ACTING_EMAIL_PATTERN)]
+NamespaceQuery = Annotated[str, Query(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)]
+PathQuery = Annotated[str, Query()]
+
+
 class ServicePutBody(BaseModel):
     """One application secret, merged."""
 
@@ -393,11 +407,86 @@ def sync_caller(request: Request) -> ServiceCaller:
     return _authenticated(request, SYNC_TOOL)
 
 
+def read_caller(request: Request) -> ServiceCaller:
+    return _authenticated(request, READ_TOOL)
+
+
+def delete_caller(request: Request) -> ServiceCaller:
+    return _authenticated(request, DELETE_TOOL)
+
+
+def unsync_caller(request: Request) -> ServiceCaller:
+    return _authenticated(request, UNSYNC_TOOL)
+
+
 PutCaller = Annotated[ServiceCaller, Depends(put_caller)]
 SyncCaller = Annotated[ServiceCaller, Depends(sync_caller)]
+ReadCaller = Annotated[ServiceCaller, Depends(read_caller)]
+DeleteCaller = Annotated[ServiceCaller, Depends(delete_caller)]
+UnsyncCaller = Annotated[ServiceCaller, Depends(unsync_caller)]
 
 
 # ── Routes ─────────────────────────────────────────────────────────────
+
+
+@router.get("/service/secrets")
+def get_secret(
+    caller: ReadCaller,
+    session: DbSession,
+    secrets: Secrets,
+    audit: Auditor,
+    environment: DeclaredEnvironment,
+    acting_email: ActingEmailQuery,
+    namespace: NamespaceQuery,
+    path: PathQuery,
+) -> dict[str, Any]:
+    """Which keys one application path holds, by name.
+
+    The one read on this lane, and it is narrower than the human one beside it:
+    that returns a masked preview of every value, and this returns nothing but
+    names. A mask is a hint about a value, and a caller assembling an
+    application has no use for hints; it needs to know whether ``DB_URL`` is
+    there. So the previews are read and dropped, and no value, masked or
+    otherwise, can leave through here.
+
+    The version and the timestamp come with them, which is what makes the
+    answer useful for deciding whether a path needs writing: they say a path
+    changed without saying what it changed to.
+
+    A path that is not there is a ``404`` and still an audited read. The
+    request was authorized and the lookup happened; what it found is in the
+    row, because "did anything ask for this?" is a question worth answering
+    about a path that does not exist.
+    """
+    args = {
+        **_attribution(caller),
+        "acting_email": acting_email,
+        "namespace": namespace,
+        "path": path,
+    }
+    with audit.guard(READ_TOOL, acting_email, args, session=session):
+        _require_pinned(caller, namespace, action="read")
+        checked = _refuse_outside_apps(path)
+        args["path"] = checked
+        detail = secrets.get_secret(acting_email, namespace, checked, environment or "")
+        _audit(
+            session,
+            user_email=acting_email,
+            tool_name=READ_TOOL,
+            status="ok",
+            args={**args, "exists": detail.exists},
+        )
+    session.commit()
+    if not detail.exists:
+        raise ApiError(404, f"there is no secret at {namespace}/{checked}")
+    return {
+        "namespace": namespace,
+        "path": checked,
+        # Names only, sorted, so two calls over the same path answer the same.
+        "keys": sorted(detail.masked_keys),
+        "version": detail.version,
+        "updated_at": detail.updated_at,
+    }
 
 
 @router.post("/service/secrets")
@@ -568,16 +657,21 @@ def _attribution(caller: ServiceCaller) -> dict[str, str]:
     return {"lane": LANE, "via": caller.name, "subject": caller.subject}
 
 
-def _require_pinned(caller: ServiceCaller, namespace: str) -> None:
+def _require_pinned(caller: ServiceCaller, namespace: str, *, action: str = "write in") -> None:
     """Refuse a namespace this caller's config does not pin to it.
 
     The one authorization decision on this lane. It rests on the token's
     subject and the deployment's config, never on the acting email, which the
     caller supplies and could say anything.
+
+    One list covers reading and writing, and deliberately: a caller pinned to a
+    namespace so it can provision applications there is a caller that may see
+    what it provisioned. ``action`` only changes the sentence, so a refused read
+    does not report itself as a refused write.
     """
     if namespace not in caller.namespaces:
         raise AccessDeniedError(
-            f"the service caller {caller.name!r} may not write in namespace {namespace!r}"
+            f"the service caller {caller.name!r} may not {action} namespace {namespace!r}"
         )
 
 
