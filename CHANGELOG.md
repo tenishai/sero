@@ -10,6 +10,37 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Proven live
+
+The platform-vault program (PRs #57 to #68) took Ladon from complete-in-code
+to running for real, on a shared development cluster, against a dedicated
+OpenBao it operates. Proven, in one place:
+
+- A single-node vault installed from the pinned chart.
+- The full configuration rebuilt from config on a fresh vault; a second run
+  wrote nothing, and a repointed store was updated in place rather than
+  duplicated.
+- A hand-edited policy showed up as a diff and was repaired by a re-apply.
+- An existing External Secrets Operator on the cluster was detected and
+  reused rather than fought over.
+- The round trip from the vault through a store and an ExternalSecret to a
+  Kubernetes Secret; the same ExternalSecret referenced from another
+  namespace was refused.
+- The acceptance matrix, with real projected tokens: an application's own
+  prefix read, another application's prefix and the system paths and every
+  write refused, a different service account refused with an invalid-subject
+  error, and re-onboarding the same application a no-op.
+- The role audit: clean on the platform vault, a deliberately widened
+  default policy caught as a high finding, and clean again after the repair.
+- The backend, deployed from the built image in the cluster, migrating the
+  datastore at boot and serving the UI's routes through a port-forward.
+- Application onboarding run as a background job through the admin endpoint,
+  not only the CLI.
+
+See the README's Status section for what this does and does not yet cover,
+and [docs/plans/2026-09-22-platform-vault.md](docs/plans/2026-09-22-platform-vault.md)
+for the task-by-task record.
+
 ### Added
 
 - DNS egress in the deploy manifests also admits the link-local resolver

@@ -1,6 +1,6 @@
 # The platform vault: Ladon running for real -- design
 
-Status: approved 2026-09-22 (operator delegation: build to a working state). Records
+Status: built and proven live 2026-09-22 (see the plan for what remains). Records
 decisions D13 to D18, which extend [../design.md](../design.md). The plan is
 [../plans/2026-09-22-platform-vault.md](../plans/2026-09-22-platform-vault.md).
 

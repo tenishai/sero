@@ -280,6 +280,16 @@ Record the recovery shares and the initial root token the way you would any
 break-glass material. They do not belong in the cluster, in this repository, or
 in a terminal scrollback you keep.
 
+### DNS under the default deny
+
+Check this before applying the network policies in the next step. Read
+`/etc/resolv.conf` in any pod on the cluster. If the nameserver is a
+link-local address (for example a cloud provider's own DNS at
+`169.254.169.254`), the kube-dns pod selector in the policies matches
+nothing, and the manifests' link-local rule is what keeps DNS working for the
+vault and the backend. Without DNS the vault cannot fetch the workload token
+issuer's keys, and every store reports that it could not create a client.
+
 ### 4. The backend's own objects
 
 Identity, RBAC, the data volume, and the network policies:
@@ -365,6 +375,9 @@ The image migrates the datastore before it serves, so a schema that cannot be
 brought to head is a pod that exits rather than one that answers against a
 schema it does not trust.
 
+This is the path a shared development cluster with no deployment platform of
+its own actually runs: the standalone pair, not the generated one.
+
 ### 7. A first look
 
 The Service is ClusterIP and the NetworkPolicy admits only the proxy, so the
@@ -384,22 +397,31 @@ already permit far more.
 route wants the identity header, which is what the proxy supplies in a real
 deployment; on a port-forward, set it yourself to see what an operator sees.
 
+### 8. Onboarding an app through the endpoint
+
+App onboarding (step 10 above, in its full-fleet form) does not have to run
+from the CLI on this path. With the backend up, an admin can start the same
+phase as a background job over the API it just started serving:
+
+```
+curl -X POST http://127.0.0.1:8000/api/admin/apply/app-onboarding \
+  -H 'content-type: application/json' \
+  -d '{"team": "TEAM", "app": "APP", "cluster": "CLUSTER", "apply": true}'
+```
+
+The call answers `202` with a job id; `GET /api/admin/jobs/<id>` is what a
+caller polls for the op-by-op report. See
+[backend.md](backend.md#apply-operations-as-jobs) for the job lifecycle, the
+one-job-per-kind rule, and how a namespace-request approval starts the same
+kind of run. This is how app onboarding was actually exercised on the
+platform cluster: through the endpoint, not the CLI.
+
 ### What is deliberately not here
 
 No ESO install (phase 6), no team clusters (phases 8 to 10), no private
 connectivity (phase 7), no observability (phase 5). Add each when something
 needs it. A platform cluster that only operates its own vault and backend needs
 none of them on day one.
-
-### DNS under the default deny
-
-Before applying the network policies, read `/etc/resolv.conf` in any pod on the
-cluster. If the nameserver is a link-local address (for example a cloud
-provider's own DNS at `169.254.169.254`), the kube-dns pod selector in the
-policies matches nothing, and the manifests' link-local rule is what keeps DNS
-working for the vault and the backend. Without DNS the vault cannot fetch the
-workload token issuer's keys, and every store reports that it could not create a
-client.
 
 ## Dependency summary
 
