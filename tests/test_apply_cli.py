@@ -137,6 +137,20 @@ def test_apply_reports_when_there_is_nothing_to_do(monkeypatch):
     assert "Nothing to apply" in text
 
 
+def test_apply_reports_every_op_when_one_is_blocked_and_exits_non_zero(monkeypatch):
+    client = FakeOpenBao(mounts={"kv/": {"type": "cubbyhole", "options": {}}})
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+
+    code, text = run(["apply", "--phase", "root-config", "--jwt-discovery-url", ISSUER, "--apply"])
+    assert code == 2
+    assert "blocked enable-secrets-engine sys/mounts/kv" in text
+    # The ops after the blocked one are still reported, and nothing was written.
+    assert "create write-policy sys/policies/acl/team-readwrite" in text
+    assert client.calls == []
+
+
 def test_apply_with_flag_connects_and_applies(monkeypatch):
     calls = {}
 

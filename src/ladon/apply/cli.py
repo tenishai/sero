@@ -225,15 +225,25 @@ def _run_apply(args: argparse.Namespace, out) -> int:
 
     if not args.apply:
         print("DRY RUN: diff against live OpenBao:", file=out)
-        _print_diffs(result, out)
-        print("\nRe-run with --apply to write to OpenBao.", file=out)
-        return 0
-
-    if result.applied:
+    elif result.blocked:
+        # Nothing was written: a plan that cannot fully converge is not applied
+        # in part.
+        print("Nothing was applied: the plan cannot converge as it stands.", file=out)
+    elif result.applied:
         print("Applied the following operations:", file=out)
     else:
         print("Nothing to apply: every object is already current.", file=out)
+
     _print_diffs(result, out)
+
+    if result.blocked:
+        print(
+            f"\n{len(result.blocked)} operation(s) blocked. Resolve them in OpenBao, then re-run.",
+            file=out,
+        )
+        return 2
+    if not args.apply:
+        print("\nRe-run with --apply to write to OpenBao.", file=out)
     return 0
 
 

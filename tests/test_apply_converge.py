@@ -11,7 +11,7 @@ import pytest
 from fake_openbao import FakeOpenBao
 from ladon.apply.executor import ApplyError, apply_plan
 from ladon.apply.plan import Plan, WriteOp, root_config_plan, team_onboarding_plan
-from ladon.config.auth import jwt_auth, jwt_role
+from ladon.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
 from ladon.config.policies import external_secrets_read, team_readwrite
 
 ISSUER = "https://issuer.example/.well-known/openid-configuration"
@@ -32,6 +32,27 @@ def sample_plan():
     return root_config_plan(
         policies=[team_readwrite(), external_secrets_read()],
         auth_methods=[jwt],
+    )
+
+
+def plan_with_oidc():
+    """A root plan including OIDC, whose config carries a Ladon-only reference."""
+    return root_config_plan(
+        policies=[team_readwrite()],
+        auth_methods=[
+            oidc_auth(
+                discovery_url="https://idp.example/.well-known/openid-configuration",
+                client_id="ladon",
+                client_secret_ref="oidc/operator-client-secret",
+                roles=[
+                    oidc_role(
+                        "operators",
+                        policies=["team-readwrite"],
+                        allowed_redirect_uris=["https://bao.example/ui/callback"],
+                    )
+                ],
+            )
+        ],
     )
 
 
@@ -187,6 +208,120 @@ def test_offline_dry_run_still_needs_no_client():
     assert result.planned[0] == "enable-secrets-engine sys/mounts/kv"
 
 
+# Fields OpenBao never stores -------------------------------------------------
+
+
+class IgnoresUnknownFields(FakeOpenBao):
+    """OpenBao keeps only the fields a mount defines and ignores the rest.
+
+    ``oidc_client_secret_ref`` is Ladon's own reference, resolved at execution
+    and never stored, so no read of the mount can ever return it.
+    """
+
+    IGNORED = frozenset({"oidc_client_secret_ref"})
+
+    def write_data(self, path, *, data):
+        kept = {k: v for k, v in data.items() if k not in self.IGNORED}
+        super().write_data(path, data=kept)
+
+
+def test_a_reference_openbao_never_stores_does_not_fail_the_read_back():
+    client = IgnoresUnknownFields()
+    result = apply_plan(plan_with_oidc(), client=client, apply=True)
+    assert result.applied == tuple(op.summary() for op in plan_with_oidc().ops)
+
+
+def test_a_reference_openbao_never_stores_is_not_perpetual_drift():
+    client = IgnoresUnknownFields()
+    apply_plan(plan_with_oidc(), client=client, apply=True)
+
+    result = apply_plan(plan_with_oidc(), client=client, apply=False)
+    assert actions(result) == ["already current"] * len(plan_with_oidc())
+
+
+# Rendering values ------------------------------------------------------------
+
+
+def role_diff(desired: dict, live: dict):
+    plan = Plan(ops=(WriteOp(kind="write-auth-role", path="auth/jwt/role/r", data=desired),))
+    client = FakeOpenBao(paths={"auth/jwt/role/r": live})
+    return apply_plan(plan, client=client, apply=False).diffs[0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("token", "s.notatoken"),
+        ("api_key", "notakey"),
+        ("jwt", "header.payload.signature"),
+        ("unrecognised_field", "some value"),
+    ],
+)
+def test_a_field_ladon_does_not_recognise_is_never_printed(field, value):
+    # The renderer allows known-safe field names rather than denying a few known
+    # dangerous ones, so a field nobody thought about cannot leak its value.
+    diff = role_diff({field: value}, {field: "other"})
+    assert diff.render() == f"update write-auth-role auth/jwt/role/r ({field}: differs)"
+    assert value not in diff.render()
+
+
+def test_userinfo_is_stripped_from_a_url_that_is_shown():
+    diff = role_diff(
+        {"oidc_discovery_url": "https://user:pw@issuer.example/.well-known/openid-configuration"},
+        {"oidc_discovery_url": "https://issuer.example"},
+    )
+    assert "user:pw@" not in diff.render()
+    assert "https://issuer.example/.well-known/openid-configuration" in diff.render()
+
+
+def test_known_safe_fields_still_show_their_values():
+    diff = role_diff({"token_ttl": "2h"}, {"token_ttl": 3600})
+    assert diff.render() == "update write-auth-role auth/jwt/role/r (token_ttl: 3600 -> 2h)"
+
+
+# Comparing values ------------------------------------------------------------
+
+
+def test_a_nested_mapping_compares_by_content():
+    diff = role_diff(
+        {"bound_claims": {"groups": ["a", "b"]}},
+        {"bound_claims": {"groups": ["b", "a"]}},
+    )
+    assert diff.action == "already current"
+
+
+def test_a_composite_duration_compares_by_length():
+    diff = role_diff({"token_ttl": "1h30m"}, {"token_ttl": 5400})
+    assert diff.action == "already current"
+
+
+def test_a_list_field_read_back_as_a_single_value_is_not_drift():
+    diff = role_diff({"bound_audiences": ["bao"]}, {"bound_audiences": "bao"})
+    assert diff.action == "already current"
+
+
+def test_a_boolean_echoed_as_a_string_is_not_drift():
+    diff = role_diff({"token_no_default_policy": True}, {"token_no_default_policy": "true"})
+    assert diff.action == "already current"
+
+
+def test_an_empty_policy_body_is_an_update_not_a_create():
+    # An existing but empty policy grants nothing. Reporting "create" would hide
+    # that something emptied it.
+    plan = Plan(
+        ops=(
+            WriteOp(
+                kind="write-policy",
+                path="sys/policies/acl/team-readwrite",
+                data={"policy": team_readwrite().hcl},
+            ),
+        )
+    )
+    client = FakeOpenBao(policies={"team-readwrite": ""})
+    result = apply_plan(plan, client=client, apply=False)
+    assert result.diffs[0].action == "update"
+
+
 # Read-back verification ------------------------------------------------------
 
 
@@ -218,22 +353,50 @@ def test_read_back_of_a_vanished_object_is_an_error():
 # Objects that cannot be converged in place -----------------------------------
 
 
-def test_a_mount_of_the_wrong_type_refuses_rather_than_destroying_data():
+def test_a_mount_of_the_wrong_type_is_blocked_rather_than_destroyed():
     client = FakeOpenBao(mounts={"kv/": {"type": "cubbyhole", "options": {}}})
-    with pytest.raises(ApplyError, match="cannot converge enable-secrets-engine"):
-        apply_plan(sample_plan(), client=client, apply=True)
+    result = apply_plan(sample_plan(), client=client, apply=True)
+
+    assert result.diffs[0].action == "blocked"
+    assert "type" in result.diffs[0].render()
     assert client.calls == []
 
 
-def test_a_mount_option_difference_is_tuned_in_place():
+def test_a_kv_version_difference_is_blocked_rather_than_upgraded_in_place():
+    # Tuning options on a live v1 mount triggers OpenBao's one-way KV upgrade,
+    # which moves every secret under kv/data/*. That is an operator's decision.
     client = FakeOpenBao(mounts={"kv/": {"type": "kv", "options": {"version": "1"}}})
     result = apply_plan(sample_plan(), client=client, apply=True)
 
-    assert result.diffs[0].action == "update"
-    assert client.calls[0] == ("tune_mount_configuration", "kv", {"version": "2"})
+    assert result.diffs[0].action == "blocked"
+    assert "version: 1 -> 2" in result.diffs[0].render()
+    assert client.calls == []
 
 
-def test_an_auth_mount_of_the_wrong_type_refuses():
+def test_an_auth_mount_of_the_wrong_type_is_blocked():
     client = FakeOpenBao(auth_methods={"jwt/": {"type": "oidc"}})
-    with pytest.raises(ApplyError, match="cannot converge enable-auth-method"):
-        apply_plan(sample_plan(), client=client, apply=False)
+    result = apply_plan(sample_plan(), client=client, apply=False)
+    blocked = [d for d in result.diffs if d.action == "blocked"]
+    assert [d.summary for d in blocked] == ["enable-auth-method sys/auth/jwt"]
+
+
+def test_a_blocked_op_does_not_hide_the_rest_of_the_plan():
+    # The report is the point of a dry-run: one op that cannot converge must not
+    # truncate it.
+    client = FakeOpenBao(mounts={"kv/": {"type": "cubbyhole", "options": {}}})
+    result = apply_plan(sample_plan(), client=client, apply=False)
+
+    assert len(result.diffs) == len(sample_plan())
+    assert result.diffs[0].action == "blocked"
+    assert [d.action for d in result.diffs[1:]] == ["create"] * (len(sample_plan()) - 1)
+
+
+def test_a_block_anywhere_stops_the_whole_apply_before_any_write():
+    # The mount is fine; the auth method is not. Nothing may be written, so a
+    # half-applied plan cannot exist.
+    client = FakeOpenBao(auth_methods={"jwt/": {"type": "oidc"}})
+    result = apply_plan(sample_plan(), client=client, apply=True)
+
+    assert client.calls == []
+    assert result.applied == ()
+    assert [d.summary for d in result.blocked] == ["enable-auth-method sys/auth/jwt"]

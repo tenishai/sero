@@ -124,11 +124,22 @@ point of view, not a list of commit subjects.
   time, so ESO is installed on demand once networking and auth are in place.
 - `ladon apply` converges instead of writing blind. Each operation is diffed
   against the live object and reported as create, update (naming the fields that
-  differ), or already current; only the first two are written, so running it
-  twice is safe. The dry-run now connects read-only to produce that diff, so it
-  describes what would really change; `ladon plan` remains the offline render.
-  Every write is read back and verified, so a change OpenBao accepts but does
-  not hold fails loudly instead of appearing to succeed.
+  differ), already current, or blocked; only the first two are written, so
+  running it twice is safe. The dry-run now connects read-only to produce that
+  diff, so it describes what would really change; `ladon plan` remains the
+  offline render. Every write is read back and verified, so a change OpenBao
+  accepts but does not hold fails loudly instead of appearing to succeed.
+- A difference Ladon will not converge is reported as a blocked operation rather
+  than an error that hides the rest of the plan. The whole plan is diffed before
+  anything is written, so the report is always complete, and if any operation is
+  blocked an apply writes nothing at all and exits non-zero. An engine type
+  change and a KV version change are both blocked: tuning the version on a live
+  v1 mount triggers OpenBao's one-way upgrade, which moves every secret under
+  the mount, so it is an operator's decision and not a side effect of an apply.
+- The diff shows values only for the fields Ladon itself sets and knows to be
+  safe to print; every other field reports that it differs without showing
+  either value, and credentials embedded in a URL are stripped from what is
+  shown.
 - The conventions lint also rejects cloud region literals, and the regions in
   the Terraform module docs, variables, and tests became placeholders or
   made-up values.
@@ -146,6 +157,13 @@ point of view, not a list of commit subjects.
   (without it, it read the root namespace rather than the team's KV) and carries
   conditions restricting which Kubernetes namespaces may reference it, matching
   on the API-server-set `kubernetes.io/metadata.name` label.
+- The OIDC client-secret reference is written but never verified. It is Ladon's
+  own reference, which OpenBao does not store, so comparing it made every
+  read-back fail and every later dry-run report drift that was not there.
+- Values that OpenBao echoes back in another shape (a composite duration, a
+  boolean as a string, a one-element list as a bare value, a reordered nested
+  claim) no longer read as drift, and a policy that exists but is empty is an
+  update rather than a create.
 - Documentation drift: the baseline auth methods are JWT plus OIDC, with
   Kubernetes auth deliberately excluded, in the roadmap and source review as
   well as the baseline and design documents.

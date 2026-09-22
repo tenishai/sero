@@ -41,10 +41,6 @@ class FakeSys:
         self._bao.calls.append(("enable_secrets_engine", path, backend_type, options))
         self._bao.mounts[f"{path}/"] = {"type": backend_type, "options": dict(options or {})}
 
-    def tune_mount_configuration(self, *, path, options=None):
-        self._bao.calls.append(("tune_mount_configuration", path, options))
-        self._bao.mounts[f"{path}/"]["options"] = dict(options or {})
-
     def enable_auth_method(self, *, method_type, path):
         self._bao.calls.append(("enable_auth_method", path, method_type))
         self._bao.auth_methods[f"{path}/"] = {"type": method_type}
