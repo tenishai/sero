@@ -156,8 +156,14 @@ def _is_not_found(exc: Exception) -> bool:
     return type(exc).__name__ == "InvalidPath" or getattr(exc, "status_code", None) == 404
 
 
-def _call(fn: Callable, *args, **kwargs):
-    """Call a read, returning None when the object does not exist."""
+def read_or_none(fn: Callable, *args, **kwargs):
+    """Call a read, returning None when the object does not exist.
+
+    Public because the audit layer reads the same objects through the same
+    client and must treat a 404 the same way: swallowing anything wider would
+    turn a denied read into "it is not there", which is the one mistake an
+    audit must not make.
+    """
     try:
         return fn(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - only a 404 is swallowed; the rest re-raise
@@ -166,7 +172,7 @@ def _call(fn: Callable, *args, **kwargs):
         raise
 
 
-def _unwrap(response) -> dict:
+def unwrap(response) -> dict:
     """The payload of an OpenBao response: under ``data``, or the body itself."""
     if not isinstance(response, dict):
         return {}
@@ -176,9 +182,9 @@ def _unwrap(response) -> dict:
 
 def _read_namespace(client, op: WriteOp) -> dict | None:
     # OpenBao has no read endpoint for a single namespace, so existence comes
-    # from the parent's listing. An empty parent answers 404, which _call maps
-    # to None, and that is "no children", not an error.
-    listing = _unwrap(_call(client.sys.list_namespaces))
+    # from the parent's listing. An empty parent answers 404, which read_or_none
+    # maps to None, and that is "no children", not an error.
+    listing = unwrap(read_or_none(client.sys.list_namespaces))
     keys = listing.get("keys") or []
     name = _mount_name(op)
     if f"{name}/" in keys or name in keys:
@@ -195,7 +201,7 @@ def _create_namespace(client, op: WriteOp) -> None:
 
 
 def _read_secrets_engine(client, op: WriteOp) -> dict | None:
-    mounts = _unwrap(_call(client.sys.list_mounted_secrets_engines))
+    mounts = unwrap(read_or_none(client.sys.list_mounted_secrets_engines))
     mount = mounts.get(f"{_mount_name(op)}/")
     if not isinstance(mount, dict):
         return None
@@ -209,7 +215,7 @@ def _desired_secrets_engine(op: WriteOp) -> dict:
 
 
 def _read_auth_method(client, op: WriteOp) -> dict | None:
-    methods = _unwrap(_call(client.sys.list_auth_methods))
+    methods = unwrap(read_or_none(client.sys.list_auth_methods))
     method = methods.get(f"{_mount_name(op)}/")
     if not isinstance(method, dict):
         return None
@@ -222,10 +228,10 @@ def _desired_auth_method(op: WriteOp) -> dict:
 
 def _read_policy(client, op: WriteOp) -> dict | None:
     name = op.path.rsplit("/", 1)[-1]
-    body = _call(client.sys.read_policy, name=name)
+    body = read_or_none(client.sys.read_policy, name=name)
     if body is None:
         return None
-    live = _unwrap(body)
+    live = unwrap(body)
     # The read endpoint returns the body under "rules"; newer responses use
     # "policy". Either way it is the same HCL. An empty body is a policy that
     # exists and grants nothing, which is an update, not a create: reporting a
@@ -243,10 +249,10 @@ def _desired_policy(op: WriteOp) -> dict:
 
 
 def _read_path(client, op: WriteOp) -> dict | None:
-    response = _call(client.read, op.path)
+    response = read_or_none(client.read, op.path)
     if response is None:
         return None
-    return _unwrap(response)
+    return unwrap(response)
 
 
 def _desired_path(op: WriteOp) -> dict:
@@ -502,28 +508,34 @@ def _join_namespace(base: str | None, child: str) -> str:
 
 
 @contextmanager
-def _scoped(client, op: WriteOp):
-    """Run one op's requests with the client scoped to the op's namespace.
+def scoped_namespace(client, namespace: str | None, *, what: str):
+    """Run a block's requests with the client scoped to ``namespace``.
 
     Switching the header on one connection, rather than building a client per
-    namespace, keeps a plan to a single authenticated session. The previous
-    scope is always restored, so a failure mid-op cannot leave the client
-    pointing somewhere the next op does not expect.
+    namespace, keeps a plan (or an audit) to a single authenticated session. The
+    previous scope is always restored, so a failure inside the block cannot
+    leave the client pointing somewhere the next caller does not expect.
+
+    ``what`` names the work in the error raised when the client has no adapter
+    to scope, which is the only way this can fail.
     """
-    if not op.namespace:
+    if not namespace:
         yield
         return
     adapter = getattr(client, "adapter", None)
     if adapter is None or not hasattr(adapter, "namespace"):
-        raise ApplyError(
-            f"cannot run {op.summary()}: this client cannot be scoped to an OpenBao namespace"
-        )
+        raise ApplyError(f"cannot run {what}: this client cannot be scoped to an OpenBao namespace")
     base = adapter.namespace
-    adapter.namespace = _join_namespace(base, op.namespace)
+    adapter.namespace = _join_namespace(base, namespace)
     try:
         yield
     finally:
         adapter.namespace = base
+
+
+def _scoped(client, op: WriteOp):
+    """Run one op's requests inside the namespace the op names."""
+    return scoped_namespace(client, op.namespace, what=op.summary())
 
 
 def _diff_op(client, op: WriteOp) -> OpDiff:
