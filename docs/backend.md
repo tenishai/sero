@@ -1,8 +1,8 @@
 # The backend
 
 One long-running process serves the API the UI calls, the built UI itself, and
-(as they land) the apply operations as background jobs. It is the `web` workload
-a deployment runs next to OpenBao.
+the apply operations, which run as background jobs. It is the `web` workload a
+deployment runs next to OpenBao.
 
 It never holds a secret value. Listings and details return masked key names;
 values live only in OpenBao. The one route that returns plaintext is `reveal`,
@@ -472,6 +472,7 @@ Denials are recorded too, including the ones that never got past the token.
 Those carry `via` as the caller the token claimed to be, or `unknown` when it
 matched none, and are filed under `unidentified`. A `429` is filed under the
 caller's name, which is known by then.
+
 ## Apply operations as jobs
 
 An apply phase reads and writes dozens of objects across OpenBao and the
@@ -606,12 +607,13 @@ Every failure is one JSON object with an `error` string:
 
 | Status | When |
 | --- | --- |
-| 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name) or the request named another environment. |
+| 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name), the request named another environment, or an apply body could not produce a plan. |
 | 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. On `/api/service/*`, no token, or one that is not the configured caller's. |
 | 403 | Not on the allow list, not a member of the namespace, not an admin, reveal is not enabled, or a machine caller is not pinned to the namespace. |
-| 404 | No such namespace request, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
+| 404 | No such namespace request, job, apply phase, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
 | 405 | A real route, asked with the wrong method. |
-| 422 | The request body does not match the route. The message names the field and never quotes what was sent. |
+| 409 | A job of that kind is already running. The body carries its `job_id` alongside the message. |
+| 422 | The request body does not match the route, or names a field the route does not take. The message names the field and never quotes what was sent. |
 | 429 | A machine caller has spent its call budget for this minute. |
 | 500 | Something broke. The body says only `internal error`; the traceback is in the log. |
 | 503 | The datastore or OpenBao is not configured, or OpenBao cannot be reached. |
@@ -635,6 +637,14 @@ A request that never got past identity is recorded against `unidentified`, with
 the deciding header's name and whether one arrived, never what it said.
 Arguments and error messages are both redacted before they are stored, so a
 token quoted inside a message does not reach the table.
+
+The agent surface writes the same rows for the same reasons: the recorder lives
+in `ladon.audit`, which neither surface owns, and every tool call runs through
+it. A tool call refused before it starts, or one that fails halfway, leaves a
+`denied` or `error` row there exactly as it does here.
+
+Starting an apply is audited too, as `apply_<phase>`, with the job id and the
+inputs it was given.
 
 ## Reveal
 
