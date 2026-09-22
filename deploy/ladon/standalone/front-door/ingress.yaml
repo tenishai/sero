@@ -1,0 +1,62 @@
+# The front door itself: an external HTTPS load balancer, addressed by a
+# name, terminating TLS, with the identity-aware proxy in front of it.
+#
+# The `gce` class is what makes this a cloud load balancer rather than an
+# in-cluster ingress controller. Combined with the Service's
+# `cloud.google.com/neg` annotation, traffic goes from the load balancer
+# straight to the pod through a container-native network endpoint group,
+# not through a node port. That is why the backend's NetworkPolicy needs an
+# ipBlock rule for the provider's ranges: the connection arrives from the
+# load balancer's own infrastructure and belongs to no namespace. See
+# ../../k8s/base/networkpolicy.yaml.
+#
+# The three annotations after the class each name an object this directory
+# also carries. All three are name references, and a name that does not
+# resolve is silent: the Ingress is accepted, and the feature simply does
+# not happen. Check the object, not the Ingress, when something is missing.
+#
+#   managed-certificates            -> managedcertificate.yaml
+#   v1beta1.FrontendConfig          -> frontendconfig.yaml
+#   (and, from the Service)         -> backendconfig.yaml
+#
+# Provisioning takes a while. The load balancer, its forwarding rules, and
+# the certificate are created asynchronously, and ten to twenty minutes
+# before the first successful request is ordinary rather than a sign of a
+# problem.
+#
+#   kubectl -n ladon describe ingress ladon
+#
+# REPLACE, both marked below:
+#
+#   * The static IP name. Reserve a global external address first and give
+#     its *name* here, not its address. An Ingress that names an address
+#     that was never reserved gets an ephemeral one instead, which changes
+#     on recreate and quietly breaks the DNS record pointing at it.
+#   * The host, which must match the certificate's domain and resolve to
+#     the reserved address.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ladon
+  namespace: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+  annotations:
+    kubernetes.io/ingress.class: gce
+    # REPLACE: the name of the reserved global static address.
+    kubernetes.io/ingress.global-static-ip-name: <static-ip-name>
+    networking.gke.io/managed-certificates: ladon
+    networking.gke.io/v1beta1.FrontendConfig: ladon
+spec:
+  rules:
+    # REPLACE: the hostname, matching the certificate's domain.
+    - host: <hostname>
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: ladon
+                port:
+                  number: 8000

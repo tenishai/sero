@@ -12,6 +12,14 @@ metadata:
   namespace: ladon
   labels:
     app.kubernetes.io/name: ladon
+  annotations:
+    # For the cloud front door in front-door/ only. The first sends the load
+    # balancer straight to the pods, the second binds the BackendConfig that
+    # sets the health check and turns on the identity-aware proxy. Both are
+    # inert on a cluster with no such load balancer, so they are safe to
+    # leave in place; delete them if the front door is an in-cluster proxy.
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "ladon"}'
 spec:
   type: ClusterIP
   selector:

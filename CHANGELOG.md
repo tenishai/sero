@@ -43,6 +43,43 @@ for the task-by-task record.
 
 ### Added
 
+- A front door, so the backend is a service people can reach rather than a
+  port-forward. `deploy/ladon/standalone/front-door/` holds four manifests
+  for the cloud provider's external HTTPS load balancer with its
+  identity-aware proxy: the backend settings (health check on `/healthz`,
+  IAP on), a provider-managed TLS certificate, an http-to-https redirect,
+  and the load balancer itself at a reserved global address.
+  `standalone/service.yaml` gains the two annotations that bind them, and
+  stays `ClusterIP`. Every deployment-specific value is a placeholder.
+
+  Two things this cost to learn, now written down rather than rediscovered.
+  The `ladon-backend` NetworkPolicy admitted ingress only from a namespace
+  labelled `ladon.dev/proxy=true`, which admits nothing at all when the
+  proxy is a cloud load balancer: traffic and health checks arrive from
+  Google's `130.211.0.0/22` and `35.191.0.0/16`, direct to the pod, from no
+  namespace. The policy now carries an `ipBlock` rule for the pair, and a
+  cluster on an older copy of the manifests sees a healthy pod behind a
+  permanently 502 load balancer until it reapplies. And IAP no longer takes
+  per-application OAuth client credentials in its backend settings: the
+  OAuth client administration API was shut down in 2026, so the client that
+  every older guide tells you to create cannot be created, and IAP uses a
+  Google-managed one instead.
+
+  `docs/deployment-order.md` gains the ordered procedure (reserve the
+  address, point DNS at it, apply, grant `roles/iap.httpsResourceAccessor`,
+  then verify the assertion), including how to read the audience the backend
+  has to match and a warning that setting `identity.assertion` closes the
+  plain-header lane, so `/api` over a port-forward stops working from then
+  on. `docs/backend.md` now shows the real proxy's values next to a generic
+  one.
+
+- A second ingress rule for a machine caller. A namespace labelled
+  `ladon.dev/caller=true` reaches the backend on 8000, which is how a
+  platform service using the machine lane (`POST /api/service/secrets`) gets
+  in: it runs in a namespace of its own and matched neither the proxy rule
+  nor a same-namespace selector. The label opens the port and grants no
+  identity.
+
 - Cloud-KMS auto-unseal you can install, not just describe. `scripts/ladon
   seal-values --config <deployment-config> --base-config <values file or HCL>`
   renders the Helm values overlay that carries the deployment's seal stanza in

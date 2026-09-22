@@ -10,6 +10,7 @@ cluster name, registry, address, and address range is a placeholder to replace.
 | `gojira.yaml` | The deploy contract. The deployment platform's generator reads it and emits the Deployment and the Service. |
 | `k8s/base/` | The manifests that generator preserves: identity, RBAC, the volume, and the network policies. |
 | `standalone/` | A plain Deployment and Service, for a cluster where that platform is not in use. |
+| `standalone/front-door/` | The cloud front door: an external HTTPS load balancer with the provider's identity-aware proxy, a managed certificate, and an http-to-https redirect. Optional, and applied by hand. |
 
 Both paths read the same Secret and PersistentVolumeClaim, and the same
 ConfigMap under one differently named key (see below), so an instance can move
@@ -124,6 +125,36 @@ hand out that ability.
 So exposure is the proxy's job. The backend is reachable from the proxy and
 from nothing else.
 
+The cloud front door in `standalone/front-door/` does not change that. The
+Service stays `ClusterIP`; the load balancer reaches the pods through a
+container-native network endpoint group, which is to say it bypasses the
+Service's virtual IP rather than being given one of its own. The Service is
+there to be selected and annotated, not to be exposed.
+
+## The front door
+
+Optional, and one shape of proxy rather than the only one: the cloud
+provider's external HTTPS load balancer with its identity-aware proxy in
+front. Four manifests, each documented in its own file.
+
+| File | What it is |
+| --- | --- |
+| `backendconfig.yaml` | The health check (`/healthz` on 8000) and `iap.enabled`. Bound through the Service's `cloud.google.com/backend-config` annotation. |
+| `managedcertificate.yaml` | The TLS certificate, issued and renewed by the provider. |
+| `frontendconfig.yaml` | The http-to-https redirect. |
+| `ingress.yaml` | The load balancer: `gce` class, the reserved static address, the host, and the backend Service. |
+
+Two annotations on `standalone/service.yaml` connect them to the workload:
+`cloud.google.com/neg` and `cloud.google.com/backend-config`. Both are inert
+on a cluster with no such load balancer.
+
+They are not covered by `scripts/validate-deploy.sh`, deliberately: they are
+provider custom resources whose definitions are not on every cluster, and
+they carry placeholders that are not valid values for the fields they sit in.
+The step-by-step, including the address reservation, the DNS record, the IAP
+grant, and the `identity.assertion` config that follows, is in
+[../../docs/deployment-order.md](../../docs/deployment-order.md).
+
 ## The NetworkPolicy is required, not optional
 
 A ClusterIP Service is still reachable from every pod on the cluster, which is
@@ -132,9 +163,12 @@ it, in three parts:
 
 1. `ladon-default-deny` denies all traffic, in and out, for every pod in the
    `ladon` namespace.
-2. `ladon-backend` admits ingress to the backend **only** from a namespace
-   labelled `ladon.dev/proxy=true`, and permits egress only to DNS, to
-   OpenBao, to outbound https, and to the Kubernetes API server.
+2. `ladon-backend` admits ingress to the backend from three named places and
+   nothing else: a namespace labelled `ladon.dev/proxy=true` (an in-cluster
+   proxy), the cloud load balancer's published address ranges (the front
+   door), and a namespace labelled `ladon.dev/caller=true` (a machine caller
+   on the service lane). It permits egress only to DNS, to OpenBao, to
+   outbound https, and to the Kubernetes API server.
 3. `ladon-openbao` re-admits the backend and the External Secrets Operator to
    OpenBao, and gives OpenBao the egress that part 1 also closed.
 
@@ -154,6 +188,36 @@ Labels rather than namespace names, because which namespace an ingress
 controller or the operator lives in differs per cluster, and labelling is a
 deliberate act by whoever owns that namespace rather than a name this
 repository has to guess.
+
+A third label is optional, and only for a deployment with a machine caller on
+the service lane (`POST /api/service/secrets`). That caller runs in a
+namespace of its own, which matches neither the proxy rule nor a
+same-namespace selector, so its namespace is admitted the same deliberate
+way:
+
+```
+kubectl label namespace <caller-namespace> ladon.dev/caller=true
+```
+
+The label opens the port. It grants no identity: the caller still
+authenticates on the service lane's own terms.
+
+### A cloud load balancer comes from no namespace
+
+Where the front door is the cloud provider's own external HTTPS load balancer
+rather than an in-cluster proxy, the `ladon.dev/proxy=true` rule admits
+nothing, and this is the way it is found out: the backend service sits
+permanently UNHEALTHY and the load balancer answers 502 with the pod running
+and healthy.
+
+The reason is that traffic and health checks alike arrive from the provider's
+own infrastructure, direct to the pod through a container-native network
+endpoint group, from fixed address ranges rather than from a namespace. On
+Google those are `130.211.0.0/22` and `35.191.0.0/16`, and `ladon-backend`
+carries an `ipBlock` rule for the pair. They are Google's published
+constants, not a deployment's addresses, so unlike the rules below there is
+nothing to replace. The front-door manifests are in
+[`standalone/front-door/`](standalone/front-door/).
 
 ### OpenBao needs egress, not just ingress
 

@@ -497,6 +497,130 @@ schema it does not trust.
 This is the path a shared development cluster with no deployment platform of
 its own actually runs: the standalone pair, not the generated one.
 
+### 6a. The front door
+
+Optional, and the step that turns a port-forward into a service people can
+use. This is the cloud provider's own external HTTPS load balancer with its
+identity-aware proxy in front, which is the proxy the backend has been
+assuming all along. The manifests are in
+[../deploy/ladon/standalone/front-door](../deploy/ladon/standalone/front-door)
+and each carries its reasoning; this is the order to do things in, which is
+what the manifests cannot say.
+
+They are not covered by `scripts/validate-deploy.sh`, so nothing checks them
+before they meet a cluster. Read what you apply.
+
+**1. Reserve the address.** Global, external, and reserved rather than
+ephemeral, because an ephemeral address changes when the load balancer is
+recreated and takes the DNS record with it.
+
+```
+gcloud compute addresses create <static-ip-name> --global
+gcloud compute addresses describe <static-ip-name> --global --format='value(address)'
+```
+
+The Ingress names the address by *name*, not by value. A name that was never
+reserved is not an error: the Ingress gets an ephemeral address instead and
+says nothing.
+
+**2. Point DNS at it.** An A record for `<hostname>` holding the address the
+previous command printed. Do this before applying, not after: the managed
+certificate is validated over that name, so it stays `Provisioning` until the
+record resolves here, and a certificate that was asked for too early sits in
+`FailedNotVisible` until the record catches up.
+
+**3. Apply the manifests.** The Service first, because its two annotations
+are what bind the rest to the workload.
+
+```
+kubectl apply -f deploy/ladon/standalone/service.yaml
+kubectl apply -f deploy/ladon/standalone/front-door/
+```
+
+Replace the two placeholders first: the address name and the host in
+`ingress.yaml`, and the same host in `managedcertificate.yaml`. Then wait.
+Ten to twenty minutes for the load balancer, and up to an hour for the
+certificate, is ordinary.
+
+```
+kubectl -n ladon describe ingress ladon
+kubectl -n ladon describe managedcertificate ladon
+```
+
+The failure to expect here is a 502 with a healthy pod. Two causes, both
+already handled in this repository and both worth recognising:
+
+- The health check. The default checks `/` on the Service port, and a
+  deployment serving the API alone has no `/`. `backendconfig.yaml` points it
+  at `/healthz` on 8000, which is unauthenticated because a probe carries no
+  identity.
+- The NetworkPolicy. Traffic and health checks arrive from the load
+  balancer's own ranges, `130.211.0.0/22` and `35.191.0.0/16`, direct to the
+  pod through a container-native network endpoint group. They come from no
+  namespace, so the `ladon.dev/proxy=true` label admits none of it;
+  `ladon-backend` carries an `ipBlock` rule for the pair instead. A cluster
+  running an older copy of
+  [the manifests](../deploy/ladon/k8s/base/networkpolicy.yaml) will fail here
+  until it is reapplied.
+
+**4. Grant somebody access.** Enabling IAP authenticates callers; it
+authorizes nobody. Until this grant exists, every person gets a sign-in page
+and then a refusal, including the person who built the thing.
+
+```
+gcloud compute backend-services list --global
+gcloud iap web add-iam-policy-binding \
+  --resource-type=backend-services \
+  --service=<backend-service-name> \
+  --member='user:<email>' \
+  --role='roles/iap.httpsResourceAccessor'
+```
+
+A group is the better member in anything but a first test.
+
+**5. Verify what the proxy asserts.** IAP signs a JWT and puts it in
+`x-goog-iap-jwt-assertion` alongside the plain email header. Configure the
+backend to verify the signature rather than trust the text, in the same
+deployment config from step 5:
+
+```yaml
+identity:
+  assertion:
+    header: x-goog-iap-jwt-assertion
+    jwks_url: https://www.gstatic.com/iap/verify/public_key-jwk
+    issuer: https://cloud.google.com/iap
+    audience: /projects/<project-number>/global/backendServices/<backend-service-id>
+    email_claim: email
+```
+
+The first three values are Google's, identical in every deployment. The
+audience is yours, and it is the one field that has to be looked up. Its two
+parts:
+
+```
+gcloud projects describe <project> --format='value(projectNumber)'
+gcloud compute backend-services describe <backend-service-name> --global --format='value(id)'
+```
+
+The project *number*, not the project id, and the backend service's numeric
+`id`, not its name. The backend service is the one the Ingress created for
+this Service; `gcloud compute backend-services list --global` names it. Get
+the audience wrong and every request is `401 {"error": "no identity"}`, with
+nothing to distinguish it from presenting no token at all, which is
+deliberate. Get it right and the header lane is closed: an assertion cannot
+be replayed at another service behind the same proxy.
+
+**A warning about the lane you were using.** Once `identity.assertion` is
+set it is *required* on every `/api` route, it decides the identity, and the
+plain header is not read at all. The port-forward in step 7 below still
+reaches the pod, and `/healthz` still answers, but every `/api` call over it
+now returns 401, because nothing on that path mints an IAP token. This is
+the point of setting it, not a side effect: it is what stops a misconfigured
+NetworkPolicy from being the only thing between a caller and any identity
+they care to name. Set it knowing that operator access from then on goes
+through the front door, and keep a way in that does not depend on the front
+door being healthy.
+
 ### 7. A first look
 
 The Service is ClusterIP and the NetworkPolicy admits only the proxy, so the
@@ -515,6 +639,11 @@ already permit far more.
 `/healthz` is unauthenticated, because a probe carries no identity. Every `/api`
 route wants the identity header, which is what the proxy supplies in a real
 deployment; on a port-forward, set it yourself to see what an operator sees.
+
+That last sentence stops being true the moment `identity.assertion` is
+configured (step 6a). A header you set by hand is then ignored, and every
+`/api` call over a port-forward is 401. `/healthz` still answers, so this
+remains the way to tell a broken pod from a broken front door.
 
 ### 8. Onboarding an app through the endpoint
 

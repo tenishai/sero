@@ -8,6 +8,15 @@
 #   * standalone/    the Deployment and Service for a cluster where that
 #                    platform is not in use.
 #
+# One directory is deliberately outside both halves: standalone/front-door/.
+# Neither the kubectl glob below nor "kubectl apply -f <dir>" recurses, so
+# nothing in it is read, and that is on purpose rather than by accident. Its
+# manifests are cloud-provider custom resources whose definitions are not on
+# every cluster, and they carry angle-bracket placeholders for a hostname and
+# an address name, which are not valid values for the fields they sit in. Both
+# would fail the full mode's schema validation on a perfectly good file. The
+# front door is applied by hand, once, against the one cluster that has it.
+#
 # It deploys nothing. Like scripts/validate-helm.sh, this is a contract test:
 # it proves the manifests are well-formed and complete, not that they are
 # applied anywhere.
