@@ -1,0 +1,84 @@
+# Ladon image build and push.
+#
+# Runs after the `ci` workflow succeeds on `main`, so an image only ever exists
+# for a commit whose lint, tests, and contract checks passed. A `push` trigger
+# would race CI and publish a tag for a commit that then failed.
+#
+# Everything deployment-specific is a repository variable, so no registry host,
+# project, account, or identity appears in the repository:
+#
+#   LADON_IMAGE        the full image repository to push to, without a tag
+#                      (for example `<registry-host>/<path>/ladon`)
+#   GCP_WIF_PROVIDER   the workload identity provider resource name
+#   GCP_BUILD_SA       the service account the workflow impersonates
+#
+# There are no long-lived credentials: the runner exchanges its OIDC token for
+# short-lived ones through workload identity federation, which is why the job
+# asks for `id-token: write`.
+#
+# All actions are pinned to a commit SHA. See docs/versions.md.
+
+name: image
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    name: build and push
+    # `workflow_run` fires for failed runs too; only a green one earns an image.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # actions/checkout v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # The commit CI passed on, not whatever main holds by now.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # google-github-actions/auth v3.0.0
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SA }}
+
+      # google-github-actions/setup-gcloud v3.0.1
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+
+      - name: Configure Docker for the registry
+        env:
+          LADON_IMAGE: ${{ vars.LADON_IMAGE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LADON_IMAGE}" ]; then
+            echo "repository variable LADON_IMAGE is not set" >&2
+            exit 1
+          fi
+          # The registry host is the first path segment of the image reference.
+          gcloud auth configure-docker "${LADON_IMAGE%%/*}" --quiet
+
+      - name: Build and push
+        env:
+          LADON_IMAGE: ${{ vars.LADON_IMAGE }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          TAG="${COMMIT_SHA:0:7}"
+          # --pull refreshes the pinned bases so a stale local layer cannot be
+          # what ships; the digests in the Dockerfile still decide what is used.
+          docker build \
+            --pull \
+            --platform linux/amd64 \
+            --tag "${LADON_IMAGE}:${TAG}" \
+            .
+          docker push "${LADON_IMAGE}:${TAG}"
+          echo "pushed ${LADON_IMAGE}:${TAG}"
