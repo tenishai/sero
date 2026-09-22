@@ -154,7 +154,52 @@ def test_json_output_of_a_clean_audit(monkeypatch):
     assert code == 0
     payload = json.loads(text)
     assert payload["ok"] is True
-    assert payload["namespaces"] == [{"namespace": "root", "ok": True, "findings": []}]
+    assert payload["namespaces"] == [
+        {
+            "namespace": "root",
+            "ok": True,
+            "counts": {"mounts": 1, "roles": 0, "policies": 1},
+            "findings": [],
+        }
+    ]
+
+
+def test_an_unparsable_default_policy_fails_the_run(monkeypatch):
+    # A default policy the audit cannot read is a default policy it cannot
+    # vouch for, and "clean" would be a claim it has no basis for.
+    point_at(monkeypatch, seed(FakeOpenBao(), "ns-a", policies={"default": "not a policy"}))
+    code, text = run(["audit", "--namespace", "ns-a"])
+    assert code == AUDIT_FINDINGS_EXIT
+    assert "[ns-a] high unparsed-policy default:" in text
+
+
+def test_auditing_without_a_config_or_a_namespace_says_what_it_skipped(monkeypatch):
+    # The dangerous reading of a clean report is "the deployment is clean".
+    # With no config there is nothing to tell the audit what the deployment is.
+    point_at(monkeypatch, seed(FakeOpenBao(), "", policies={"default": STOCK_DEFAULT}))
+    code, text = run(["audit"])
+    assert code == 0
+    assert text.startswith("WARNING: only the root namespace was audited")
+    assert "--config" in text
+
+
+def test_the_warning_is_not_printed_when_the_namespaces_are_known(monkeypatch, tmp_path):
+    bao = FakeOpenBao()
+    seed(bao, "", policies={"default": STOCK_DEFAULT})
+    seed(bao, "ns-a", policies={"default": STOCK_DEFAULT})
+    seed(bao, "ns-b", policies={"default": STOCK_DEFAULT})
+    point_at(monkeypatch, bao)
+    code, text = run(["audit", "--config", write_config(tmp_path)])
+    assert code == 0
+    assert "WARNING" not in text
+
+
+def test_the_warning_travels_in_the_json_payload(monkeypatch):
+    point_at(monkeypatch, seed(FakeOpenBao(), "", policies={"default": STOCK_DEFAULT}))
+    code, text = run(["audit", "--json"])
+    assert code == 0
+    payload = json.loads(text)
+    assert "only the root namespace was audited" in payload["warning"]
 
 
 def test_a_connection_failure_is_reported_without_a_traceback(monkeypatch):

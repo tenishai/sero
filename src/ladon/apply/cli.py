@@ -647,6 +647,15 @@ def _run_install_eso(args: argparse.Namespace, out) -> int:
     return 0
 
 
+# What a clean report does not cover when nothing told the audit which
+# namespaces exist. Read without this line, "no findings" reads as "the
+# deployment is clean", and every team namespace went unlooked at.
+ROOT_ONLY_WARNING = (
+    "only the root namespace was audited; pass --config to cover every team "
+    "namespace the deployment has, or --namespace to name one"
+)
+
+
 def _audit_reports(args: argparse.Namespace, client) -> tuple[AuditReport, ...]:
     """Which namespaces to audit: the one named, or the root plus the config's.
 
@@ -666,11 +675,18 @@ def _run_audit(args: argparse.Namespace, out) -> int:
     client = connect(BaoConnection.from_env(), TokenAuth.from_env())
     reports = _audit_reports(args, client)
     ok = all(report.ok for report in reports)
+    warning = ROOT_ONLY_WARNING if not (args.namespace or args.config) else None
 
     if args.json:
         payload = {"ok": ok, "namespaces": [report.as_dict() for report in reports]}
+        if warning:
+            payload["warning"] = warning
         print(json.dumps(payload, indent=2), file=out)
-    elif any(report.findings for report in reports):
+        return 0 if ok else AUDIT_FINDINGS_EXIT
+
+    if warning:
+        print(f"WARNING: {warning}.", file=out)
+    if any(report.findings for report in reports):
         for report in reports:
             if report.findings:
                 print(report.render(), file=out)
