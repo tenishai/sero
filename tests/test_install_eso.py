@@ -1,7 +1,8 @@
-"""Tests for the ESO install command construction and dry-run safety (D4a).
+"""Tests for the ESO install command construction and dry-run safety (D4a, D18a).
 
 Pure argv builders need no kubectl/helm. The execution path is exercised with
-``run`` monkeypatched, so nothing shells out to a real cluster.
+``run`` monkeypatched and the operator detection injected, so nothing shells out
+to a real cluster.
 """
 
 import pytest
@@ -15,6 +16,7 @@ from ladon.install.eso import (
     install_eso,
 )
 from ladon.install.helm import HelmError
+from ladon.install.k8s import ESOInstall
 
 
 def patch_run(monkeypatch, fn):
@@ -26,6 +28,15 @@ def patch_run(monkeypatch, fn):
     """
     monkeypatch.setattr(helm, "run", fn)
     monkeypatch.setattr(eso, "run", fn)
+
+
+def no_operator():
+    """Detection for a cluster with no External Secrets Operator on it."""
+    return None
+
+
+def existing_operator():
+    return ESOInstall(namespace="ns-a", service_account="external-secrets", version="v0.19.2")
 
 
 def test_upgrade_argv_dry_run_by_default():
@@ -67,27 +78,33 @@ def test_webhook_wait_argv():
 def test_install_defaults_to_dry_run_and_skips_webhook(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    install_eso()
+    result = install_eso(detect=no_operator)
     # repo add, repo update, upgrade (dry-run). No webhook wait on a dry-run.
     assert len(calls) == 3
     assert "--dry-run" in calls[2]
     assert not any(c[0] == "kubectl" for c in calls)
+    assert result.reused is False
+    assert result.summary.startswith("dry run: would install external-secrets")
 
 
 def test_apply_runs_install_then_waits_for_webhook(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    install_eso(apply=True)
+    result = install_eso(apply=True, detect=no_operator)
     assert len(calls) == 4
     assert "--dry-run" not in calls[2]
     assert calls[3][0] == "kubectl"
     assert "--for=condition=Available" in calls[3]
+    assert result.summary == (
+        f"installed external-secrets chart {ESO_CHART_VERSION} in namespace external-secrets"
+    )
+    assert len(result.commands) == 4
 
 
 def test_apply_can_skip_webhook_wait(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    install_eso(apply=True, wait_for_webhook=False)
+    install_eso(apply=True, wait_for_webhook=False, detect=no_operator)
     assert len(calls) == 3
     assert not any(c[0] == "kubectl" for c in calls)
 
@@ -100,7 +117,38 @@ def test_webhook_failure_is_reframed(monkeypatch):
 
     patch_run(monkeypatch, fake_run)
     with pytest.raises(HelmError, match="webhook did not become ready"):
-        install_eso(apply=True)
+        install_eso(apply=True, detect=no_operator)
+
+
+# Reusing an operator somebody else installed (D18a) --------------------------
+
+
+def test_an_existing_operator_is_reused_and_no_helm_command_runs(monkeypatch):
+    calls = []
+    patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
+    result = install_eso(apply=True, detect=existing_operator)
+    assert calls == []
+    assert result.reused is True
+    assert result.commands == ()
+    assert result.summary == "reusing external-secrets v0.19.2 in namespace ns-a"
+    assert result.existing == existing_operator()
+
+
+def test_reuse_is_reported_on_a_dry_run_too(monkeypatch):
+    calls = []
+    patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
+    result = install_eso(detect=existing_operator)
+    assert calls == []
+    assert result.reused is True
+
+
+def test_detection_defaults_to_the_cluster_probe():
+    # The default is the real kubectl probe; the tests inject their own.
+    import inspect
+
+    from ladon.install.k8s import detect_eso
+
+    assert inspect.signature(install_eso).parameters["detect"].default is detect_eso
 
 
 class _Result:

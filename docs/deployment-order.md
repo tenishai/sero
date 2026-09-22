@@ -95,6 +95,19 @@ version while some clusters carried a different, separately managed version,
 which produced custom-resource API mismatches; Ladon treats the ESO version as a
 single fleet-wide pin (see [versions.md](versions.md)).
 
+An operator that is already on the cluster is reused, not replaced. ESO is
+cluster-scoped and singular, so two operators fight over one set of custom
+resource definitions; before installing anything Ladon looks for a deployment
+labelled `app.kubernetes.io/name=external-secrets` in any namespace, and when it
+finds one it records that operator's version and namespace and runs no helm
+command at all. You can tell which happened from the install report: it either
+reads `reusing external-secrets <version> in namespace <namespace>`, or names the
+pinned chart version it installed. To check by hand, run `kubectl get deploy -A
+-l app.kubernetes.io/name=external-secrets`; Ladon reads the version from the
+deployment's `app.kubernetes.io/version` label, falling back to its image tag.
+Reuse means the fleet-wide pin above is not enforced on that cluster, so confirm
+the reported version is one your stores and ExternalSecrets support.
+
 Prerequisite: phase 4 (the root auth method and cross-namespace read policy ESO
 authenticates against).
 
@@ -121,6 +134,9 @@ operations, each driven through the agent/tool surface, each dry-run first.
 ### 9. ESO on the team cluster (Install, runtime)
 
 Install ESO (the same fleet-wide pinned version) on the registered team cluster.
+As in phase 6, an operator already running on that cluster is detected, reported
+and reused rather than reinstalled; a team cluster is the likely place to find
+one somebody else owns.
 
 Prerequisites: phase 8 (registered, reachable cluster) and phase 7 (private
 connectivity from that cluster to OpenBao).

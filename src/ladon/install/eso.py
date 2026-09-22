@@ -6,8 +6,12 @@ GitOps reconciler. It reuses the shared Helm machinery in ``ladon.install.helm``
 upgrade flow, ``run`` for execution), so only ESO's specifics live here: its chart
 coordinates, the ``installCRDs`` flag, and a post-apply webhook health check.
 
-Two concerns beyond a plain chart install, called out for D4a:
+Three concerns beyond a plain chart install, called out for D4a and D18a:
 
+* Reuse before install. ESO is cluster-scoped and singular, so an operator
+  another team installed is the operator Ladon uses. The install starts by
+  looking for one, and when it finds one it reports the version and namespace
+  and runs no helm command at all (D18a).
 * CRD ownership. The chart installs its CustomResourceDefinitions when
   ``installCRDs`` is set; we set it explicitly so the operator and its CRDs are
   one managed unit rather than relying on a separate CRD step.
@@ -20,9 +24,11 @@ Two concerns beyond a plain chart install, called out for D4a:
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from ladon.install.helm import ChartRelease, HelmError, install, run
+from ladon.install.k8s import ESOInstall, detect_eso
 
 # Upstream chart coordinates. Not vendored; install the pinned version from the
 # upstream repo. Keep in sync with docs/versions.md; bumps are their own PR.
@@ -70,25 +76,60 @@ class ESORelease(ChartRelease):
         ]
 
 
+@dataclass(frozen=True)
+class ESOInstallResult:
+    """What the install did: reused an operator, or installed the pinned chart."""
+
+    summary: str
+    reused: bool
+    existing: ESOInstall | None = None
+    commands: tuple[subprocess.CompletedProcess[str], ...] = field(default_factory=tuple)
+
+
 def install_eso(
     release: ESORelease | None = None,
     *,
     apply: bool = False,
     wait_for_webhook: bool = True,
-) -> list[subprocess.CompletedProcess[str]]:
-    """Add and refresh the pinned repo, then upgrade-install ESO.
+    detect: Callable[[], ESOInstall | None] = detect_eso,
+) -> ESOInstallResult:
+    """Reuse an operator already on the cluster, or install the pinned chart.
 
-    Defaults to a dry-run: nothing is applied unless ``apply=True``. On an apply,
-    after the chart is installed the webhook deployment is awaited (unless
-    ``wait_for_webhook=False``), so a successful return means the operator is
-    actually ready to admit ``ExternalSecret`` resources. On a dry-run the
-    webhook wait is skipped, since nothing was installed to wait for.
+    Detection runs first, on a dry-run as well as an apply (D18a): two operators
+    fight over one set of CRDs, so an existing one is reported and reused and no
+    helm command runs. Detection is injectable so tests and callers that have
+    already probed the cluster do not shell out again; a probe failure is an
+    error, never a silent second install.
+
+    Otherwise the pinned chart is installed, defaulting to a dry-run: nothing is
+    applied unless ``apply=True``. On an apply, after the chart is installed the
+    webhook deployment is awaited (unless ``wait_for_webhook=False``), so a
+    successful return means the operator is actually ready to admit
+    ``ExternalSecret`` resources. On a dry-run the webhook wait is skipped, since
+    nothing was installed to wait for.
     """
     release = release or ESORelease()
+    existing = detect()
+    if existing is not None:
+        return ESOInstallResult(
+            summary=(
+                f"reusing external-secrets {existing.version} in namespace {existing.namespace}"
+            ),
+            reused=True,
+            existing=existing,
+        )
+
     results = install(release, apply=apply)
     if apply and wait_for_webhook:
         results.append(_wait_for_webhook(release))
-    return results
+    verb = "installed" if apply else "dry run: would install"
+    return ESOInstallResult(
+        summary=(
+            f"{verb} external-secrets chart {release.version} in namespace {release.namespace}"
+        ),
+        reused=False,
+        commands=tuple(results),
+    )
 
 
 def _wait_for_webhook(release: ESORelease) -> subprocess.CompletedProcess[str]:
