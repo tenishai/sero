@@ -308,10 +308,11 @@ Proven live on a shared development cluster, against the platform vault:
   the plain header is not read. `docs/backend.md` states the matching deployment
   requirement: the pod must be reachable only through the proxy. Sending the
   deciding header twice is refused.
-- One deployment serves one environment (`deployment.environment`). A request
-  naming another is refused with 400 and the name of the one that is served;
-  `/api/me` reports it. Every route accepted an environment and none of them
-  used it, so two environments shared one set of paths under different labels.
+- One deployment serves one environment (`deployment.environment`). A call
+  naming another is refused with 400 and the name of the one that is served, on
+  the agent surface as well as over HTTP; `/api/me` reports it and the UI offers
+  only that one. Every route accepted an environment and none of them used it,
+  so two environments shared one set of paths under different labels.
 - Updating a secret refuses two things it used to accept. A key named in both
   `values` and `remove_keys` is ambiguous, so it is refused rather than resolved
   by an order the caller cannot see. A merge that would leave a path with no
@@ -323,8 +324,20 @@ Proven live on a shared development cluster, against the platform vault:
 
 - A failed or refused operation now leaves an audit row. It was written into the
   caller's session and rolled back with it, so the calls most worth
-  investigating were exactly the ones that left no trace. Refusals are recorded
-  as `denied` with the gate that refused them.
+  investigating were exactly the ones that left no trace. Reads are covered as
+  well as writes, and so is a request that never got past identity, which is the
+  shape of somebody looking for a way in; those are attributed to
+  `unidentified` and carry the deciding header's name, never its value. A
+  refusal is recorded as `refused` and a denial as `denied`, so an operator can
+  tell "we said no" from "we broke". Error messages are redacted before storage
+  the way arguments already were.
+- The signing-key URL for a proxy assertion must be https, and a key-endpoint
+  outage no longer logs everybody out: the last key set that arrived keeps
+  working for an hour, with refresh attempts rate limited, and past that window
+  every assertion is refused. Thirty seconds of clock skew is tolerated.
+- Only a route that means "not found" answers 404. A blanket handler turned any
+  missing dict key into a 404 carrying the key name; everything else is now a
+  500 that says only `internal error`.
 - The UI reads the backend's error messages again. The client looked for a
   `detail` field and the backend sends `error`, so every explained failure
   reached the screen as "Forbidden". The UI also takes admin standing from

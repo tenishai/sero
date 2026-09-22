@@ -134,11 +134,19 @@ identity:
 When this is present it is required on every `/api` route and it decides the
 identity; the plain header is not read at all, and neither is the dev hatch. The
 token must carry a signature (ES256 or RS256 only, which is what refuses an
-`alg: none` downgrade) over a key published at `jwks_url`, and its issuer,
+`alg: none` downgrade) over a key published at `jwks_url`, which must be an
+https URL (over plain HTTP anyone on the path chooses the signer), and its issuer,
 audience and expiry must all match. Anything else is `401 {"error": "no
 identity"}`, indistinguishable from presenting nothing. Keys are cached for 15
 minutes; an unknown key id buys one early refetch so rotation works, rate limited
-so unknown ids cannot drive a fetch per request.
+so unknown ids cannot drive a fetch per request. Thirty seconds of clock skew is
+tolerated on `exp` and `nbf`.
+
+If the key endpoint goes down, the last key set that arrived keeps working for
+an hour so an outage does not log everybody out, and refresh attempts are made
+at most once a minute rather than once a request. Past that hour there are no
+usable keys and every assertion is refused, because a key revoked during the
+outage has to stop working eventually.
 
 Every field is required. Verifying a signature without checking the audience
 would accept any token the same proxy signed for any other service behind it.
@@ -167,7 +175,9 @@ labelled `prod` and a request labelled `dev` would read and write the same
 secrets under different names. Any route taking an `env` refuses another with
 `400 {"error": "this deployment serves environment 'dev'"}`, and `/api/me`
 reports the name so a client can show it rather than offer choices that will be
-refused. An instance that does not declare one pins nothing and says so at
+refused. The agent surface enforces the same rule through the same function, so
+an MCP client cannot write prod-labelled secrets into a dev vault's paths
+either. An instance that does not declare one pins nothing and says so at
 startup.
 
 Serving two environments means running two Ladons against two OpenBaos.
@@ -216,7 +226,7 @@ Every failure is one JSON object with an `error` string:
 | 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name) or the request named another environment. |
 | 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. |
 | 403 | Not on the allow list, not a member of the namespace, not an admin, or reveal is not enabled. |
-| 404 | No such request, key, or path, including any unmatched `/api` path. |
+| 404 | No such namespace request, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
 | 405 | A real route, asked with the wrong method. |
 | 422 | The request body does not match the route. The message names the field and never quotes what was sent. |
 | 500 | Something broke. The body says only `internal error`; the traceback is in the log. |
@@ -226,11 +236,21 @@ Messages name the namespace, path, or field at fault. They never name a value.
 
 ## Auditing
 
-Every write records a row through the same path the agent surface uses. A
-failure records one too, in its own transaction, so a call that was refused or
-that broke is exactly the kind that leaves a trace rather than the kind that
-does not: `status` is `denied` for a refusal (with the gate that refused it) and
-`error` for a failure. Arguments are redacted before they are stored.
+Every call records a row through the same path the agent surface uses, and a
+call that did not succeed records one in its own transaction, so the events
+worth investigating are not the ones that vanish. Four statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `ok` / `dry-run` | It happened, or it was previewed. |
+| `denied` | We would not let you: the allow list, namespace membership, the reveal gate, or no usable identity. The row names which. |
+| `refused` | You asked for something this deployment does not do: a placeholder value, a key named twice, a merge that would empty a path, a reserved name, another environment. |
+| `error` | Something broke. |
+
+A request that never got past identity is recorded against `unidentified`, with
+the deciding header's name and whether one arrived, never what it said.
+Arguments and error messages are both redacted before they are stored, so a
+token quoted inside a message does not reach the table.
 
 ## Reveal
 
