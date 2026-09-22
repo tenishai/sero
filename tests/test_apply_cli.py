@@ -1024,3 +1024,145 @@ def test_run_phase_reports_a_cluster_that_did_not_store_what_was_applied(tmp_pat
 
     assert run.error and "did not store" in run.error
     assert [r.action for r in run.cluster.results] == ["create", "create"]
+
+
+# seal-values: the overlay that carries the auto-unseal stanza. The rendering
+# itself is tested in test_config_seal_values.py; these check the CLI contract,
+# which is the exit code and a stdout that is nothing but the overlay.
+
+KMS_CONFIG_YAML = """
+deployment:
+  kms:
+    provider: gcpckms
+    project: example-project
+    region: example-location1
+    key_ring: example-ring
+    crypto_key: example-key
+"""
+
+SHAMIR_CONFIG_YAML = """
+deployment:
+  kms:
+    provider: shamir
+"""
+
+BASE_VALUES_YAML = """
+server:
+  ha:
+    raft:
+      config: |
+        ui = true
+
+        storage "raft" {
+          path = "/openbao/data"
+        }
+
+        service_registration "kubernetes" {}
+"""
+
+BASE_HCL_TEXT = """ui = true
+
+storage "raft" {
+  path = "/openbao/data"
+}
+
+service_registration "kubernetes" {}
+"""
+
+
+def write_kms_files(
+    tmp_path, config=KMS_CONFIG_YAML, base=BASE_VALUES_YAML, base_name="values.yaml"
+):
+    config_path = tmp_path / "deployment.yaml"
+    config_path.write_text(config)
+    base_path = tmp_path / base_name
+    base_path.write_text(base)
+    return str(config_path), str(base_path)
+
+
+def test_seal_values_extends_a_values_file(tmp_path):
+    config, base = write_kms_files(tmp_path)
+    code, text = run(["seal-values", "--config", config, "--base-config", base])
+    assert code == 0
+    document = yaml.safe_load(text)
+    hcl = document["server"]["ha"]["raft"]["config"]
+    assert 'seal "gcpckms" {' in hcl
+    assert 'crypto_key = "example-key"' in hcl
+    assert "serviceAccount" not in document["server"]
+
+
+def test_seal_values_extends_a_plain_hcl_file(tmp_path):
+    config, base = write_kms_files(tmp_path, base=BASE_HCL_TEXT, base_name="server.hcl")
+    code, text = run(["seal-values", "--config", config, "--base-config", base])
+    assert code == 0
+    assert 'seal "gcpckms" {' in yaml.safe_load(text)["server"]["ha"]["raft"]["config"]
+
+
+def test_seal_values_adds_service_account_annotations(tmp_path):
+    config, base = write_kms_files(tmp_path)
+    code, text = run(
+        [
+            "seal-values",
+            "--config",
+            config,
+            "--base-config",
+            base,
+            "--service-account-annotation",
+            "iam.gke.io/gcp-service-account=unseal@example.example.com",
+            "--service-account-annotation",
+            "example.dev/owner=platform",
+        ]
+    )
+    assert code == 0
+    annotations = yaml.safe_load(text)["server"]["serviceAccount"]["annotations"]
+    assert annotations == {
+        "iam.gke.io/gcp-service-account": "unseal@example.example.com",
+        "example.dev/owner": "platform",
+    }
+
+
+def test_seal_values_refuses_shamir_and_prints_nothing(tmp_path):
+    config, base = write_kms_files(tmp_path, config=SHAMIR_CONFIG_YAML)
+    code, text = run(["seal-values", "--config", config, "--base-config", base])
+    assert code == 2
+    assert text == ""
+
+
+def test_seal_values_refuses_a_config_with_no_kms_block(tmp_path):
+    config, base = write_kms_files(tmp_path, config="deployment:\n  kv_mount: kv\n")
+    code, text = run(["seal-values", "--config", config, "--base-config", base])
+    assert code == 2
+    assert text == ""
+
+
+def test_seal_values_refuses_a_values_file_with_no_server_config(tmp_path):
+    config, base = write_kms_files(tmp_path, base="server:\n  ha:\n    replicas: 1\n")
+    code, text = run(["seal-values", "--config", config, "--base-config", base])
+    assert code == 2
+    assert text == ""
+
+
+def test_seal_values_refuses_a_malformed_annotation(tmp_path):
+    config, base = write_kms_files(tmp_path)
+    code, text = run(
+        [
+            "seal-values",
+            "--config",
+            config,
+            "--base-config",
+            base,
+            "--service-account-annotation",
+            "no-equals-sign",
+        ]
+    )
+    assert code == 2
+    assert text == ""
+
+
+def test_seal_values_refuses_a_missing_base_config(tmp_path):
+    config, _ = write_kms_files(tmp_path)
+    code, text = run(
+        ["seal-values", "--config", config, "--base-config", str(tmp_path / "nope.yaml")]
+    )
+    assert code == 2
+    assert text == ""

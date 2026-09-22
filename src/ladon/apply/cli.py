@@ -17,6 +17,11 @@ runnable end to end. Three subcommands:
   ``plan`` when there is nothing to connect to.
 * ``install-eso`` puts the External Secrets Operator on the cluster, or reports
   and reuses the one already running on it (D18a).
+* ``seal-values`` renders the Helm values overlay that turns on cloud-KMS
+  auto-unseal, from the deployment's ``kms`` block and the server config the
+  deployment already runs. It prints the overlay and nothing else, so it pipes
+  straight into a file or a ``helm upgrade -f -``; it reads two files and
+  contacts nothing.
 * ``audit`` connects read-only and reports every role and policy that grants
   more than it was meant to. It writes nothing, ever, so it needs no
   ``--apply``; it exits 3 when it finds something serious, which is what a
@@ -46,6 +51,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import yaml
 
@@ -86,6 +92,8 @@ from ladon.config.auth import jwt_auth, oidc_auth
 from ladon.config.eso import DEFAULT_API_VERSION, external_secret
 from ladon.config.loader import DeploymentConfig, load_deployment_config
 from ladon.config.policies import baseline_team_policies, external_secrets_read
+from ladon.config.seal import render_seal
+from ladon.config.seal_values import render_seal_values
 from ladon.config.teams import ConfigError
 from ladon.hygiene import has_url_userinfo
 from ladon.install.eso import DEFAULT_NAMESPACE as ESO_NAMESPACE
@@ -152,6 +160,44 @@ def build_parser() -> argparse.ArgumentParser:
             f"Namespace to install into. Defaults to {ESO_NAMESPACE}. An operator "
             "already running on the cluster is reused where it is, so this is "
             "ignored then."
+        ),
+    )
+
+    seal_values = sub.add_parser(
+        "seal-values",
+        help="Render the Helm values overlay that turns on cloud-KMS auto-unseal.",
+    )
+    seal_values.add_argument(
+        "--config",
+        required=True,
+        help=(
+            "Path to a deployment config file. Its deployment.kms block names "
+            "the provider and the key references the seal stanza is built from."
+        ),
+    )
+    seal_values.add_argument(
+        "--base-config",
+        required=True,
+        help=(
+            "The server config the seal stanza is inserted into: either a Helm "
+            "values file (its server.ha.raft.config is read; this is the usual "
+            "case, and the file is one of the values files the deployment "
+            "already installs with) or a plain HCL file. A .yaml or .yml "
+            "suffix selects the values-file reading; anything else is read as "
+            "HCL."
+        ),
+    )
+    seal_values.add_argument(
+        "--service-account-annotation",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Annotation to put on the OpenBao server's service account, "
+            "repeatable. This is how the pod reaches the cloud KMS as an "
+            "identity the key is granted to (workload identity on GKE, a role "
+            "annotation on EKS); which key binds an identity is the cluster's "
+            "convention, so it is given here rather than derived."
         ),
     )
 
@@ -726,6 +772,77 @@ def _run_install_eso(args: argparse.Namespace, out) -> int:
     return 0
 
 
+def _base_server_config(path: str) -> str:
+    """The server config the seal stanza is inserted into.
+
+    A Helm values file is the usual input, because it is the file the deployment
+    already installs with and the one whose value the overlay replaces; reading
+    it here means the operator names that file rather than copying its HCL into
+    a second one that can drift. A plain HCL file is accepted for a deployment
+    that keeps its server config outside the values.
+    """
+    file = Path(path)
+    if not file.is_file():
+        raise ConfigError(f"base config file not found: {path}")
+    text = file.read_text(encoding="utf-8")
+    if file.suffix not in (".yaml", ".yml"):
+        return text
+
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
+
+    node = document
+    for key in ("server", "ha", "raft", "config"):
+        node = node.get(key) if isinstance(node, dict) else None
+    if not isinstance(node, str) or not node.strip():
+        raise ConfigError(
+            f"{path} has no server.ha.raft.config to extend; point --base-config "
+            "at the values file that carries the server config, or at a plain "
+            "HCL file"
+        )
+    return node
+
+
+def _service_account_annotations(values: Sequence[str]) -> dict[str, str]:
+    """The ``KEY=VALUE`` annotation flags, parsed and checked.
+
+    A malformed flag is refused rather than dropped: an annotation that silently
+    did not land leaves the vault authenticating as the wrong identity, which
+    shows up as a crash loop at startup and not here.
+    """
+    annotations: dict[str, str] = {}
+    for item in values:
+        key, separator, value = item.partition("=")
+        if not separator or not key.strip():
+            raise ConfigError(f"--service-account-annotation expects KEY=VALUE, got {item!r}")
+        annotations[key.strip()] = value.strip()
+    return annotations
+
+
+def _run_seal_values(args: argparse.Namespace, out) -> int:
+    """Print the values overlay that installs the deployment's seal stanza.
+
+    Nothing but the overlay reaches stdout, so the output is usable as a file
+    without editing; refusals go to stderr with a non-zero exit.
+    """
+    config = load_deployment_config(args.config)
+    kms = config.settings.get("kms")
+    if kms is None:
+        raise ConfigError(
+            "the deployment config has no deployment.kms block, so there is no "
+            "seal stanza to render; add one naming the provider and its key"
+        )
+    overlay = render_seal_values(
+        _base_server_config(args.base_config),
+        render_seal(kms),
+        _service_account_annotations(args.service_account_annotation),
+    )
+    print(overlay, file=out, end="")
+    return 0
+
+
 # What a clean report does not cover when nothing told the audit which
 # namespaces exist. Read without this line, "no findings" reads as "the
 # deployment is clean", and every team namespace went unlooked at.
@@ -877,6 +994,8 @@ def main(argv: Sequence[str] | None = None, *, out=None) -> int:
             return _run_apply(args, out)
         if args.command == "install-eso":
             return _run_install_eso(args, out)
+        if args.command == "seal-values":
+            return _run_seal_values(args, out)
         if args.command == "audit":
             return _run_audit(args, out)
     except (ConfigError, ApplyError, AuditError, BaoConnectionError, K8sError, HelmError) as exc:
