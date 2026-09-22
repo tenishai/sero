@@ -31,7 +31,7 @@ from ladon.apply.client import BaoConnection, BaoConnectionError, TokenAuth, con
 from ladon.datastore import engine as datastore
 from ladon.hygiene import WriteRefused
 from ladon.mcp.openbao import OpenBaoSecrets
-from ladon.mcp.server import AccessDeniedError
+from ladon.mcp.server import AccessDeniedError, WrongEnvironment
 from ladon.web import routes_admin, routes_secrets
 from ladon.web.assertion import AssertionVerifier
 from ladon.web.deps import Services
@@ -158,6 +158,10 @@ def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RevealDeniedError)
     def _reveal_denied(request: Request, exc: RevealDeniedError) -> JSONResponse:
         return error(403, str(exc))
+
+    @app.exception_handler(WrongEnvironment)
+    def _wrong_environment(request: Request, exc: WrongEnvironment) -> JSONResponse:
+        return error(400, str(exc))
 
     @app.exception_handler(WriteRefused)
     def _refused(request: Request, exc: WriteRefused) -> JSONResponse:

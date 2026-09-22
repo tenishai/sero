@@ -27,14 +27,15 @@ from ladon.mcp.server import (
     list_my_namespaces_impl,
     list_secrets_impl,
     request_namespace_impl,
+    require_environment,
     update_secret_impl,
 )
 from ladon.web.deps import (
     Auditor,
     CallerEmail,
     DbSession,
+    DeclaredEnvironment,
     Secrets,
-    require_environment,
     services,
 )
 from ladon.web.serializers import namespace_request_row
@@ -128,7 +129,7 @@ def reveal_secret_value(
     """
     args = {"namespace": namespace, "path": secret_path, "env": env, "key_name": key}
     with audit.guard("reveal_value", email, args, session=session):
-        require_environment(request, env)
+        require_environment(env, services(request).settings.environment)
         services(request).reveal_gate.require(email)
         _require_allowed(session, email)
         _require_namespace(secrets, email, namespace)
@@ -143,14 +144,19 @@ def get_secret(
     namespace: str,
     secret_path: str,
     env: str,
-    request: Request,
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
+    environment: DeclaredEnvironment,
 ) -> dict[str, Any]:
-    require_environment(request, env)
     result = get_secret_impl(
-        secrets, session, user_email=email, namespace=namespace, path=secret_path, env=env
+        secrets,
+        session,
+        user_email=email,
+        namespace=namespace,
+        path=secret_path,
+        env=env,
+        deployment_environment=environment,
     )
     session.commit()
     return result
@@ -160,15 +166,14 @@ def get_secret(
 def create_secret(
     namespace: str,
     body: CreateSecretBody,
-    request: Request,
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
     audit: Auditor,
+    environment: DeclaredEnvironment,
 ) -> dict[str, Any]:
     args = {"namespace": namespace, "path": body.path, "env": body.env}
     with audit.guard("create_secret", email, args, session=session):
-        require_environment(request, body.env)
         result = create_secret_impl(
             secrets,
             secrets,
@@ -179,6 +184,7 @@ def create_secret(
             env=body.env,
             values=body.values,
             apply=body.apply,
+            deployment_environment=environment,
         )
     session.commit()
     return result
@@ -189,15 +195,14 @@ def update_secret(
     namespace: str,
     secret_path: str,
     body: UpdateSecretBody,
-    request: Request,
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
     audit: Auditor,
+    environment: DeclaredEnvironment,
 ) -> dict[str, Any]:
     args = {"namespace": namespace, "path": secret_path, "env": body.env}
     with audit.guard("update_secret", email, args, session=session):
-        require_environment(request, body.env)
         result = update_secret_impl(
             secrets,
             secrets,
@@ -209,6 +214,7 @@ def update_secret(
             values=body.values,
             remove_keys=body.remove_keys,
             apply=body.apply,
+            deployment_environment=environment,
         )
     session.commit()
     return result

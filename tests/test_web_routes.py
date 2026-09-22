@@ -858,3 +858,14 @@ def test_a_real_route_asked_with_the_wrong_method_is_a_json_405(client):
     resp = as_member(client, "DELETE", "/api/namespaces/team-a/secrets")
     assert resp.status_code == 405
     assert "error" in resp.json()
+
+
+def test_updating_a_path_ending_in_reveal_is_refused(client, store):
+    resp = as_member(
+        client,
+        "PATCH",
+        "/api/namespaces/team-a/secrets/app%2Freveal",
+        json={"env": "dev", "values": {"TOKEN": "dummy-token-value"}, "apply": True},
+    )
+    assert resp.status_code == 400
+    assert "reserved" in resp.json()["error"]

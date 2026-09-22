@@ -14,6 +14,7 @@ from ladon.hygiene import REDACTED, PlaceholderSecretError, WriteRefused, mask
 from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult
 from ladon.mcp.server import (
     AccessDeniedError,
+    WrongEnvironment,
     create_secret_impl,
     request_namespace_impl,
     update_secret_impl,
@@ -310,6 +311,97 @@ def test_create_refuses_the_reserved_reveal_suffix(session, allowed):
     reader, writer = FakeReader(), FakeWriter()
     with pytest.raises(WriteRefused, match="reserved"):
         create_secret_impl(
+            reader,
+            writer,
+            session,
+            user_email=USER,
+            namespace="team-a",
+            path="team-a/app/reveal",
+            env="dev",
+            values={"TOKEN": "dummy-token-value"},
+            apply=True,
+        )
+    assert writer.calls == []
+
+
+# ── One deployment, one environment ────────────────────────────────────
+
+
+def test_create_refuses_another_environment(session, allowed):
+    reader, writer = FakeReader(), FakeWriter()
+    with pytest.raises(WrongEnvironment, match="this deployment serves environment 'dev'"):
+        create_secret_impl(
+            reader,
+            writer,
+            session,
+            user_email=USER,
+            namespace="team-a",
+            path="team-a/app",
+            env="prod",
+            values={"TOKEN": "dummy-token-value"},
+            apply=True,
+            deployment_environment="dev",
+        )
+    assert writer.calls == []
+
+
+def test_update_refuses_another_environment(session, allowed):
+    reader, writer = FakeReader(), FakeWriter()
+    with pytest.raises(WrongEnvironment):
+        update_secret_impl(
+            reader,
+            writer,
+            session,
+            user_email=USER,
+            namespace="team-a",
+            path="team-a/app",
+            env="prod",
+            values={"API_KEY": "dummy-rotated"},
+            apply=True,
+            deployment_environment="dev",
+        )
+    assert writer.calls == []
+
+
+def test_writes_to_the_served_environment_are_fine(session, allowed):
+    reader, writer = FakeReader(), FakeWriter()
+    summary = create_secret_impl(
+        reader,
+        writer,
+        session,
+        user_email=USER,
+        namespace="team-a",
+        path="team-a/new",
+        env="dev",
+        values={"TOKEN": "dummy-token-value"},
+        apply=True,
+        deployment_environment="dev",
+    )
+    assert summary["applied"] is True
+
+
+def test_an_undeclared_environment_pins_nothing(session, allowed):
+    reader, writer = FakeReader(), FakeWriter()
+    summary = create_secret_impl(
+        reader,
+        writer,
+        session,
+        user_email=USER,
+        namespace="team-a",
+        path="team-a/new",
+        env="anything",
+        values={"TOKEN": "dummy-token-value"},
+        apply=True,
+    )
+    assert summary["applied"] is True
+
+
+def test_update_refuses_the_reserved_reveal_suffix(session, allowed):
+    # Creating such a path is refused, but one could predate the rule or arrive
+    # another way, and updating it would keep something unreadable alive.
+    reader, writer = FakeReader(), FakeWriter()
+    with pytest.raises(WriteRefused, match="reserved"):
+        update_secret_impl(
             reader,
             writer,
             session,

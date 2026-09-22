@@ -63,16 +63,13 @@ def require_admin(request: Request, email: CallerEmail) -> str:
     return email
 
 
-def require_environment(request: Request, env: str) -> None:
-    """Refuse a request for an environment this deployment does not serve.
+def declared_environment(request: Request) -> str | None:
+    """The one environment this deployment serves, or None if it has not said.
 
-    One Ladon serves one vault, which holds one environment's secrets at one set
-    of paths. A request naming another environment would otherwise read and
-    write the same paths under a label that says otherwise.
+    Handed to the tool functions, which do the refusing, so the agent surface
+    and this one enforce it in the same place with the same sentence.
     """
-    declared = services(request).settings.environment
-    if declared and env != declared:
-        raise ApiError(400, f"this deployment serves environment {declared!r}")
+    return services(request).settings.environment
 
 
 def require_secrets(request: Request) -> Any:
@@ -108,3 +105,4 @@ AdminEmail = Annotated[str, Depends(require_admin)]
 DbSession = Annotated[Session, Depends(db)]
 Secrets = Annotated[Any, Depends(require_secrets)]
 Auditor = Annotated[AuditRecorder, Depends(audit_recorder)]
+DeclaredEnvironment = Annotated[str | None, Depends(declared_environment)]
