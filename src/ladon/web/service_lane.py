@@ -50,7 +50,12 @@ import jwt
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from ladon.config.apps import app_store_name, checked_app_path, checked_apps_path
+from ladon.config.apps import (
+    MAX_KV_PATH_LENGTH,
+    app_store_name,
+    checked_app_path,
+    checked_apps_path,
+)
 from ladon.config.eso import external_secret, external_secret_ref
 from ladon.config.teams import ConfigError
 from ladon.hygiene import WriteRefused
@@ -339,13 +344,17 @@ def build_service_lane(
 
 
 # The read takes its arguments in the query string rather than a body, so the
-# same three fields are declared once here. ``acting_email`` is required on the
+# same three fields are declared once here. Every one of them is bounded before
+# it is read, because an argument that reaches the audit row before anything
+# checks its length is a way to write a megabyte into the trail with one call.
+# The path's bound is the store's own, so nothing is refused here that the path
+# rules would have accepted. ``acting_email`` is required on the
 # read too: config refuses a caller that would not record who it acts for, and
 # a read of which keys an application holds is as much that caller's business
 # as a write is.
 ActingEmailQuery = Annotated[str, Query(pattern=ACTING_EMAIL_PATTERN)]
 NamespaceQuery = Annotated[str, Query(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)]
-PathQuery = Annotated[str, Query()]
+PathQuery = Annotated[str, Query(max_length=MAX_KV_PATH_LENGTH)]
 
 
 class ServicePutBody(BaseModel):
@@ -354,7 +363,7 @@ class ServicePutBody(BaseModel):
     # Required: a machine write with nobody behind it is not one this lane does.
     acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
-    path: str
+    path: str = Field(max_length=MAX_KV_PATH_LENGTH)
     values: dict[str, str] = Field(default_factory=dict)
     remove_keys: list[str] = Field(default_factory=list)
     # Dry-run by default, like every other write surface in Ladon.
@@ -366,7 +375,7 @@ class ServiceDeleteBody(BaseModel):
 
     acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
-    path: str
+    path: str = Field(max_length=MAX_KV_PATH_LENGTH)
     apply: bool = False
 
 
@@ -376,7 +385,7 @@ class ServiceSyncBody(BaseModel):
     acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
-    path: str
+    path: str = Field(max_length=MAX_KV_PATH_LENGTH)
     # Absent means the application's own name, which is where onboarding puts
     # it. Anywhere else has to be pinned to the caller in config.
     k8s_namespace: str | None = Field(default=None, pattern=LABEL_PATTERN, max_length=LABEL_MAX)

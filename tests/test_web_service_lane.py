@@ -23,7 +23,7 @@ from fake_assertion import SETTINGS as ASSERTION_SETTINGS
 from fake_assertion import token as assertion_token
 from fake_assertion import verifier as assertion_verifier
 from fake_cluster import FakeCluster, eso_status_entry, managed_field_entry
-from ladon.config.apps import app_store_name
+from ladon.config.apps import MAX_KV_PATH_LENGTH, app_store_name
 from ladon.config.teams import ConfigError
 from ladon.datastore.models import Base, ToolCallLog
 from ladon.install.k8s import converge_documents, delete_documents, read_one
@@ -603,9 +603,26 @@ def test_a_path_carrying_any_percent_escape_is_refused(client):
     assert response.status_code == 400
 
 
-def test_an_unreasonably_long_path_is_refused(client):
-    response = put(client, put_body(path="apps/sample/" + "a" * 300))
-    assert response.status_code == 400
+def test_an_unreasonably_long_path_is_refused_on_every_route(client, sessions):
+    # Bounded by the request schema, before the value can reach an audit row:
+    # an unbounded argument is a way to write a megabyte into the trail with
+    # one call. The bound is the store's own, so nothing the path rules would
+    # have accepted is refused here.
+    long = "apps/sample/" + "a" * MAX_KV_PATH_LENGTH
+    assert put(client, put_body(path=long)).status_code == 422
+    assert erase(client, erase_body(path=long)).status_code == 422
+    assert sync(client, sync_body(path=long)).status_code == 422
+    assert read(client, path=long).status_code == 422
+    assert rows(sessions, "service.put_secret") == []
+
+
+def test_a_path_at_the_bound_is_still_refused_by_the_path_rules(client):
+    # The schema stops at the length the store allows; what is inside the
+    # prefix is still the path rules' decision, answered with a 400.
+    at_bound = "apps/sample/" + "a" * (MAX_KV_PATH_LENGTH - len("apps/sample/"))
+    assert len(at_bound) == MAX_KV_PATH_LENGTH
+    assert put(client, put_body(path=at_bound)).status_code == 200
+    assert put(client, put_body(path="platform/" + "a" * 40)).status_code == 400
 
 
 def test_a_nested_namespace_is_accepted_on_both_routes(sessions, store, cluster):
