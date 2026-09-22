@@ -97,6 +97,10 @@ In development, and feature-complete end to end in code. Implemented and tested:
   workflow, reveal grants);
 - the MCP agent surface (read and dry-run-first write tools, OAuth 2.1 bearer
   auth, allow-list gating);
+- the HTTP backend (FastAPI): the UI's routes over the datastore and the vault,
+  identity from a trusted proxy header, namespace membership from the deployment
+  config, migrations at boot, and the built UI served from one process. See
+  [docs/backend.md](docs/backend.md);
 - the Svelte 5 web UI (secrets view with on-demand reveal, create/edit with a
   dry-run preview, namespace requests, an admin panel), rebrandable from two
   files.
@@ -113,6 +117,7 @@ real cluster, OpenBao, and PostgreSQL. See [ROADMAP.md](ROADMAP.md).
 - [docs/testing.md](docs/testing.md) - testing philosophy
 - [docs/versions.md](docs/versions.md) - pinned versions
 - [docs/deployment-order.md](docs/deployment-order.md) - bring-up sequence and the apply flow
+- [docs/backend.md](docs/backend.md) - the HTTP backend: running it, its environment, identity
 - [ui/README.md](ui/README.md) - the web UI and how to rebrand it
 - [ROADMAP.md](ROADMAP.md) - phased plan
 

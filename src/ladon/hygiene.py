@@ -4,6 +4,10 @@ These enforce rules from CONTRIBUTING.md: refuse placeholder secret values, neve
 expose a full secret value (mask to a few characters at most), and redact secret
 material out of structured data before it is stored or logged (the audit trail).
 Keep this module dependency-free so every layer can rely on it.
+
+:class:`WriteRefused` lives here for the same reason: it is the one exception
+type that says "we decided not to", and every layer needs to be able to raise it
+without reaching sideways for a definition.
 """
 
 from __future__ import annotations
@@ -40,7 +44,19 @@ _PLACEHOLDERS = frozenset(
 URL_USERINFO = re.compile(r"//[^/@\s]*:[^/@\s]*@")
 
 
-class PlaceholderSecretError(ValueError):
+class WriteRefused(ValueError):
+    """A write Ladon will not perform, for a reason the caller can act on.
+
+    Distinct from something going wrong: a refusal is a decision, and the
+    surfaces above answer it with "you asked for something we do not do" rather
+    than "we broke". The message names the key, path, or field at fault and
+    never a value.
+
+    A ``ValueError`` subclass so callers that predate it keep working.
+    """
+
+
+class PlaceholderSecretError(WriteRefused):
     """Raised when a supplied secret value looks like a placeholder."""
 
 
@@ -115,6 +131,10 @@ _REDACT_KEYS = frozenset(
 _HIGH_ENTROPY_LEN = 40
 _HIGH_ENTROPY_PATTERN = re.compile(r"^[A-Za-z0-9_\-+/=]+$")
 
+# The same character set, found anywhere in a sentence rather than as the whole
+# of one, so a token quoted inside a message can be picked out of it.
+_TOKEN_WORD = re.compile(rf"[A-Za-z0-9_\-+/=]{{{_HIGH_ENTROPY_LEN},}}")
+
 
 def _looks_high_entropy(s: str) -> bool:
     if len(s) < _HIGH_ENTROPY_LEN or not _HIGH_ENTROPY_PATTERN.match(s):
@@ -133,6 +153,22 @@ def _redact_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_value(v) for v in value]
     return value
+
+
+def redact_text(text: str) -> str:
+    """Remove secret-shaped material from a free-text message.
+
+    Error messages are written by many hands, and one that quotes what it was
+    given can carry a token into the audit table or a log line. Two shapes are
+    removed: a long, high-entropy word, and credentials embedded in a URL. The
+    rest of the sentence survives, so the message still says what happened.
+    """
+    if not text:
+        return text
+    cleaned = URL_USERINFO.sub("//" + REDACTED + "@", text)
+    return _TOKEN_WORD.sub(
+        lambda m: REDACTED if _looks_high_entropy(m.group(0)) else m.group(0), cleaned
+    )
 
 
 def redact(args: dict[str, Any]) -> dict[str, Any]:

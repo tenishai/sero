@@ -171,3 +171,25 @@ def test_revoked_grant_is_not_active(session):
     )
     # Revoking again finds nothing active.
     assert repo.revoke_reveal_grant(session, grant_id="g-1", user_email="op@example.com") is False
+
+
+def test_approve_and_reject_record_the_decision(session):
+    approved = repo.create_namespace_request(
+        session,
+        requester_email="op@example.com",
+        team_name="team-a",
+        environments=["dev"],
+        members=["op@example.com"],
+    )
+    rejected = repo.create_namespace_request(
+        session,
+        requester_email="op@example.com",
+        team_name="team-b",
+        environments=["dev"],
+        members=["op@example.com"],
+    )
+
+    assert repo.mark_request_approved(session, request_id=approved.id).status == "approved"
+    row = repo.mark_request_rejected(session, request_id=rejected.id, reason="use team-a")
+    assert row.status == "rejected"
+    assert row.error == "use team-a"

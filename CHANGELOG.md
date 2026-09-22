@@ -108,6 +108,23 @@ point of view, not a list of commit subjects.
   out of scope (a separate foundation repo owns those). A `terraform validate`
   CI job runs fmt and validate; pins Terraform, the Google provider, the KMS
   module, and `hashicorp/setup-terraform`.
+- HTTP backend (`ladon.web`, `docs/backend.md`): one process serving the UI's
+  routes over the datastore and the vault, and the built UI beside them. A
+  deployer needs to know four things. Identity is a header a trusted proxy sets
+  (`identity.header`, default `x-goog-authenticated-user-email`); there is no
+  login form, and a local hatch exists that warns at startup and is inert unless
+  the config allows it. Who reaches which namespace comes from `access:` in the
+  deployment config, by address and by group, with `admins` governing the admin
+  routes; a directory-backed source can replace it without touching a route.
+  Revealing a plaintext value is refused unless the deployment enables it.
+  Migrations run at boot from `LADON_DATABASE_URL` (SQLite for development,
+  PostgreSQL for anything shared) and a failed upgrade exits non-zero. Every
+  route calls the same functions the agent surface calls, so the allow list, the
+  namespace gate, placeholder refusal, the merge rules, and the audit row have
+  one implementation; a consequence is that the allow list now gates the web
+  surface too. Pins FastAPI and uvicorn.
+- Background apply runs are recorded in a `jobs` table (kind, state, requester,
+  timings, and the op-by-op report), ahead of the endpoints that drive them.
 
 - Team namespaces are created from the deployment config. Root config now
   ensures `sys/namespaces/<namespace>` for every team in `teams:` and then,
@@ -284,9 +301,50 @@ Proven live on a shared development cluster, against the platform vault:
   this reason, and `--namespace` names the namespace the operations run in
   rather than scoping the connection. The rendered plan shows the namespace on
   each line, so two identical paths in two namespaces can be told apart.
+- The backend can verify the proxy's signed assertion, and a deployment whose
+  proxy can issue one should configure it (`identity.assertion`). A plain
+  identity header is a claim that anything able to reach the process can make;
+  an assertion is a proof. When configured it is required on every request and
+  the plain header is not read. `docs/backend.md` states the matching deployment
+  requirement: the pod must be reachable only through the proxy. Sending the
+  deciding header twice is refused.
+- One deployment serves one environment (`deployment.environment`). A call
+  naming another is refused with 400 and the name of the one that is served, on
+  the agent surface as well as over HTTP; `/api/me` reports it and the UI offers
+  only that one. Every route accepted an environment and none of them used it,
+  so two environments shared one set of paths under different labels.
+- Updating a secret refuses two things it used to accept. A key named in both
+  `values` and `remove_keys` is ambiguous, so it is refused rather than resolved
+  by an order the caller cannot see. A merge that would leave a path with no
+  keys is refused too: an empty secret still exists and reads as a path with
+  nothing in it. Deleting a path stays a separate, explicit operation. Both
+  apply to the agent surface and the web surface, which share the code.
 
 ### Fixed
 
+- A failed or refused operation now leaves an audit row. It was written into the
+  caller's session and rolled back with it, so the calls most worth
+  investigating were exactly the ones that left no trace. Reads are covered as
+  well as writes, and so is a request that never got past identity, which is the
+  shape of somebody looking for a way in; those are attributed to
+  `unidentified` and carry the deciding header's name, never its value. A
+  refusal is recorded as `refused` and a denial as `denied`, so an operator can
+  tell "we said no" from "we broke". Error messages are redacted before storage
+  the way arguments already were.
+- The signing-key URL for a proxy assertion must be https, and a key-endpoint
+  outage no longer logs everybody out: the last key set that arrived keeps
+  working for an hour, with refresh attempts rate limited, and past that window
+  every assertion is refused. Thirty seconds of clock skew is tolerated.
+- Only a route that means "not found" answers 404. A blanket handler turned any
+  missing dict key into a 404 carrying the key name; everything else is now a
+  500 that says only `internal error`.
+- The UI reads the backend's error messages again. The client looked for a
+  `detail` field and the backend sends `error`, so every explained failure
+  reached the screen as "Forbidden". The UI also takes admin standing from
+  `/api/me` instead of guessing it from namespace membership, which named the
+  wrong people in both directions.
+- An unexpected failure answers `internal error` and logs the traceback alone,
+  rather than returning whatever the exception said.
 - JWT auth mounts pin `bound_issuer` to the discovery URL. Left empty, a mount
   accepted any token its discovery keys verified.
 - JWT roles set `token_no_default_policy`, so a scoped workload role no longer

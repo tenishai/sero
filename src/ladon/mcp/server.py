@@ -25,8 +25,8 @@ from mcp.types import ToolAnnotations
 from sqlalchemy.orm import Session, sessionmaker
 
 from ladon.datastore import repositories as repo
-from ladon.hygiene import assert_not_placeholder
-from ladon.mcp.ports import SecretReader, SecretWriter
+from ladon.hygiene import WriteRefused, assert_not_placeholder
+from ladon.mcp.ports import SecretReader, SecretWriter, require_non_empty_merge
 
 INSTRUCTIONS = """You are connected to a Ladon secrets platform.
 
@@ -47,6 +47,23 @@ Hard rules, not preferences:
 
 class AccessDeniedError(Exception):
     """The user is not permitted to perform the requested operation."""
+
+
+class WrongEnvironment(ValueError):
+    """The call named an environment this deployment does not serve."""
+
+
+def require_environment(env: str, declared: str | None) -> None:
+    """Refuse a call for an environment this deployment does not serve.
+
+    One Ladon serves one OpenBao, whose KV holds one set of paths, so a call
+    labelled for another environment would read and write the same secrets under
+    a name that says otherwise. Shared by the HTTP and the agent surface so both
+    refuse with the same sentence; ``declared`` of None pins nothing, which is
+    the honest behaviour for a deployment that has not said.
+    """
+    if declared and env != declared:
+        raise WrongEnvironment(f"this deployment serves environment {declared!r}")
 
 
 # ── Tool logic (pure of FastMCP; testable with a fake reader + session) ──
@@ -132,6 +149,7 @@ def get_secret_impl(
     namespace: str,
     path: str,
     env: str,
+    deployment_environment: str | None = None,
 ) -> dict[str, Any]:
     """One path's state in one environment, keys masked. Audited; gated.
 
@@ -139,6 +157,7 @@ def get_secret_impl(
     """
     _require_allowed(session, user_email)
     _require_namespace(reader, user_email, namespace)
+    require_environment(env, deployment_environment)
     args = {"namespace": namespace, "path": path, "env": env}
     try:
         detail = reader.get_secret(user_email, namespace, path, env)
@@ -176,6 +195,20 @@ def _reject_placeholders(values: dict[str, str]) -> None:
         assert_not_placeholder(value, key=key)
 
 
+# The HTTP surface addresses a secret's plaintext at <path>/reveal, so a path
+# that ends this way would be unreachable through its own detail route. Refused
+# at creation, where it costs nothing, rather than discovered later.
+RESERVED_PATH_SUFFIX = "/reveal"
+
+
+def _reject_reserved_path(path: str) -> None:
+    """Refuse a secret path the read surfaces could not address."""
+    if path.rstrip("/").endswith(RESERVED_PATH_SUFFIX):
+        raise WriteRefused(
+            f"{RESERVED_PATH_SUFFIX!r} is a reserved path suffix; choose another name"
+        )
+
+
 def _write_summary(
     *,
     namespace: str,
@@ -209,6 +242,7 @@ def create_secret_impl(
     env: str,
     values: dict[str, str],
     apply: bool = False,
+    deployment_environment: str | None = None,
 ) -> dict[str, Any]:
     """Create a secret path. Dry-run unless ``apply=True``.
 
@@ -218,6 +252,8 @@ def create_secret_impl(
     """
     _require_allowed(session, user_email)
     _require_namespace(reader, user_email, namespace)
+    require_environment(env, deployment_environment)
+    _reject_reserved_path(path)
     _reject_placeholders(values)
     audit_args = {"namespace": namespace, "path": path, "env": env, "data": values}
 
@@ -274,19 +310,29 @@ def update_secret_impl(
     values: dict[str, str] | None = None,
     remove_keys: list[str] | None = None,
     apply: bool = False,
+    deployment_environment: str | None = None,
 ) -> dict[str, Any]:
     """Merge ``values`` into a path and delete ``remove_keys``. Dry-run unless apply.
 
     Merges: only the named keys change; other existing keys are untouched. Gated
-    and placeholder-refusing like create. A dry-run writes nothing.
+    and placeholder-refusing like create. A key named in both ``values`` and
+    ``remove_keys`` is refused. A dry-run writes nothing. Emptying a path is
+    refused by the writer, which is where the merged result is known.
     """
     values = values or {}
     remove_keys = remove_keys or []
     _require_allowed(session, user_email)
     _require_namespace(reader, user_email, namespace)
+    require_environment(env, deployment_environment)
+    _reject_reserved_path(path)
     _reject_placeholders(values)
     if not values and not remove_keys:
-        raise ValueError("update_secret needs at least one of 'values' or 'remove_keys'")
+        raise WriteRefused("update_secret needs at least one of 'values' or 'remove_keys'")
+    # A key on both sides is ambiguous: written then deleted, or the reverse,
+    # depending on an order the caller cannot see. Refuse instead of guessing.
+    both = sorted(set(values) & set(remove_keys))
+    if both:
+        raise WriteRefused(f"keys named in both 'values' and 'remove_keys': {', '.join(both)}")
     audit_args = {
         "namespace": namespace,
         "path": path,
@@ -296,6 +342,17 @@ def update_secret_impl(
     }
 
     if not apply:
+        # Preview the writer's refusal too: a dry-run that says "this is what
+        # would happen" and then fails on apply is worse than no dry-run. The
+        # reader returns masked keys, so only key names are needed here.
+        current = reader.get_secret(user_email, namespace, path, env)
+        require_non_empty_merge(
+            namespace=namespace,
+            path=path,
+            current_keys=current.masked_keys if current.exists else {},
+            values=values,
+            remove_keys=remove_keys,
+        )
         _audit(
             session,
             user_email=user_email,
@@ -382,6 +439,7 @@ def build_server(
     name: str = "ladon",
     token_verifier: Any | None = None,
     auth: Any | None = None,
+    environment: str | None = None,
 ):
     """Build the FastMCP server with the read and write tools registered.
 
@@ -390,7 +448,9 @@ def build_server(
     ``session_factory`` opens a datastore session per call (for the audit write
     and allow-list check). ``token_verifier`` and ``auth`` are the OAuth 2.1
     bearer machinery; when omitted (tests, local stdio) the server has no auth and
-    the caller supplies the user identity.
+    the caller supplies the user identity. ``environment`` is the one environment
+    this deployment serves; a tool call naming another is refused, exactly as on
+    the HTTP surface.
     """
     kwargs: dict[str, Any] = {"instructions": INSTRUCTIONS, "stateless_http": True}
     if token_verifier is not None:
@@ -439,6 +499,7 @@ def build_server(
                 namespace=namespace,
                 path=path,
                 env=env,
+                deployment_environment=environment,
             )
             session.commit()
             return result
@@ -467,12 +528,16 @@ def build_server(
             return result
 
     if writer is not None:
-        _register_write_tools(server, reader, writer, session_factory, _user_email)
+        _register_write_tools(
+            server, reader, writer, session_factory, _user_email, environment=environment
+        )
 
     return server
 
 
-def _register_write_tools(server, reader, writer, session_factory, _user_email):
+def _register_write_tools(
+    server, reader, writer, session_factory, _user_email, *, environment=None
+):
     """Register the secret-write tools. Split out so build_server stays readable."""
     write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
 
@@ -497,6 +562,7 @@ def _register_write_tools(server, reader, writer, session_factory, _user_email):
                 env=env,
                 values=values,
                 apply=apply,
+                deployment_environment=environment,
             )
             session.commit()
             return result
@@ -526,6 +592,7 @@ def _register_write_tools(server, reader, writer, session_factory, _user_email):
                 values=values,
                 remove_keys=remove_keys,
                 apply=apply,
+                deployment_environment=environment,
             )
             session.commit()
             return result

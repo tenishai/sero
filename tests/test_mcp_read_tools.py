@@ -15,6 +15,7 @@ from ladon.hygiene import mask
 from ladon.mcp.ports import SecretDetail, SecretPath
 from ladon.mcp.server import (
     AccessDeniedError,
+    WrongEnvironment,
     get_secret_impl,
     list_my_namespaces_impl,
     list_secrets_impl,
@@ -157,3 +158,31 @@ def test_build_server_with_writer_registers_write_tools():
     server = build_server(FakeReader(), sessionmaker(engine), writer=FakeWriter())
     tool_names = {t.name for t in server._tool_manager.list_tools()}
     assert {"create_secret", "update_secret"} <= tool_names
+
+
+def test_get_secret_refuses_another_environment(session, allowed):
+    reader = FakeReader()
+    with pytest.raises(WrongEnvironment, match="this deployment serves environment 'dev'"):
+        get_secret_impl(
+            reader,
+            session,
+            user_email=USER,
+            namespace="team-a",
+            path="team-a/app",
+            env="prod",
+            deployment_environment="dev",
+        )
+
+
+def test_get_secret_allows_the_served_environment(session, allowed):
+    reader = FakeReader()
+    detail = get_secret_impl(
+        reader,
+        session,
+        user_email=USER,
+        namespace="team-a",
+        path="team-a/app",
+        env="dev",
+        deployment_environment="dev",
+    )
+    assert detail["exists"] is True

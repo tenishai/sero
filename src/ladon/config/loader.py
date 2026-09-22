@@ -28,6 +28,11 @@ class DeploymentConfig:
     # schemas as they land.
     settings: dict = field(default_factory=dict)
     sync_targets: dict = field(default_factory=dict)
+    # Who the caller is (the trusted proxy header) and what they may reach
+    # (namespaces by email and by group, plus the admins). The backend's
+    # settings module owns their schema; see ladon.web.settings.
+    identity: dict = field(default_factory=dict)
+    access: dict = field(default_factory=dict)
 
 
 def parse_deployment_config(data: object) -> DeploymentConfig:
@@ -45,10 +50,20 @@ def parse_deployment_config(data: object) -> DeploymentConfig:
     if not isinstance(sync_targets, dict):
         raise ConfigError("'sync_targets' must be a mapping")
 
+    identity = data.get("identity") or {}
+    if not isinstance(identity, dict):
+        raise ConfigError("'identity' must be a mapping")
+
+    access = data.get("access") or {}
+    if not isinstance(access, dict):
+        raise ConfigError("'access' must be a mapping")
+
     return DeploymentConfig(
         teams=parse_teams(data.get("teams")),
         settings=settings,
         sync_targets=sync_targets,
+        identity=identity,
+        access=access,
     )
 
 

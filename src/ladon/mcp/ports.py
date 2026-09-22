@@ -14,8 +14,11 @@ boundary. Implementations must enforce that; the tools never ask for a value.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from ladon.hygiene import WriteRefused
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,30 @@ class SecretReader(Protocol):
         ...
 
 
+def require_non_empty_merge(
+    *,
+    namespace: str,
+    path: str,
+    current_keys: Iterable[str],
+    values: Iterable[str],
+    remove_keys: Iterable[str],
+) -> None:
+    """Refuse a merge that would leave a path with no keys.
+
+    Part of the ``SecretWriter`` contract rather than one implementation's
+    private check, so a second writer cannot quietly lose the rule, and so the
+    dry-run can preview the same refusal the apply would raise. Takes key names
+    only; a value never reaches it.
+
+    An empty secret still exists and reads as a path with nothing in it, which
+    is almost never what was meant. Deleting the path is a separate, explicit
+    operation.
+    """
+    remaining = (set(current_keys) | set(values)) - set(remove_keys)
+    if not remaining:
+        raise WriteRefused(f"refusing to leave {namespace}/{path} empty; delete the path instead")
+
+
 class SecretWriter(Protocol):
     """Write access to secrets for the MCP write tools.
 
@@ -93,6 +120,10 @@ class SecretWriter(Protocol):
     the tools; only key names appear in the ``WriteResult``. ``update`` merges:
     keys in ``values`` are written, keys in ``remove_keys`` are deleted, and any
     other existing key is left untouched.
+
+    An implementation of ``update_secret`` must call
+    :func:`require_non_empty_merge` before it writes: emptying a path is refused,
+    and the rule belongs to every writer, not to one of them.
     """
 
     def create_secret(

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { branding } from "../branding";
-  import { secretQuery } from "$lib/queries";
+  import { defaultEnvironment, environmentsFor } from "$lib/environments";
+  import { meQuery, secretQuery } from "$lib/queries";
   import { reveal } from "$lib/reveal.svelte";
   import { router } from "$lib/router.svelte";
   import Spinner from "$components/Spinner.svelte";
@@ -8,17 +8,31 @@
 
   let { namespace, path }: { namespace: string; path: string } = $props();
 
-  // One secret path, per environment. Keys are shown by NAME with a masked
-  // preview by default. Revealing a value is an explicit, per-key action that
-  // fetches the plaintext on demand; the value is held only in this component's
-  // memory (revealed map below) and cleared when hidden or the env changes.
-  let env = $state(branding.environments[0]);
+  // One secret path, in the environment this deployment serves. Keys are shown
+  // by NAME with a masked preview by default. Revealing a value is an explicit,
+  // per-key action that fetches the plaintext on demand; the value is held only
+  // in this component's memory (revealed map below) and cleared when hidden or
+  // the env changes.
+  const me = meQuery();
+  const environments = $derived(environmentsFor(me.data));
+  let env = $state(defaultEnvironment(undefined));
   let editing = $state(false);
   // key -> revealed plaintext, in-memory only. Never persisted or logged.
   let revealed = $state<Record<string, string>>({});
   let revealing = $state<string | null>(null);
   let revealError = $state<string | null>(null);
   const query = $derived(secretQuery(namespace, path, env));
+
+  // /api/me answers after the first render, so the initial guess has to be
+  // corrected once it does: asking for an environment this deployment does not
+  // serve is refused, and the switcher would be offering it.
+  $effect(() => {
+    if (!environments.includes(env)) {
+      env = environments[0];
+      editing = false;
+      resetReveals();
+    }
+  });
 
   function resetReveals() {
     revealed = {};
@@ -59,7 +73,7 @@
   <h2 class="mb-4 font-mono text-lg font-semibold text-[var(--color-ink)]">{path}</h2>
 
   <div class="mb-4 flex gap-1" role="radiogroup" aria-label="Environment">
-    {#each branding.environments as e (e)}
+    {#each environments as e (e)}
       <button
         type="button"
         role="radio"

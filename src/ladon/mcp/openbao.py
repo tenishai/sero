@@ -14,10 +14,14 @@ client and free of any connection concern:
   deployment maps users to namespaces (an identity-provider group lookup, a
   config file) is pluggable; this layer does not assume a provider.
 
+One deployment serves one environment, so ``env`` never picks a client: see
+:class:`OpenBaoSecrets`.
+
 The read path masks every value through ``ladon.hygiene.mask`` before returning,
-so the port's value-free contract holds at the boundary: a plaintext value read
-from OpenBao never leaves this module. The write path takes values and writes
-them, but returns only key names.
+so the port's value-free contract holds at the boundary. The write path takes
+values and writes them, but returns only key names. ``reveal_value`` is the one
+deliberate exception, for the reveal route only; it is named so that a search
+for plaintext exits finds exactly one.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ladon.hygiene import mask
-from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult
+from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult, require_non_empty_merge
 
 # KV v2 mount the tools operate on within a namespace. Matches the baseline.
 DEFAULT_KV_MOUNT = "kv"
@@ -39,9 +43,13 @@ class OpenBaoSecrets:
     """Read and write secrets in OpenBao for the MCP tools.
 
     Implements both ``SecretReader`` and ``SecretWriter``. The KV path a tool
-    passes is used directly under the ``kv/`` mount of the user's namespace; the
-    ``env`` a tool passes selects which deployment/namespace client to use, via
-    ``client_for``.
+    passes is used directly under the ``kv/`` mount of the user's namespace.
+
+    ``env`` selects nothing here, and must not: one Ladon serves one OpenBao,
+    which holds one environment. It travels with a call so results can say which
+    environment they describe, and the surfaces above refuse a call naming an
+    environment this deployment does not serve. Treating it as a selector is
+    what would let two environments share one set of paths.
     """
 
     def __init__(
@@ -129,6 +137,13 @@ class OpenBaoSecrets:
     ) -> WriteResult:
         client = self._client_for(namespace)
         current = self._read_raw(client, path)
+        require_non_empty_merge(
+            namespace=namespace,
+            path=path,
+            current_keys=current,
+            values=values,
+            remove_keys=remove_keys,
+        )
         merged = dict(current)
         merged.update(values)
         for key in remove_keys:
@@ -144,6 +159,22 @@ class OpenBaoSecrets:
             written_keys=list(values),
             removed_keys=[k for k in remove_keys if k in current],
         )
+
+    # ── Reveal (the one plaintext exit, gated above this layer) ──────────
+
+    def reveal_value(self, user_email: str, namespace: str, path: str, env: str, key: str) -> str:
+        """Return one key's plaintext value.
+
+        The single call in this module that returns an unmasked value. It exists
+        only for the reveal route, which is itself behind a gate that a
+        deployment must switch on (the default refuses). The value is returned
+        to the caller and never logged, stored, or put in an audit row.
+        """
+        client = self._client_for(namespace)
+        current = self._read_raw(client, path)
+        if key not in current:
+            raise KeyError(f"no key {key!r} at {namespace}/{path}")
+        return str(current[key])
 
     def _read_raw(self, client: Any, path: str) -> dict[str, str]:
         """Read the current plaintext for a merge. Never returned or logged."""
