@@ -16,6 +16,12 @@ them in one call, and it is what gives the cluster half the same no-op signal
 the OpenBao half has: a document that already matches is reported
 ``already current`` and never reaches kubectl at all.
 
+``delete_documents`` is the other direction, and it is deliberately narrower
+than an apply: an object is removed only when the live object records Ladon as
+one of its field managers. Server-side apply is what makes that knowable, and
+the rule is the mirror of never passing ``--force-conflicts``. Taking a field
+from another manager needs an operator; so does deleting that manager's object.
+
 Two probes support the ESO work (D18a): ``eso_api_version`` reports which CRD
 version the cluster stores, and ``detect_eso`` finds an operator somebody else
 already installed so Ladon can reuse it instead of fighting it for the CRDs.
@@ -38,6 +44,8 @@ from typing import Any
 
 import yaml
 
+from ladon.hygiene import WriteRefused
+
 DEFAULT_FIELD_MANAGER = "ladon"
 
 # What a document needs, in the vocabulary the OpenBao apply layer already uses.
@@ -48,6 +56,18 @@ CREATE = "create"
 UPDATE = "update"
 ALREADY_CURRENT = "already current"
 BLOCKED = "blocked"
+
+# The two a removal reports. ``ABSENT`` is the no-op signal a delete needs, the
+# way ``ALREADY_CURRENT`` is an apply's: asking twice is not an error.
+DELETE = "delete"
+ABSENT = "absent"
+
+# Where the read-back found the object after a delete that ran. These are not
+# actions: the delete happened in all three cases, and these say what the
+# cluster holds now.
+GONE = "gone"
+TERMINATING = "terminating"
+RECREATED = "recreated"
 
 # The API server's reason code for an object that is not there. Only this counts
 # as absent: any other refusal (a denial, an unknown resource type) means Ladon
@@ -153,6 +173,17 @@ class ClusterApplyError(K8sError):
         self.report = report
 
 
+class ForeignObjectError(WriteRefused):
+    """The live object is there, and Ladon is not among its field managers.
+
+    A refusal rather than an error: the cluster is reachable and the object is
+    exactly what was named, and Ladon still will not remove something it did
+    not create. Server-side apply records who owns what, so this is knowable
+    rather than guessed, and the message names the managers that do own it so
+    an operator knows who to ask.
+    """
+
+
 class ESONotInstalledError(K8sError):
     """The External Secrets CRDs are not on the cluster.
 
@@ -170,6 +201,9 @@ class ApplyResult:
     name: str
     action: str
     reason: str = ""
+    # Where a delete left the object. Empty for everything else, and for a
+    # delete that did not run.
+    state: str = ""
 
     @property
     def target(self) -> str:
@@ -375,6 +409,185 @@ def converge_documents(
                 report=report,
             )
     return report
+
+
+def delete_argv(doc: dict) -> list[str]:
+    """Build the ``kubectl delete`` command for one document's object.
+
+    Always ``--ignore-not-found``: the object is read before this runs, and
+    between the read and the delete somebody else may have removed it. That
+    is the outcome asked for, not a failure.
+
+    Always ``--wait=false`` too. kubectl's default is to poll until the object
+    is gone, which turns one finalizer that is not making progress into a
+    request held open for the whole timeout. The read-back this module does
+    afterwards is what proves the outcome, so there is nothing for kubectl's
+    wait to add except the blocking.
+    """
+    _, namespace, name = _identify(doc)
+    argv = ["kubectl", "delete", f"{_resource_token(doc)}/{name}"]
+    if namespace:
+        argv += ["-n", namespace]
+    return argv + ["--ignore-not-found", "--wait=false"]
+
+
+def field_managers(live: dict) -> tuple[str, ...]:
+    """Every manager that owns part of a live object, once each, in order.
+
+    Server-side apply writes one ``managedFields`` entry per manager and
+    operation, so a manager can appear more than once; this reports each once.
+    An object with no entries at all belongs to nobody Ladon can name, and the
+    empty tuple is what says so.
+
+    Entries scoped to a subresource are left out. A controller writing an
+    object's ``status`` records itself there, and it does not thereby own the
+    object: ESO stamps every ExternalSecret Ladon applies, and reading that as
+    ownership would make ESO the owner of everything on the cluster. Ladon
+    writes no subresource, so nothing it owns is lost by this.
+    """
+    entries = (live.get("metadata") or {}).get("managedFields") or []
+    seen: dict[str, None] = {}
+    for entry in entries:
+        manager = entry.get("manager")
+        if manager and not entry.get("subresource"):
+            seen.setdefault(str(manager), None)
+    return tuple(seen)
+
+
+def require_managed(doc: dict, live: dict, field_manager: str = DEFAULT_FIELD_MANAGER) -> None:
+    """Refuse an object Ladon is not recorded as a manager of.
+
+    Public because both directions need it. A delete reads it immediately
+    before removing the object; an apply that would take fields from whoever
+    holds them needs the same answer, and server-side apply cannot give it,
+    since an apply by the same manager name is indistinguishable from the
+    manager doing its job.
+    """
+    managers = field_managers(live)
+    if field_manager in managers:
+        return
+    kind, _, name = _identify(doc)
+    raise ForeignObjectError(
+        f"{kind}/{name} is managed by "
+        f"{', '.join(managers) if managers else 'no recorded manager'}, "
+        f"not by {field_manager!r}; Ladon does not delete what it did not apply"
+    )
+
+
+def _is_terminating(live: dict) -> bool:
+    """True when the API server has accepted a delete and is finishing it.
+
+    An object with a ``deletionTimestamp`` is on its way out and is only still
+    readable because a finalizer has not run yet. The delete did what it was
+    asked; waiting for the controller is not this call's job.
+    """
+    return bool((live.get("metadata") or {}).get("deletionTimestamp"))
+
+
+def _uid(live: dict) -> str:
+    """The API server's identity for one object.
+
+    Names are reusable and uids are not: an object deleted and recreated under
+    the same name is a different object, and the uid is the only field that
+    says so.
+    """
+    return str((live.get("metadata") or {}).get("uid") or "")
+
+
+def delete_documents(
+    docs: Iterable[dict],
+    *,
+    field_manager: str = DEFAULT_FIELD_MANAGER,
+    dry_run: bool = True,
+    run: Runner = run,
+) -> ApplyReport:
+    """Remove the objects these documents name, and report what happened to each.
+
+    Only the identity of a document matters here: kind, name and namespace. The
+    spec is not read, so a caller removing an object it created earlier does not
+    have to be able to render it again.
+
+    Each object is read, checked and deleted in that order, one document at a
+    time. The check does not get its own earlier pass on purpose: whether Ladon
+    manages an object is only true as of the moment it was read, and a pass
+    that cleared every document first would be deciding on state that another
+    manager could have taken over by the time the delete ran. Read, check,
+    delete, with nothing in between, is the narrowest that window gets.
+
+    The cost is that a refusal partway through a list leaves the documents
+    before it deleted. With one document, which is what every caller here
+    sends, there is no partway; with several, a ``ForeignObjectError`` still
+    stops the rest.
+
+    An object that is not there is reported ``absent`` and no delete runs, so
+    asking twice is not an error. After a delete the object is read again and
+    the result carries a ``state`` saying where the delete left it: ``gone``,
+    ``terminating`` when a finalizer has not finished, or ``recreated`` when
+    somebody made a new object under the same name. A still-present object
+    with the same uid and no deletion timestamp raises, because kubectl
+    accepting a delete is not the same as the cluster having done it. See
+    :func:`_state_after` for what the uid does and does not establish.
+
+    Defaults to a dry run, like every other write surface. A dry run does the
+    read and the ownership check, so it answers the same refusals an apply
+    would, and runs no delete.
+    """
+    docs = [_checked(doc) for doc in docs]
+    results: list[ApplyResult] = []
+    for doc in docs:
+        kind, namespace, name = _identify(doc)
+        live = read_one(doc, missing_ok=True, run=run)
+        if live is None:
+            results.append(ApplyResult(kind, namespace, name, ABSENT))
+            continue
+        require_managed(doc, live, field_manager)
+        if dry_run:
+            results.append(ApplyResult(kind, namespace, name, DELETE))
+            continue
+        before = _uid(live)
+        outcome = run(delete_argv(doc))
+        if outcome.returncode != 0:
+            message = outcome.stderr or outcome.stdout
+            raise K8sError(
+                f"deleting {kind}/{name} failed ({outcome.returncode}): {_first_line(message)}"
+            )
+        results.append(
+            ApplyResult(kind, namespace, name, DELETE, state=_state_after(doc, before, run=run))
+        )
+    return ApplyReport(results=tuple(results), dry_run=dry_run)
+
+
+def _state_after(doc: dict, before: str, *, run: Runner) -> str:
+    """Where the delete left the object, read back from the cluster.
+
+    Three outcomes, and the uid is what tells them apart. Gone is the ordinary
+    one. An object carrying a ``deletionTimestamp`` under the same uid was
+    accepted and is waiting on a finalizer: the delete did what it was asked
+    and the objects that depend on it, a Secret it owns included, are still
+    there for now, so the caller is told ``terminating`` rather than that
+    everything is finished. A *different* uid is a different object that
+    somebody created under the same name after the delete; the one that was
+    read and checked is gone, and reporting a failure over a stranger's new
+    object would be wrong.
+
+    The same uid with no timestamp is a delete kubectl accepted and the cluster
+    did not perform, and that raises.
+
+    This narrows a window rather than closing it. ``kubectl delete`` has no uid
+    precondition, so between the read that established what the object was and
+    the delete that removed it, the object could have been replaced, and the
+    delete would have removed the replacement. Only the API server can close
+    that, with a precondition Ladon cannot express through this command.
+    """
+    kind, _, name = _identify(doc)
+    after = read_one(doc, missing_ok=True, run=run)
+    if after is None:
+        return GONE
+    if _uid(after) != before:
+        return RECREATED
+    if _is_terminating(after):
+        return TERMINATING
+    raise K8sError(f"{kind}/{name} is still on the cluster after kubectl accepted the delete")
 
 
 def read_one(doc: dict, *, missing_ok: bool = False, run: Runner = run) -> dict | None:

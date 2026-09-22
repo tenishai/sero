@@ -13,10 +13,28 @@
 #      Deployments across namespaces and reading the CRDs to probe which API
 #      version they serve.
 #
-# There is no `delete` anywhere, and no access to Secrets outside Ladon's own
-# namespace: a cluster-wide Secret read would make this role a way to exfiltrate
-# every synced value on the cluster, which is exactly what the platform exists
-# to prevent.
+# `delete` is granted on `ExternalSecret` and nowhere else. The machine lane
+# removes the object it created when an application is taken down, and leaving
+# it behind means an operator reconciling a KV path that is gone on purpose.
+#
+# Read that grant as wider than it looks. Ladon renders every ExternalSecret
+# with `creationPolicy: Owner`, so the Kubernetes Secret ESO creates carries an
+# owner reference to it, and deleting the ExternalSecret has the garbage
+# collector delete that Secret too. This rule therefore hands the backend the
+# ability to take a running workload's Secret away, in any namespace, without
+# any grant on Secrets outside the `ladon` namespace. That is the intended
+# outcome of taking an application down, and it is why two guards sit in front
+# of it in the code: the object must record `ladon` as a field manager, and it
+# must belong to the application and namespace the caller named.
+#
+# It is not granted on `ClusterSecretStore`: a store is an application's
+# identity on the cluster, removing one is off-boarding rather than a
+# per-secret call, and a cluster-scoped delete is a blast radius worth not
+# having.
+#
+# There is no access to Secrets outside Ladon's own namespace: a cluster-wide
+# Secret read would make this role a way to exfiltrate every synced value on
+# the cluster, which is exactly what the platform exists to prevent.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -29,6 +47,10 @@ rules:
       - clustersecretstores
       - externalsecrets
     verbs: ["get", "list", "create", "patch", "update"]
+  # The one delete, on the one kind the lane takes back down.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["delete"]
   # Confirm a target namespace exists before applying into it.
   - apiGroups: [""]
     resources: ["namespaces"]

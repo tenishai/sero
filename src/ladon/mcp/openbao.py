@@ -30,7 +30,14 @@ from collections.abc import Callable
 from typing import Any
 
 from ladon.hygiene import mask
-from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult, require_non_empty_merge
+from ladon.mcp.ports import (
+    SecretDetail,
+    SecretListing,
+    SecretPath,
+    SecretPathTaken,
+    WriteResult,
+    require_non_empty_merge,
+)
 
 # KV v2 mount the tools operate on within a namespace. Matches the baseline.
 DEFAULT_KV_MOUNT = "kv"
@@ -45,6 +52,27 @@ MAX_LISTED_SECRETS = 500
 def _is_not_found(exc: BaseException) -> bool:
     """hvac raises `InvalidPath` for a 404; an empty KV listing is one."""
     return type(exc).__name__ == "InvalidPath" or getattr(exc, "status_code", None) == 404
+
+
+# What OpenBao says when a check-and-set write loses. hvac reports it as a
+# 400, which is also what a malformed request is, so the wording is what
+# separates them; matched loosely, and anything unrecognised is re-raised.
+_CAS_FAILURE = "check-and-set"
+
+
+def _is_cas_conflict(exc: BaseException) -> bool:
+    """True when a write was refused because the path was not as expected."""
+    return _CAS_FAILURE in str(exc).lower()
+
+
+class SecretNotDeleted(RuntimeError):
+    """OpenBao accepted a delete and the path is still readable.
+
+    Not a refusal the caller can act on: Ladon said it would remove a path,
+    the store answered, and the secret is still there. It surfaces as a 500
+    and an audit row, which is the honest answer, because the alternative is
+    reporting a destroy that did not happen.
+    """
 
 
 ClientFor = Callable[[str], Any]
@@ -80,7 +108,7 @@ class OpenBaoSecrets:
     def list_namespaces(self, user_email: str) -> list[str]:
         return list(self._namespaces_for(user_email))
 
-    def list_secrets(self, user_email: str, namespace: str) -> list[SecretPath]:
+    def list_secrets(self, user_email: str, namespace: str) -> SecretListing:
         """Every leaf secret in the namespace, by full path.
 
         KV v2 lists one level at a time and marks folders with a trailing
@@ -88,9 +116,15 @@ class OpenBaoSecrets:
         cannot pin the request) and reports leaves only. An empty mount is a
         404 from OpenBao; here it is an empty list, because a namespace with
         nothing in it yet is the ordinary state of a new team.
+
+        Both bounds are reported rather than applied quietly. Stopping at
+        :data:`MAX_LISTED_SECRETS` leaves secrets unlisted, and declining to
+        descend past :data:`MAX_LIST_DEPTH` leaves a whole subtree unlisted,
+        and a caller told neither would read a short list as a small namespace.
         """
         client = self._client_for(namespace)
         out: list[SecretPath] = []
+        truncated = False
         pending: list[tuple[str, int]] = [("", 0)]
         while pending and len(out) < MAX_LISTED_SECRETS:
             prefix, depth = pending.pop(0)
@@ -99,11 +133,20 @@ class OpenBaoSecrets:
                 if key.endswith("/"):
                     if depth + 1 < MAX_LIST_DEPTH:
                         pending.append((full, depth + 1))
+                    else:
+                        # A folder this walk will not open. Whatever is under
+                        # it is real and is not in this answer.
+                        truncated = True
                     continue
+                if len(out) >= MAX_LISTED_SECRETS:
+                    truncated = True
+                    break
                 detail = self._read(client, namespace, full, env="")
                 out.append(SecretPath(path=full, key_count=detail.key_count))
+        # Folders still queued when the count ran out hold secrets too.
+        truncated = truncated or bool(pending)
         out.sort(key=lambda p: p.path)
-        return out
+        return SecretListing(secrets=tuple(out), truncated=truncated)
 
     def _list_level(self, client: Any, prefix: str) -> list[str]:
         try:
@@ -120,17 +163,31 @@ class OpenBaoSecrets:
         return self._read(client, namespace, path, env=env)
 
     def _read(self, client: Any, namespace: str, path: str, *, env: str) -> SecretDetail:
+        """One path's state, or ``exists=False`` when OpenBao says it is absent.
+
+        Only a 404 is absence. Every other failure is raised: a denial, an
+        expired token, a vault that is sealed or unreachable all mean Ladon
+        could not look, and reporting that as "there is nothing there" is how a
+        read answers 404 for a secret that exists and a delete reports success
+        over a path it never touched.
+        """
         try:
             resp = client.secrets.kv.v2.read_secret_version(
                 path=path, mount_point=self._mount, raise_on_deleted_version=False
             )
-        except Exception:
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
             return SecretDetail(namespace=namespace, path=path, env=env, exists=False)
         if not resp:
             return SecretDetail(namespace=namespace, path=path, env=env, exists=False)
         data = resp.get("data", {})
         raw = data.get("data") or {}
-        version = (data.get("metadata") or {}).get("version")
+        metadata = data.get("metadata") or {}
+        version = metadata.get("version")
+        # When the current version was written. A time, not a value: it says a
+        # path changed, never what it changed to.
+        created = metadata.get("created_time")
         # Mask at the boundary: only masked previews leave this module.
         masked = {k: mask(str(v)) for k, v in raw.items()}
         return SecretDetail(
@@ -139,6 +196,7 @@ class OpenBaoSecrets:
             env=env,
             exists=True,
             version=version,
+            updated_at=str(created) if created else None,
             masked_keys=masked,
         )
 
@@ -147,10 +205,26 @@ class OpenBaoSecrets:
     def create_secret(
         self, user_email: str, namespace: str, path: str, env: str, values: dict[str, str]
     ) -> WriteResult:
+        """Write a new path, and only if it is still new.
+
+        ``cas=0`` is KV v2's "this path has no version yet": the store refuses
+        the write if anything is there. The surfaces above read before they
+        create, so without it the window between that read and this write is
+        one in which another caller's secret gets replaced by this one, and
+        neither caller is told.
+        """
         client = self._client_for(namespace)
-        client.secrets.kv.v2.create_or_update_secret(
-            path=path, secret=dict(values), mount_point=self._mount
-        )
+        try:
+            client.secrets.kv.v2.create_or_update_secret(
+                path=path, secret=dict(values), mount_point=self._mount, cas=0
+            )
+        except Exception as exc:
+            if not _is_cas_conflict(exc):
+                raise
+            raise SecretPathTaken(
+                f"{namespace}/{path} was created while this call was running; "
+                "read it and update it rather than creating it"
+            ) from exc
         return WriteResult(
             namespace=namespace,
             path=path,
@@ -193,6 +267,33 @@ class OpenBaoSecrets:
             removed_keys=[k for k in remove_keys if k in current],
         )
 
+    # ── SecretEraser ─────────────────────────────────────────────────────
+
+    def delete_secret(self, user_email: str, namespace: str, path: str) -> None:
+        """Remove a path and every version of it, then prove it is gone.
+
+        Metadata and all versions, not the soft delete KV v2 does by default: a
+        soft-deleted path still exists, still lists, and can be undeleted, which
+        is not what a caller asking for the path to be gone means. The versions
+        hold the values, so leaving them is leaving the secret.
+
+        Unconditional: the metadata delete answers 204 whether or not the path
+        was there, so there is nothing to gain by reading first and a race to
+        lose by it. Whether anything was there is a question the caller's own
+        read answers, which is why this returns nothing.
+
+        The read-back is the part that matters. A delete Ladon reported and
+        OpenBao did not perform is the failure worth catching here rather than
+        the next time somebody reads the path and finds the credential still
+        live, so a path that is still readable afterwards raises.
+        """
+        client = self._client_for(namespace)
+        client.secrets.kv.v2.delete_metadata_and_all_versions(path=path, mount_point=self._mount)
+        if self._read(client, namespace, path, env="").exists:
+            raise SecretNotDeleted(
+                f"{namespace}/{path} is still readable after OpenBao accepted the delete"
+            )
+
     # ── Reveal (the one plaintext exit, gated above this layer) ──────────
 
     def reveal_value(self, user_email: str, namespace: str, path: str, env: str, key: str) -> str:
@@ -210,12 +311,20 @@ class OpenBaoSecrets:
         return str(current[key])
 
     def _read_raw(self, client: Any, path: str) -> dict[str, str]:
-        """Read the current plaintext for a merge. Never returned or logged."""
+        """Read the current plaintext for a merge. Never returned or logged.
+
+        Only a 404 reads as an empty path, for the same reason as ``_read`` and
+        with more at stake: an update merges into what this returns and writes
+        the result back, so a denial or an unreachable vault swallowed here
+        would merge into nothing and overwrite every key the path holds.
+        """
         try:
             resp = client.secrets.kv.v2.read_secret_version(
                 path=path, mount_point=self._mount, raise_on_deleted_version=False
             )
-        except Exception:
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
             return {}
         if not resp:
             return {}

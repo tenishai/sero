@@ -112,7 +112,7 @@ export const devMockTransport: Transport = async (path, init) => {
       path,
       key_count: Object.keys(s.keys).length,
     }));
-    return json({ namespace: ns, secrets });
+    return json({ namespace: ns, secrets, truncated: false });
   }
 
   const revealMatch = p.match(/^\/namespaces\/([^/]+)\/secrets\/(.+)\/reveal$/);

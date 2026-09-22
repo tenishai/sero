@@ -27,11 +27,11 @@
     <p class="text-sm text-[var(--color-danger)]">
       Could not load secrets: {query.error.message}
     </p>
-  {:else if query.data.length === 0}
+  {:else if query.data.secrets.length === 0}
     <p class="text-sm text-[var(--color-ink-muted)]">No secrets in this namespace yet.</p>
   {:else}
     <ul class="flex flex-col gap-1">
-      {#each query.data as secret (secret.path)}
+      {#each query.data.secrets as secret (secret.path)}
         <li>
           <button
             type="button"
@@ -50,5 +50,10 @@
         </li>
       {/each}
     </ul>
+    {#if query.data.truncated}
+      <!-- The backend's walk stopped at a bound. Saying so is the difference
+           between seeing the namespace and believing you have. -->
+      <p class="mt-3 text-xs text-[var(--color-ink-muted)]">More secrets than shown.</p>
+    {/if}
   {/if}
 </section>

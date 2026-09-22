@@ -12,6 +12,75 @@ point of view, not a list of commit subjects.
 
 ### Fixed
 
+- The machine lane's `POST /api/service/sync` now has to prove whose
+  ExternalSecret it is writing over, the same way the `DELETE` proves whose it
+  is removing. `app` is a field in the request body and `k8s_namespace`
+  defaults to it, and a server-side apply under Ladon's own field manager
+  takes the fields it sets from Ladon's own earlier apply without a conflict,
+  because as far as the API server can tell that is the manager doing its job.
+  A caller pinned to one OpenBao namespace could therefore write over another
+  team's live ExternalSecret, repoint it at a store it does control, and then
+  pass the delete gate on an object it had just made look like its own. An
+  object that is already there must read through this application's own
+  `ClusterSecretStore` and pull a path inside `apps/<app>/`, or it is a `403`,
+  and Ladon must be among its field managers, or it is a `409`.
+
+  Two corrections to that check while it grew a second caller. It requires
+  `secretStoreRef.kind` to be `ClusterSecretStore`, since ESO's default for a
+  ref that names no kind is the namespaced `SecretStore` and a matching name in
+  a ref of the other kind is a different object. And the refusal no longer
+  echoes the live object's store name, which carries another tenant's team and
+  application: what it names is derived from the request.
+
+- Two namespaces pinned to one machine caller whose last path segments are
+  equal are refused at config load. A store name is built from that segment, so
+  `platform/team-a` and `other/team-a` name the same stores for the same
+  application names, and the check above could not have told one team's object
+  from the other's.
+
+- A cluster delete tells a recreated object from a delete that did not happen.
+  The read-back compared presence alone, so an object somebody created under
+  the same name after the delete read as a failure. The uid recorded before the
+  delete sorts three outcomes: `gone`, `terminating` when a finalizer has not
+  run, and `recreated`. The route carries that through as `state`, with
+  `recreated` spelled out beside it, since a caller that reads `deleted` and
+  stops would be leaving a live ExternalSecret it does not know about. This
+  narrows a window rather than closing it: `kubectl delete` takes no uid
+  precondition.
+
+- An ExternalSecret the delete route's own read found absent is answered there
+  rather than handed to the removal, which reads again: an object created
+  between the two would have been one nothing had checked.
+
+- A create cannot overwrite a path that appeared while it ran. Every surface
+  checks a path is absent before creating one, and the check and the write are
+  two calls; the write now carries KV v2's `cas=0`, so the store refuses it and
+  the caller gets a `409` instead of replacing somebody else's secret. The
+  merge path has a window of the same shape and is not addressed here.
+
+- The machine lane bounds `acting_email` at SMTP's 254 characters. The address
+  pattern says nothing about length and the value reaches an audit row.
+
+- Only a 404 from OpenBao means a secret path is not there. Both reads in
+  the OpenBao wrapper swallowed every exception and reported the path as
+  absent, so a denial, an expired token or an unreachable vault became
+  "there is nothing there" and each surface above turned that into a
+  confident wrong answer: a read answering `404` for a secret that exists, a
+  delete reporting success over a path it never touched, and worst, an
+  update merging into nothing and writing back over every key the path held.
+  Anything that is not a 404 now surfaces as a `500` with an audit row.
+
+- A cluster delete now checks ownership at the moment it deletes rather than
+  in an earlier pass, passes `--wait=false` so one stuck finalizer cannot
+  hold a request open, and reads the object back afterwards: kubectl
+  accepting a delete is not the cluster having performed one. A manager entry
+  scoped to a subresource no longer counts as ownership, since ESO records
+  itself on the status of every ExternalSecret Ladon applies.
+
+- The backend refuses to start on a secrets implementation that cannot serve
+  every route it exposes, naming the missing methods, rather than answering
+  a caller with a `500` the first time one is reached.
+
 - Opening a namespace with no secrets in it answered "internal error": OpenBao
   reports an empty KV listing as a 404 and the reader let that escape. An empty
   namespace is now an empty list.
@@ -52,6 +121,59 @@ and [docs/plans/2026-09-22-platform-vault.md](docs/plans/2026-09-22-platform-vau
 for the task-by-task record.
 
 ### Added
+
+- The machine lane can read and delete, so a caller that provisions an
+  application can also take one down. Three routes, all authenticated,
+  pinned, budgeted and audited exactly like the two that were already there.
+
+  `GET /api/service/secrets` answers which keys a path holds, by name, with
+  the version and when the current version was written. No value, masked or
+  otherwise: the human read beside it returns a masked preview of every
+  value, and a caller assembling an application needs to know whether
+  `DB_URL` is there, not what it starts with. A path that is not there is a
+  `404` and still an audited read.
+
+  `DELETE /api/service/secrets` removes a path and every version of it, not
+  KV v2's default soft delete, which leaves a path that still exists, still
+  lists, and still holds its values. `DELETE /api/service/sync` removes the
+  ExternalSecret in front of it, which otherwise stays behind and has ESO
+  logging an error every refresh interval over a path that is gone on
+  purpose. Both are dry run by default and name what they would remove; both
+  are idempotent, because a destroy step that fails when it is run twice is a
+  destroy step nobody can retry.
+
+  A cluster object whose live field manager is not `ladon` is `409` naming
+  the manager that owns it, and nothing is deleted. That is the mirror of
+  never passing `--force-conflicts`: taking a field from another manager is
+  an operator's decision, and so is deleting that manager's object. It must
+  also be the application's own object: the live ExternalSecret has to read
+  through that application's store and pull a path inside `apps/<app>/`, or
+  it is a `403`. Without that, `app` being a field in the request body would
+  let a caller pinned to one namespace reach another team's ExternalSecret.
+
+  Removing an ExternalSecret removes the Kubernetes Secret with it, because
+  Ladon renders them with `creationPolicy: Owner` and the Secret carries an
+  owner reference back. That is the point of taking an application down, and
+  it is the reason for the guards above: the blast radius is a running
+  workload's Secret, not one custom resource. The answer says so in
+  `removes_target_secret`, so a dry run tells a caller what an apply would
+  take away. The deployment's ClusterRole grants `delete` on
+  `externalsecrets` and no other kind.
+
+  Scope, so nobody has to infer it: this removes one secret and one
+  ExternalSecret. An application's ClusterSecretStore, JWT role, read-only
+  policy and service account are off-boarding, and still an operator's job.
+
+  A namespace listing says whether it is the whole namespace. The folder walk
+  is bounded at a depth and a count, both of them silent until now, so a
+  namespace with more secrets than the bound answered with a short list that
+  looked exactly like a complete one. The listing carries `truncated`, and the
+  UI says "More secrets than shown" under it.
+
+  Reads have a budget of their own, `read_limit_per_minute`, 300 a minute
+  against the write budget's 60. A caller watching an application come up
+  polls the read, and one shared bucket would let that polling spend the
+  allowance the same caller's writes need.
 
 - A front door, so the backend is a service people can reach rather than a
   port-forward. `deploy/ladon/standalone/front-door/` holds four manifests

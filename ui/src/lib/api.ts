@@ -53,6 +53,14 @@ export interface SecretPath {
 export interface SecretsResponse {
   namespace: string;
   secrets: SecretPath[];
+  // False when the listing is the whole namespace. True when the backend's
+  // walk stopped at one of its bounds, so there are secrets it did not report.
+  truncated?: boolean;
+}
+
+export interface SecretsListing {
+  secrets: SecretPath[];
+  truncated: boolean;
 }
 
 export interface SecretDetail {
@@ -129,11 +137,13 @@ export class ApiClient {
     return body.namespaces;
   }
 
-  async listSecrets(namespace: string): Promise<SecretPath[]> {
+  async listSecrets(namespace: string): Promise<SecretsListing> {
     const body = await this.get<SecretsResponse>(
       `/namespaces/${encodeURIComponent(namespace)}/secrets`,
     );
-    return body.secrets;
+    // Truncation travels with the list rather than being dropped here: a view
+    // that renders a short list without saying it is short is the bug.
+    return { secrets: body.secrets, truncated: body.truncated === true };
   }
 
   async getSecret(namespace: string, path: string, env: string): Promise<SecretDetail> {

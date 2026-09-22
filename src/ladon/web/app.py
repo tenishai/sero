@@ -7,9 +7,9 @@ patching; ``build_default_app`` is the zero-argument factory uvicorn calls.
 
 Every failure leaves as ``{"error": "..."}`` with a status the UI can act on: 401
 with no identity, 403 for a namespace or an admin route the caller may not have,
-400 for a refused write, 404 for something absent, 503 for a deployment that has
-not been configured yet. A message names the namespace, path, or field at fault
-and never a value.
+400 for a refused write, 404 for something absent, 409 for a cluster object
+another field manager owns, 503 for a deployment that has not been configured
+yet. A message names the namespace, path, or field at fault and never a value.
 """
 
 from __future__ import annotations
@@ -28,9 +28,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.exceptions import HTTPException
 
 from ladon.apply.client import BaoConnection, BaoConnectionError, TokenAuth, connect
+from ladon.config.teams import ConfigError
 from ladon.datastore import engine as datastore
 from ladon.hygiene import WriteRefused
+from ladon.install.k8s import ForeignObjectError
 from ladon.mcp.openbao import OpenBaoSecrets
+from ladon.mcp.ports import SecretPathTaken
 from ladon.mcp.server import AccessDeniedError, WrongEnvironment
 from ladon.web import routes_admin, routes_secrets
 from ladon.web.assertion import AssertionVerifier
@@ -74,6 +77,7 @@ def create_app(
     groups = groups or ConfigGroupSource(settings.access)
     if secrets is None and settings.openbao_address:
         secrets = _live_secrets(settings, groups)
+    _require_complete_secrets(secrets, reveal_enabled=settings.reveal_enabled)
 
     if assertion_verifier is None and settings.identity.assertion is not None:
         assertion_verifier = AssertionVerifier(settings.identity.assertion)
@@ -130,6 +134,42 @@ def build_default_app() -> FastAPI:
     return create_app(load_web_settings())
 
 
+# What a wired secrets implementation has to provide. The ports are protocols,
+# which are structural and checked by nothing at runtime, so an implementation
+# that predates one of the methods (a deployment's own stand-in, a fake in a
+# harness) satisfies the type annotation and fails at the first call instead.
+REQUIRED_SECRET_METHODS = (
+    "list_namespaces",
+    "list_secrets",
+    "get_secret",
+    "create_secret",
+    "update_secret",
+    "delete_secret",
+)
+
+
+def _require_complete_secrets(secrets: Any | None, *, reveal_enabled: bool) -> None:
+    """Refuse to start with a secrets implementation the routes would break on.
+
+    None is fine: a deployment with no vault configured answers 503 and says
+    so. What is not fine is an object that serves some of the routes, because
+    the one it cannot serve fails as a 500 on a caller's request, and the
+    deployment that wired it finds out from whoever was using it.
+
+    Reveal is checked only where a deployment enabled it, since a gate that
+    denies by default never reaches the method.
+    """
+    if secrets is None:
+        return
+    required = REQUIRED_SECRET_METHODS + (("reveal_value",) if reveal_enabled else ())
+    missing = [name for name in required if not callable(getattr(secrets, name, None))]
+    if missing:
+        raise ConfigError(
+            "the configured secrets implementation is missing "
+            f"{', '.join(missing)}; it cannot serve every route this deployment exposes"
+        )
+
+
 def _live_secrets(settings: WebSettings, groups: GroupSource) -> OpenBaoSecrets:
     """An ``OpenBaoSecrets`` over real, per-namespace OpenBao clients.
 
@@ -180,6 +220,22 @@ def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(WrongEnvironment)
     def _wrong_environment(request: Request, exc: WrongEnvironment) -> JSONResponse:
         return error(400, str(exc))
+
+    @app.exception_handler(SecretPathTaken)
+    def _path_taken(request: Request, exc: SecretPathTaken) -> JSONResponse:
+        # A conflict for the same reason the cluster one is: the request was
+        # well formed and permitted, and the state it assumed changed under it.
+        return error(409, str(exc))
+
+    @app.exception_handler(ForeignObjectError)
+    def _foreign_object(request: Request, exc: ForeignObjectError) -> JSONResponse:
+        # A conflict, not a bad request: the object named is real and the
+        # caller may act in that namespace, and it belongs to another manager.
+        # It subclasses WriteRefused, and this handler is the one that runs
+        # because Starlette looks a handler up along the exception's MRO and
+        # takes the first class that has one, so the more specific type wins
+        # wherever either is registered.
+        return error(409, str(exc))
 
     @app.exception_handler(WriteRefused)
     def _refused(request: Request, exc: WriteRefused) -> JSONResponse:

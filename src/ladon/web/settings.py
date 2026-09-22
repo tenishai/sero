@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ladon.config.apps import team_label_for_namespace
 from ladon.config.loader import (
     DeploymentConfig,
     load_deployment_config,
@@ -34,10 +35,17 @@ from ladon.web.assertion import (
 # ``iat`` (so a token's age is knowable) and ``sub`` (the lane authorizes on it).
 SERVICE_REQUIRED_CLAIMS = ("exp", "iat", "iss", "aud", "sub")
 
-# Calls per minute one machine caller may make across the whole lane, unless a
-# deployment says otherwise. Generous for provisioning a handful of secrets,
-# small enough that a stuck loop stops rather than filling the vault.
+# Writes per minute one machine caller may make, unless a deployment says
+# otherwise. Generous for provisioning a handful of secrets, small enough that
+# a stuck loop stops rather than filling the vault.
 DEFAULT_SERVICE_RATE_LIMIT = 60
+
+# Reads per minute, counted separately and set higher. A caller watching an
+# application come up polls the read, and one bucket for both would let that
+# polling spend the budget its own writes need: the request that matters would
+# be the one refused. Reads cost a vault lookup and change nothing, so they are
+# cheap to allow and still bounded.
+DEFAULT_SERVICE_READ_LIMIT = 300
 
 # Kubernetes DNS-1123 label rules, which a namespace name obeys.
 _K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
@@ -109,7 +117,10 @@ class ServiceCaller:
     # the application's own name. Empty is the safe default and the common case:
     # one application, one namespace named after it.
     k8s_namespaces: tuple[str, ...] = ()
+    # Two budgets, not one. A caller polling the read while an application
+    # comes up would otherwise spend the allowance its own writes need.
     rate_limit_per_minute: int = DEFAULT_SERVICE_RATE_LIMIT
+    read_limit_per_minute: int = DEFAULT_SERVICE_READ_LIMIT
 
     @property
     def issuer(self) -> str:
@@ -265,6 +276,7 @@ def _service_caller(data: object, index: int, human_audience: str | None) -> Ser
     namespaces = _names(data["namespaces"], f"{where}.namespaces")
     if not namespaces:
         raise ConfigError(f"'{where}.namespaces' must name at least one namespace")
+    _refuse_colliding_store_names(namespaces, where)
 
     return ServiceCaller(
         name=str(data["name"]).strip().lower(),
@@ -278,7 +290,41 @@ def _service_caller(data: object, index: int, human_audience: str | None) -> Ser
         ),
         k8s_namespaces=_k8s_namespaces(data.get("k8s_namespaces"), where),
         rate_limit_per_minute=_rate_limit(data.get("rate_limit_per_minute"), where),
+        read_limit_per_minute=_rate_limit(
+            data.get("read_limit_per_minute"),
+            where,
+            field="read_limit_per_minute",
+            default=DEFAULT_SERVICE_READ_LIMIT,
+        ),
     )
+
+
+def _refuse_colliding_store_names(namespaces: list[str], where: str) -> None:
+    """Refuse two pinned namespaces that would derive the same store names.
+
+    A store name is built from the last segment of a namespace, because
+    namespaces nest and a team's own name is where its namespace ends. So
+    ``platform/team-a`` and ``other/team-a`` produce identical store names for
+    identical application names, and the machine lane's check that an
+    ExternalSecret belongs to the application in the caller's namespace cannot
+    tell the two apart: an object provisioned under one would read as the
+    other's, on both the sync and the delete.
+
+    Refused here rather than worked around later, because the alternative is a
+    deployment where that check silently means less than it says. Rename one of
+    the teams, or pin the caller to one of them.
+    """
+    seen: dict[str, str] = {}
+    for namespace in namespaces:
+        label = team_label_for_namespace(namespace)
+        first = seen.get(label)
+        if first is not None:
+            raise ConfigError(
+                f"'{where}.namespaces' pins both {first!r} and {namespace!r}, which end in "
+                f"the same segment {label!r} and would name the same stores; a caller "
+                "pinned to both could not be told which application's object is which"
+            )
+        seen[label] = namespace
 
 
 def _k8s_namespaces(value: object, where: str) -> tuple[str, ...]:
@@ -300,11 +346,17 @@ def _k8s_namespaces(value: object, where: str) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _rate_limit(value: object, where: str) -> int:
+def _rate_limit(
+    value: object,
+    where: str,
+    *,
+    field: str = "rate_limit_per_minute",
+    default: int = DEFAULT_SERVICE_RATE_LIMIT,
+) -> int:
     if value is None:
-        return DEFAULT_SERVICE_RATE_LIMIT
+        return default
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ConfigError(f"'{where}.rate_limit_per_minute' must be a positive whole number")
+        raise ConfigError(f"'{where}.{field}' must be a positive whole number")
     return value
 
 

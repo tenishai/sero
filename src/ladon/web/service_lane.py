@@ -25,11 +25,17 @@ development hatch is not read, and a deployment that has named no callers
 refuses the lane outright: the lane opens because a deployment configured it,
 never because it forgot to.
 
-What a caller can do is deliberately small: merge keys into one application
-path under ``apps/``, and converge one ExternalSecret for one application, in
-that application's own Kubernetes namespace or one its config admits. Reading a
-secret, revealing a value, touching the allow list, approving a namespace and
-running an apply phase are all somewhere else, behind a person.
+What a caller can do is deliberately small, and it is the life of one
+application secret from end to end: merge keys into one path under ``apps/``,
+list the key names at that path, delete the path outright, and converge or
+remove one ExternalSecret for one application, in that application's own
+Kubernetes namespace or one its config admits.
+
+What is still somewhere else, behind a person: revealing a value, touching the
+allow list, approving a namespace, running an apply phase, and off-boarding an
+application (its store, its role, its policy and its service account). A
+provisioner that can stand a secret up and take it down again is not a
+provisioner that can dismantle an application's identity.
 """
 
 from __future__ import annotations
@@ -41,14 +47,32 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 import jwt
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from ladon.config.apps import app_store_name, checked_app_path, checked_apps_path
-from ladon.config.eso import external_secret
+from ladon.config.apps import (
+    MAX_KV_PATH_LENGTH,
+    app_store_name,
+    checked_app_path,
+    checked_apps_path,
+    team_label_for_namespace,
+)
+from ladon.config.eso import external_secret, external_secret_ref
 from ladon.config.teams import ConfigError
 from ladon.hygiene import WriteRefused
-from ladon.install.k8s import ApplyReport, K8sError, converge_documents, eso_api_version
+from ladon.install.k8s import (
+    ABSENT,
+    DELETE,
+    RECREATED,
+    ApplyReport,
+    ApplyResult,
+    K8sError,
+    converge_documents,
+    delete_documents,
+    eso_api_version,
+    read_one,
+    require_managed,
+)
 from ladon.mcp.server import (
     AccessDeniedError,
     _audit,
@@ -74,10 +98,19 @@ from ladon.web.deps import (
 from ladon.web.errors import ApiError
 from ladon.web.settings import ServiceCaller
 
-# The audit names for the two things a machine may do. Prefixed, so one query
-# separates what a machine wrote from what a person wrote.
+# What the delete route answers when no delete ran and the object is still
+# there: a dry run. Not one of the cluster layer's states, which describe a
+# delete that happened.
+UNCHANGED = "unchanged"
+
+# The audit names for the things a machine may do. Prefixed, so one query
+# separates what a machine did from what a person did. Each names its route, so
+# an investigator reading a row does not have to know which verb it was.
 PUT_TOOL = "service.put_secret"
 SYNC_TOOL = "service.sync_secret"
+READ_TOOL = "service.get_secret"
+DELETE_TOOL = "service.delete_secret"
+UNSYNC_TOOL = "service.delete_sync"
 
 # Stamped on every row this lane writes. The tool name says what happened and
 # this says who the "who" is: a row attributed to a person that a machine
@@ -106,6 +139,11 @@ SERVICE_STALE_KEYS_MAX_SECONDS = 600
 # anything; it catches a caller sending a username, an id or an empty string
 # where the audit trail needs a person.
 ACTING_EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+# The longest address SMTP defines: 64 for the local part, 1 for the "@", 254
+# for the whole. The pattern above says nothing about length, and this value
+# reaches an audit row, so it is bounded like everything else that does.
+ACTING_EMAIL_MAX = 254
 
 # Kubernetes DNS-1123 label, the rule every name in a rendered document obeys.
 LABEL_PATTERN = r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
@@ -172,13 +210,15 @@ class TokenBucket:
 class ClusterSync:
     """How the lane reaches the cluster.
 
-    Both collaborators are fields rather than direct calls, which is the same
+    Every collaborator is a field rather than a direct call, which is the same
     seam the CLI's tests use: a test hands over a fake cluster and nothing here
     shells out.
     """
 
     api_version: Callable[[], str] = eso_api_version
     converge: Callable[..., ApplyReport] = converge_documents
+    remove: Callable[..., ApplyReport] = delete_documents
+    read: Callable[..., dict[str, Any] | None] = read_one
 
 
 @dataclass(frozen=True)
@@ -189,6 +229,11 @@ class ServiceLane:
         default_factory=dict
     )
     buckets: dict[str, TokenBucket] = field(default_factory=dict)
+    # The read's own budget, per caller. Kept apart from the write budget so
+    # that a caller polling to see whether an application has come up cannot
+    # spend the allowance its own writes need: with one bucket, the call that
+    # matters would be the one that gets refused.
+    read_buckets: dict[str, TokenBucket] = field(default_factory=dict)
     cluster: ClusterSync = field(default_factory=ClusterSync)
     # Wall-clock, for comparing against the token's own ``iat``. Separate from
     # the buckets' monotonic clock, which measures elapsed time and nothing else.
@@ -225,9 +270,10 @@ class ServiceLane:
         self._require_fresh(claims, caller)
         return caller
 
-    def allow(self, caller: ServiceCaller) -> bool:
-        """Spend one call from this caller's budget."""
-        bucket = self.buckets.get(caller.name)
+    def allow(self, caller: ServiceCaller, *, read: bool = False) -> bool:
+        """Spend one call from this caller's write budget, or its read budget."""
+        buckets = self.read_buckets if read else self.buckets
+        bucket = buckets.get(caller.name)
         return bucket.take() if bucket is not None else False
 
     def _require_fresh(self, claims: dict[str, Any], caller: ServiceCaller) -> None:
@@ -301,6 +347,9 @@ def build_service_lane(
         buckets={
             caller.name: TokenBucket(caller.rate_limit_per_minute, now=now) for caller in callers
         },
+        read_buckets={
+            caller.name: TokenBucket(caller.read_limit_per_minute, now=now) for caller in callers
+        },
         cluster=cluster or ClusterSync(),
         clock=clock,
     )
@@ -309,26 +358,54 @@ def build_service_lane(
 # ── Request bodies ─────────────────────────────────────────────────────
 
 
+# The read takes its arguments in the query string rather than a body, so the
+# same three fields are declared once here.
+#
+# Every argument on this lane carries a length, whether it travels in a query
+# or a body, because each of them reaches an audit row: an unbounded one is a
+# way to write as much as a caller cares to send into the trail with a single
+# call. The bounds are the ones the values already have to obey elsewhere, so
+# nothing that would have been accepted is refused here: a path may be as long
+# as the store allows, a namespace as long as an OpenBao namespace, a label as
+# long as a Kubernetes label, and an address as long as SMTP defines.
+#
+# ``acting_email`` is required on the read too: config refuses a caller that
+# would not record who it acts for, and a read of which keys an application
+# holds is as much that caller's business as a write is.
+ActingEmailQuery = Annotated[str, Query(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)]
+NamespaceQuery = Annotated[str, Query(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)]
+PathQuery = Annotated[str, Query(max_length=MAX_KV_PATH_LENGTH)]
+
+
 class ServicePutBody(BaseModel):
     """One application secret, merged."""
 
     # Required: a machine write with nobody behind it is not one this lane does.
-    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
-    path: str
+    path: str = Field(max_length=MAX_KV_PATH_LENGTH)
     values: dict[str, str] = Field(default_factory=dict)
     remove_keys: list[str] = Field(default_factory=list)
     # Dry-run by default, like every other write surface in Ladon.
     apply: bool = False
 
 
+class ServiceDeleteBody(BaseModel):
+    """One application path, removed outright."""
+
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
+    namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
+    path: str = Field(max_length=MAX_KV_PATH_LENGTH)
+    apply: bool = False
+
+
 class ServiceSyncBody(BaseModel):
     """One ExternalSecret, converged against the application's own store."""
 
-    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
-    path: str
+    path: str = Field(max_length=MAX_KV_PATH_LENGTH)
     # Absent means the application's own name, which is where onboarding puts
     # it. Anywhere else has to be pinned to the caller in config.
     k8s_namespace: str | None = Field(default=None, pattern=LABEL_PATTERN, max_length=LABEL_MAX)
@@ -342,6 +419,22 @@ class ServiceSyncBody(BaseModel):
     apply: bool = False
 
 
+class ServiceUnsyncBody(BaseModel):
+    """One ExternalSecret, removed.
+
+    No path, no store and no refresh interval: naming the object is all a
+    removal needs, and asking for the rest would make a delete depend on
+    values that may have moved since the object was created.
+    """
+
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
+    namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
+    app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    k8s_namespace: str | None = Field(default=None, pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    name: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    apply: bool = False
+
+
 # ── Authentication as a dependency ─────────────────────────────────────
 
 
@@ -349,8 +442,12 @@ def lane(request: Request) -> ServiceLane:
     return request.app.state.service_lane
 
 
-def _authenticated(request: Request, tool_name: str) -> ServiceCaller:
+def _authenticated(request: Request, tool_name: str, *, read: bool = False) -> ServiceCaller:
     """The verified caller, or 401; then one call from its budget, or 429.
+
+    ``read`` picks which budget. The read has its own, because a caller
+    watching an application come up polls it, and one shared bucket would let
+    that polling spend the allowance the same caller's writes need.
 
     Both refusals are audited before they are answered. A machine probing for a
     way in is exactly the pattern worth spotting, and without a row it is the
@@ -370,7 +467,7 @@ def _authenticated(request: Request, tool_name: str) -> ServiceCaller:
         )
         raise ApiError(401, "no service identity") from exc
 
-    if not lane(request).allow(caller):
+    if not lane(request).allow(caller, read=read):
         recorder.record(
             # The body has not been read yet, so there is no person to name;
             # the caller is known, and filing it under the machine is what puts
@@ -379,7 +476,9 @@ def _authenticated(request: Request, tool_name: str) -> ServiceCaller:
             tool_name=tool_name,
             status=DENIED,
             args={"lane": LANE, "via": caller.name, "subject": caller.subject},
-            error="the caller has spent its call budget for this minute",
+            error=(
+                f"the caller has spent its {'read' if read else 'write'} budget for this minute"
+            ),
         )
         raise ApiError(429, f"too many calls from {caller.name!r}; try again shortly")
     return caller
@@ -393,11 +492,86 @@ def sync_caller(request: Request) -> ServiceCaller:
     return _authenticated(request, SYNC_TOOL)
 
 
+def read_caller(request: Request) -> ServiceCaller:
+    return _authenticated(request, READ_TOOL, read=True)
+
+
+def delete_caller(request: Request) -> ServiceCaller:
+    return _authenticated(request, DELETE_TOOL)
+
+
+def unsync_caller(request: Request) -> ServiceCaller:
+    return _authenticated(request, UNSYNC_TOOL)
+
+
 PutCaller = Annotated[ServiceCaller, Depends(put_caller)]
 SyncCaller = Annotated[ServiceCaller, Depends(sync_caller)]
+ReadCaller = Annotated[ServiceCaller, Depends(read_caller)]
+DeleteCaller = Annotated[ServiceCaller, Depends(delete_caller)]
+UnsyncCaller = Annotated[ServiceCaller, Depends(unsync_caller)]
 
 
 # ── Routes ─────────────────────────────────────────────────────────────
+
+
+@router.get("/service/secrets")
+def get_secret(
+    caller: ReadCaller,
+    session: DbSession,
+    secrets: Secrets,
+    audit: Auditor,
+    environment: DeclaredEnvironment,
+    acting_email: ActingEmailQuery,
+    namespace: NamespaceQuery,
+    path: PathQuery,
+) -> dict[str, Any]:
+    """Which keys one application path holds, by name.
+
+    The one read on this lane, and it is narrower than the human one beside it:
+    that returns a masked preview of every value, and this returns nothing but
+    names. A mask is a hint about a value, and a caller assembling an
+    application has no use for hints; it needs to know whether ``DB_URL`` is
+    there. So the previews are read and dropped, and no value, masked or
+    otherwise, can leave through here.
+
+    The version and the timestamp come with them, which is what makes the
+    answer useful for deciding whether a path needs writing: they say a path
+    changed without saying what it changed to.
+
+    A path that is not there is a ``404`` and still an audited read. The
+    request was authorized and the lookup happened; what it found is in the
+    row, because "did anything ask for this?" is a question worth answering
+    about a path that does not exist.
+    """
+    args = {
+        **_attribution(caller),
+        "acting_email": acting_email,
+        "namespace": namespace,
+        "path": path,
+    }
+    with audit.guard(READ_TOOL, acting_email, args, session=session):
+        _require_pinned(caller, namespace, action="read")
+        checked = _refuse_outside_apps(path)
+        args["path"] = checked
+        detail = secrets.get_secret(acting_email, namespace, checked, environment or "")
+        _audit(
+            session,
+            user_email=acting_email,
+            tool_name=READ_TOOL,
+            status="ok",
+            args={**args, "exists": detail.exists},
+        )
+    session.commit()
+    if not detail.exists:
+        raise ApiError(404, f"there is no secret at {namespace}/{checked}")
+    return {
+        "namespace": namespace,
+        "path": checked,
+        # Names only, sorted, so two calls over the same path answer the same.
+        "keys": sorted(detail.masked_keys),
+        "version": detail.version,
+        "updated_at": detail.updated_at,
+    }
 
 
 @router.post("/service/secrets")
@@ -463,6 +637,75 @@ def put_secret(
     return result
 
 
+@router.delete("/service/secrets")
+def delete_secret(
+    body: ServiceDeleteBody,
+    caller: DeleteCaller,
+    session: DbSession,
+    secrets: Secrets,
+    audit: Auditor,
+    environment: DeclaredEnvironment,
+) -> dict[str, Any]:
+    """Remove one application path, and every version of it.
+
+    The other half of provisioning. An application that is taken down leaves
+    its secret behind otherwise, and a KV path nobody is watching is the one
+    whose values go stale in place: still readable, still valid, still the
+    credential somebody rotated everywhere except here.
+
+    Metadata and all versions, so the path is gone rather than soft-deleted. A
+    soft delete leaves something that still lists and can be undeleted, which
+    is not what "remove it" means, and the versions are where the values are.
+
+    Dry run by default, like every write on this lane. Without ``apply`` the
+    answer says what it WOULD delete, by key name, and nothing is touched.
+    With it, deleting a path that is already gone is ``deleted: false`` and a
+    200, because a destroy step that fails when it is run twice is a destroy
+    step nobody can retry.
+
+    ``deleted`` comes from the read this route does first, and the delete runs
+    whether or not that read found anything. The two are separate on purpose:
+    the read is what the answer describes, and the delete is unconditional
+    because OpenBao's metadata delete is already idempotent, so skipping it on
+    the strength of a read taken a moment earlier only adds a race. A read that
+    fails for any reason other than "not there" stops the call: a caller told
+    ``deleted: false`` because Ladon could not look would believe a path was
+    gone that is still live.
+    """
+    args = {
+        **_attribution(caller),
+        "acting_email": body.acting_email,
+        "namespace": body.namespace,
+        "path": body.path,
+    }
+    with audit.guard(DELETE_TOOL, body.acting_email, args, session=session):
+        _require_pinned(caller, body.namespace, action="delete in")
+        path = _refuse_outside_apps(body.path)
+        args["path"] = path
+        detail = secrets.get_secret(body.acting_email, body.namespace, path, environment or "")
+        # Names only, read before the delete: afterwards there is nothing left
+        # to ask, and a row that cannot say what was removed is half a record.
+        keys = sorted(detail.masked_keys)
+        if body.apply:
+            secrets.delete_secret(body.acting_email, body.namespace, path)
+        _audit(
+            session,
+            user_email=body.acting_email,
+            tool_name=DELETE_TOOL,
+            status="ok" if body.apply else "dry-run",
+            args={**args, "key_names": keys, "existed": detail.exists},
+        )
+    session.commit()
+    answer: dict[str, Any] = {
+        "applied": body.apply,
+        "namespace": body.namespace,
+        "path": path,
+        "keys": keys,
+    }
+    answer["deleted" if body.apply else "would_delete"] = detail.exists
+    return answer
+
+
 @router.post("/service/sync")
 def sync_secret(
     body: ServiceSyncBody,
@@ -489,6 +732,20 @@ def sync_secret(
     unpinned Kubernetes namespace here would let one caller create or replace an
     ExternalSecret anywhere on the cluster. The default is the application's own
     namespace and anywhere else must be pinned to the caller in config.
+
+    An object that is already there has to be this application's before it is
+    converged, exactly as the ``DELETE`` requires before removing one. Every
+    field that names it comes from the body, and a server-side apply under
+    Ladon's own field manager takes the fields it sets from Ladon's own earlier
+    apply without a word: it is the manager doing its job, as far as the API
+    server can tell. So a caller pinned to one namespace could otherwise write
+    over another team's live ExternalSecret, repoint it at a store it does
+    control, and then pass the delete gate on the object it had just made its
+    own. Checking here is what makes the delete gate mean anything.
+
+    A ``409`` rather than a ``403`` when the object is real and this
+    application's but another manager owns it; the apply would have taken its
+    fields.
     """
     k8s_namespace = body.k8s_namespace or body.app
     target = body.target_name or body.name
@@ -520,6 +777,20 @@ def sync_secret(
             # cluster does not store is rejected on apply.
             api_version=_cluster_call(cluster.api_version),
         )
+        # An object that is not there yet is this caller's to create, and the
+        # rules above are the whole check. One that is already there belongs to
+        # somebody, and this is where it is established that the somebody is
+        # this application.
+        existing = _cluster_call(cluster.read, document, missing_ok=True)
+        if existing is not None:
+            _require_ours(
+                existing,
+                document,
+                store=store,
+                app=body.app,
+                name=body.name,
+                k8s_namespace=k8s_namespace,
+            )
         report = _cluster_call(cluster.converge, [document], dry_run=not body.apply)
         _audit(
             session,
@@ -542,6 +813,151 @@ def sync_secret(
         "report": report.lines(),
         "blocked": [result.target for result in report.blocked],
     }
+
+
+@router.delete("/service/sync")
+def unsync_secret(
+    body: ServiceUnsyncBody,
+    request: Request,
+    caller: UnsyncCaller,
+    session: DbSession,
+    audit: Auditor,
+) -> dict[str, Any]:
+    """Remove the ExternalSecret this lane created, and only that.
+
+    Deleting the KV path leaves the object that reads it, and ESO keeps
+    reconciling it: the operator logs an error every interval over a path that
+    is gone on purpose, and the Kubernetes Secret it owns stays where it is.
+    So the two halves come apart in the same order they went together.
+
+    Scope, stated so nobody has to infer it. This removes one ExternalSecret.
+    It does NOT remove the application's ClusterSecretStore, its JWT role, its
+    read-only policy or its service account, and it does not touch the KV path.
+    Those are application off-boarding: they are cluster-scoped or
+    namespace-wide, one of them is shared with anything else the application
+    runs, and removing them is a decision about an application's whole
+    identity rather than about one of its secrets. That belongs to an operator
+    and an apply phase, not to a per-secret call on the machine lane.
+
+    This removes the target Secret with it. Ladon renders every ExternalSecret
+    with ``creationPolicy: Owner``, so the Kubernetes Secret carries an owner
+    reference to it and the garbage collector takes the Secret when the owner
+    goes. That is the intended outcome of taking an application down, and it is
+    also the reason the checks below are what they are: the blast radius of
+    this route is a running workload's Secret, not one custom resource.
+
+    Three things are checked before anything is deleted.
+
+    * **The object is Ladon's.** A live field manager that is not ``ladon`` is
+      a ``409`` naming the manager that does own it, the same rule the apply
+      side follows in never passing ``--force-conflicts``.
+    * **The object belongs to the application the caller named, in the
+      namespace the caller is pinned to.** ``app`` is a field in the body and
+      ``k8s_namespace`` defaults to it, so without this a caller pinned to one
+      OpenBao namespace could name any application at all and reach an
+      ExternalSecret that Ladon manages for somebody else, passing the
+      ownership check on the way. The live object has to read through this
+      application's own store, whose name is derived here exactly as the POST
+      derives it, and to pull a path inside ``apps/<app>/``. Either mismatch is
+      a ``403``.
+    * **The caller may place objects there**, the same pinning as the POST: the
+      application's own Kubernetes namespace, or one pinned to the caller.
+
+    Dry run by default, and removing an object that is already gone is not an
+    error.
+    """
+    k8s_namespace = body.k8s_namespace or body.app
+    args = {
+        **_attribution(caller),
+        "acting_email": body.acting_email,
+        "namespace": body.namespace,
+        "app": body.app,
+        "k8s_namespace": k8s_namespace,
+        "name": body.name,
+    }
+    with audit.guard(UNSYNC_TOOL, body.acting_email, args, session=session):
+        _require_pinned(caller, body.namespace, action="delete in")
+        # The target rule has nothing to decide here: a removal names no
+        # Secret to adopt, so the object's own name stands in for it.
+        _require_cluster_target(caller, body.app, k8s_namespace, name=body.name, target=body.name)
+        store = _store_for(body.namespace, body.app)
+        args["store"] = store
+        cluster = lane(request).cluster
+        document = external_secret_ref(
+            name=body.name,
+            namespace=k8s_namespace,
+            api_version=_cluster_call(cluster.api_version),
+        )
+        # Read before the removal to check whose object this is. The removal
+        # reads again, at the moment it deletes, to check the field manager;
+        # these are different questions and the second one is the one that has
+        # to be fresh. Nothing a caller can do changes the answer in between:
+        # editing the live object would take cluster write access, which is
+        # not what this lane hands out.
+        live = _cluster_call(cluster.read, document, missing_ok=True)
+        cascades = False
+        if live is None:
+            # Nothing to remove, and nothing to establish about an object that
+            # is not there. Calling the removal anyway would open a second
+            # window: it reads again, and an object created in between is one
+            # this route never checked and would delete.
+            report = _absent(document)
+        else:
+            _require_ours(
+                live,
+                document,
+                store=store,
+                app=body.app,
+                name=body.name,
+                k8s_namespace=k8s_namespace,
+            )
+            cascades = _owns_its_target(live)
+            report = _cluster_call(cluster.remove, [document], dry_run=not body.apply)
+        result = report.results[0]
+        outcome = result.action
+        state = result.state or (ABSENT if outcome == ABSENT else UNCHANGED)
+        _audit(
+            session,
+            user_email=body.acting_email,
+            tool_name=UNSYNC_TOOL,
+            status="ok" if body.apply else "dry-run",
+            args={
+                **args,
+                "outcome": outcome,
+                "state": state,
+                "removes_target_secret": cascades,
+            },
+        )
+    session.commit()
+    answer: dict[str, Any] = {
+        "applied": body.apply,
+        "namespace": body.namespace,
+        "app": body.app,
+        "store": store,
+        "k8s_namespace": k8s_namespace,
+        "name": body.name,
+        # The Kubernetes Secret goes with the ExternalSecret that owns it, and
+        # a caller about to take a workload's Secret away should be told so by
+        # the dry run rather than find out from the workload. It stays true
+        # while the removal is terminating: the Secret is not gone yet, and it
+        # is going.
+        "removes_target_secret": cascades,
+        # Where the cluster is now, not what was asked for. ``gone`` is the
+        # ordinary outcome; ``terminating`` means a finalizer has not run, so
+        # the object and what it owns are still there for the moment;
+        # ``recreated`` means somebody made a new object under the same name
+        # after this one was removed, which is the answer a caller has to act
+        # on rather than treat as done. ``absent`` and ``unchanged`` are the
+        # two where no delete ran.
+        "state": state,
+        # Spelled out beside the state because it is the one a caller must not
+        # skip past: what is there now is not what this call removed.
+        "recreated": state == RECREATED,
+        "report": report.lines(),
+    }
+    # False when the object was already gone, which is a success either way.
+    answer["deleted" if body.apply else "would_delete"] = outcome == DELETE
+    return answer
 
 
 # ── Internals ──────────────────────────────────────────────────────────
@@ -568,16 +984,21 @@ def _attribution(caller: ServiceCaller) -> dict[str, str]:
     return {"lane": LANE, "via": caller.name, "subject": caller.subject}
 
 
-def _require_pinned(caller: ServiceCaller, namespace: str) -> None:
+def _require_pinned(caller: ServiceCaller, namespace: str, *, action: str = "write in") -> None:
     """Refuse a namespace this caller's config does not pin to it.
 
     The one authorization decision on this lane. It rests on the token's
     subject and the deployment's config, never on the acting email, which the
     caller supplies and could say anything.
+
+    One list covers reading and writing, and deliberately: a caller pinned to a
+    namespace so it can provision applications there is a caller that may see
+    what it provisioned. ``action`` only changes the sentence, so a refused read
+    does not report itself as a refused write.
     """
     if namespace not in caller.namespaces:
         raise AccessDeniedError(
-            f"the service caller {caller.name!r} may not write in namespace {namespace!r}"
+            f"the service caller {caller.name!r} may not {action} namespace {namespace!r}"
         )
 
 
@@ -606,6 +1027,115 @@ def _require_cluster_target(
         )
 
 
+def _require_the_applications_own(
+    live: dict[str, Any], *, store: str, app: str, name: str, k8s_namespace: str
+) -> None:
+    """Refuse an ExternalSecret that is not this application's, in this namespace.
+
+    The ownership check says Ladon manages the object. It does not say which of
+    Ladon's tenants it belongs to, and everything that names the object on
+    either route is a field in the request body: without this, a caller pinned
+    to one OpenBao namespace could name another team's application and have its
+    live ExternalSecret rewritten or removed, taking the Secret it owns with
+    it.
+
+    Three properties of the live object answer that, and all three come from
+    how onboarding builds one.
+
+    It reads through a ``ClusterSecretStore``, which is the only kind Ladon
+    renders. ``secretStoreRef.kind`` defaults to the namespaced ``SecretStore``
+    when a document omits it, so a name that matches in a ref of the other kind
+    is a different object entirely and must not read as a match.
+
+    That store is the application's own, whose name is derived from the
+    namespace this caller is pinned to, so a store that is not it means the
+    object is somebody else's.
+
+    And it pulls a path inside ``apps/<app>/``, the only prefix that
+    application's identity can read; an object with no ``dataFrom`` extract at
+    all is not one Ladon rendered.
+
+    Every refusal names the store this caller's own application would use and
+    the prefix it would read, both of which are derived from the request. None
+    of them says a word about what the live object holds: its store name
+    carries another tenant's team and application, and a caller that may not
+    touch an object may not learn about it either.
+    """
+    spec = live.get("spec") or {}
+    reference = spec.get("secretStoreRef") or {}
+    if reference.get("kind") != CLUSTER_STORE_KIND or reference.get("name") != store:
+        raise AccessDeniedError(
+            f"the ExternalSecret {name!r} in Kubernetes namespace {k8s_namespace!r} does not "
+            f"read through the {CLUSTER_STORE_KIND} {store!r}; it does not belong to "
+            f"application {app!r} in this caller's namespace"
+        )
+    prefix = f"apps/{app}/"
+    keys = [(entry.get("extract") or {}).get("key") for entry in spec.get("dataFrom") or []]
+    if not keys or not all(isinstance(key, str) and key.startswith(prefix) for key in keys):
+        raise AccessDeniedError(
+            f"the ExternalSecret {name!r} in Kubernetes namespace {k8s_namespace!r} does not "
+            f"read a path under {prefix!r}; it does not belong to application {app!r}"
+        )
+
+
+def _require_ours(
+    live: dict[str, Any],
+    document: dict[str, Any],
+    *,
+    store: str,
+    app: str,
+    name: str,
+    k8s_namespace: str,
+) -> None:
+    """Both questions about a live object, in the order that leaks least.
+
+    Whose object it is first, because that refusal describes only the request.
+    Who manages it second, because that one names the managers on the object,
+    which is something to tell a caller about its own application and not about
+    a stranger's.
+    """
+    _require_the_applications_own(
+        live, store=store, app=app, name=name, k8s_namespace=k8s_namespace
+    )
+    require_managed(document, live)
+
+
+# The only store kind Ladon renders. ESO's own default for a ref that names no
+# kind is the namespaced ``SecretStore``, so this is never assumed.
+CLUSTER_STORE_KIND = "ClusterSecretStore"
+
+# ESO's default when a document names none, and what Ladon always renders: the
+# Secret carries an owner reference to the ExternalSecret, so removing the one
+# removes the other.
+OWNER_CREATION_POLICY = "Owner"
+
+
+def _owns_its_target(live: dict[str, Any]) -> bool:
+    """Whether removing this object removes the Kubernetes Secret with it."""
+    target = ((live.get("spec") or {}).get("target")) or {}
+    return str(target.get("creationPolicy", OWNER_CREATION_POLICY)) == OWNER_CREATION_POLICY
+
+
+def _absent(document: dict[str, Any]) -> ApplyReport:
+    """The report for an object the route found was not there.
+
+    A removal that never ran, said in the vocabulary one that did would use,
+    so the answer's shape does not depend on which path produced it.
+    """
+    metadata = document.get("metadata") or {}
+    return ApplyReport(
+        results=(
+            ApplyResult(
+                document.get("kind", ""),
+                metadata.get("namespace"),
+                metadata.get("name", ""),
+                ABSENT,
+            ),
+        ),
+        dry_run=True,
+    )
+
+
 def _store_for(namespace: str, app: str) -> str:
     """The application's ClusterSecretStore name.
 
@@ -616,7 +1146,7 @@ def _store_for(namespace: str, app: str) -> str:
     rather than a traceback.
     """
     try:
-        return app_store_name(team=namespace.rsplit("/", 1)[-1], app=app)
+        return app_store_name(team=team_label_for_namespace(namespace), app=app)
     except ConfigError as exc:
         raise WriteRefused(str(exc)) from exc
 

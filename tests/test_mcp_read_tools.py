@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ladon.datastore import repositories as repo
 from ladon.datastore.models import Base
 from ladon.hygiene import mask
-from ladon.mcp.ports import SecretDetail, SecretPath
+from ladon.mcp.ports import SecretDetail, SecretListing, SecretPath
 from ladon.mcp.server import (
     AccessDeniedError,
     WrongEnvironment,
@@ -37,7 +37,7 @@ class FakeReader:
         return list(self.namespaces.get(user_email, []))
 
     def list_secrets(self, user_email, namespace):
-        return list(self.paths.get(namespace, []))
+        return SecretListing(secrets=tuple(self.paths.get(namespace, [])))
 
     def get_secret(self, user_email, namespace, path, env):
         raw = self._keys.get((namespace, path, env))
@@ -86,6 +86,16 @@ def test_list_secrets_ok(session, allowed):
     result = list_secrets_impl(FakeReader(), session, user_email=USER, namespace="team-a")
     assert result["namespace"] == "team-a"
     assert result["secrets"] == [{"path": "team-a/app", "key_count": 2}]
+    assert result["truncated"] is False
+
+
+def test_list_secrets_passes_on_a_truncated_walk(session, allowed):
+    class Bounded(FakeReader):
+        def list_secrets(self, user_email, namespace):
+            return SecretListing(secrets=(SecretPath("team-a/app", 2),), truncated=True)
+
+    result = list_secrets_impl(Bounded(), session, user_email=USER, namespace="team-a")
+    assert result["truncated"] is True
 
 
 def test_list_secrets_denies_foreign_namespace(session, allowed):

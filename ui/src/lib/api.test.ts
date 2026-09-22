@@ -52,13 +52,30 @@ test("listNamespaces returns the namespaces array", async () => {
 
 test("listSecrets calls the namespaced path and returns secret paths", async () => {
   const { transport, calls } = fakeTransport(() => ({
-    body: { namespace: "team-a", secrets: [{ path: "app", key_count: 2 }] },
+    body: { namespace: "team-a", secrets: [{ path: "app", key_count: 2 }], truncated: false },
   }));
   const client = new ApiClient(transport);
-  const secrets = await client.listSecrets("team-a");
-  assert.equal(secrets[0].path, "app");
-  assert.equal(secrets[0].key_count, 2);
+  const listing = await client.listSecrets("team-a");
+  assert.equal(listing.secrets[0].path, "app");
+  assert.equal(listing.secrets[0].key_count, 2);
+  assert.equal(listing.truncated, false);
   assert.deepEqual(calls, ["/api/namespaces/team-a/secrets"]);
+});
+
+test("listSecrets carries a truncated walk through to the caller", async () => {
+  const { transport } = fakeTransport(() => ({
+    body: { namespace: "team-a", secrets: [{ path: "app", key_count: 2 }], truncated: true },
+  }));
+  const listing = await new ApiClient(transport).listSecrets("team-a");
+  assert.equal(listing.truncated, true);
+});
+
+test("listSecrets treats a backend that says nothing as complete", async () => {
+  const { transport } = fakeTransport(() => ({
+    body: { namespace: "team-a", secrets: [] },
+  }));
+  const listing = await new ApiClient(transport).listSecrets("team-a");
+  assert.equal(listing.truncated, false);
 });
 
 test("getSecret passes env and returns masked keys only", async () => {

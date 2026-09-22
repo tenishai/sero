@@ -20,6 +20,7 @@ from starlette.testclient import TestClient
 
 from fake_cluster import FakeCluster
 from fake_openbao import FakeOpenBao
+from fake_secrets import StubSecrets
 from ladon.apply import cli
 from ladon.config.loader import load_deployment_config
 from ladon.datastore import repositories as repo
@@ -121,7 +122,7 @@ def build_settings(config, *, address=ADDRESS):
 
 @pytest.fixture
 def client(sessions, config):
-    app = create_app(build_settings(config), session_factory=sessions, secrets=object())
+    app = create_app(build_settings(config), session_factory=sessions, secrets=StubSecrets())
     return TestClient(app)
 
 
@@ -497,7 +498,7 @@ def test_a_restart_fails_the_jobs_that_were_in_flight(sessions, config, vault, c
         ids = (queued.id, running.id)
 
     restarted = TestClient(
-        create_app(build_settings(config), session_factory=sessions, secrets=object())
+        create_app(build_settings(config), session_factory=sessions, secrets=StubSecrets())
     )
 
     for job_id in ids:

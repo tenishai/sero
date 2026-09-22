@@ -276,15 +276,24 @@ service_callers:
     k8s_namespaces: []
     acting_email_required: true
     rate_limit_per_minute: 60
+    read_limit_per_minute: 300
 ```
 
 `name`, `issuer`, `jwks_url`, `audience`, `subject` and `namespaces` are all
 required, because each one is a boundary. `jwks_url` must be https: over plain
 HTTP anyone on the path chooses the signer. `acting_email_required` may only be
 `true`; a lane that wrote on nobody's behalf would leave a machine write with no
-trace of a human, so `false` is refused rather than honoured, and both routes
-require the field. Two callers may not share an issuer and audience pair,
+trace of a human, so `false` is refused rather than honoured, and every route
+on the lane requires the field, the read included. Two callers may not share an issuer and audience pair,
 because that pair is what picks the caller a token belongs to.
+
+No two namespaces pinned to one caller may end in the same segment. A store
+name is built from the last segment of a namespace, because namespaces nest and
+a team's namespace ends in the team's own name, so `platform/team-a` and
+`other/team-a` name the same stores for the same application names and the
+checks above could not tell one team's object from the other's. That pair is
+refused at config load rather than left as a deployment where those checks mean
+less than they say.
 
 `k8s_namespaces` is where this caller may place an ExternalSecret beyond the
 application's own name. Leaving it empty is the right answer for the common
@@ -309,6 +318,11 @@ machine could therefore set that header to any address and be any person: read
 every namespace that person holds, reveal where reveal is on, and put itself on
 the allow list through the admin routes. None of the machine lane's pins apply,
 because none of those routes are the machine lane.
+
+`/api/service/*` is also the only place a `DELETE` reaches a secret at all. The
+human surface has no route that removes a path: a person who wants one gone
+asks an operator, and the reason it is here instead is that a machine that
+created an application is the thing that knows when that application is over.
 
 With an assertion configured the human routes want a signed proof instead, and
 the machine's own token does not verify as one: the audiences must differ, which
@@ -351,7 +365,9 @@ guesses at).
 
 ### What a caller can do
 
-Two things.
+Five things, which together are the life of one application secret: write it,
+see what is in it by name, put the cluster object in front of it, take that
+object away, and delete the secret itself.
 
 **`POST /api/service/secrets`** merges keys into one application path. The
 semantics are the human lane's, because they are the same two functions: values
@@ -383,6 +399,92 @@ The answer is the write summary the other surfaces return, key names only:
   "removed_keys": []
 }
 ```
+
+**`GET /api/service/secrets`** answers which keys one path holds, by name. It
+takes its arguments in the query string (`acting_email`, `namespace`, `path`)
+because there is no body on a read, and `acting_email` is as required here as
+it is on a write.
+
+```
+GET /api/service/secrets?acting_email=operator@example.com&namespace=team-a&path=apps/sample/demo
+```
+
+```json
+{
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "keys": ["API_KEY", "DB_URL"],
+  "version": 2,
+  "updated_at": "2026-09-22T10:00:00.000000Z"
+}
+```
+
+Names, sorted, and nothing else. This is narrower than the human read beside
+it, which returns a masked preview of every value: a mask is a hint about a
+value, and a caller assembling an application needs to know whether `DB_URL` is
+there, not what it starts with. No value, masked or otherwise, leaves through
+this route. The version and the timestamp are what make the answer useful for
+deciding whether a path needs writing; they say a path changed without saying
+what it changed to.
+
+A path that is not there is `404 {"error": "there is no secret at ..."}`, and
+still an audited read: the request was authorized and the lookup happened, and
+who asked about a path that does not exist is worth being able to answer.
+
+Only a 404 from OpenBao means "not there". A denial, an expired token, a sealed
+vault or an unreachable one is a `500` with an audit row saying `error`, never
+a `404`: "I could not look" and "there is nothing there" are different answers,
+and a caller acting on the wrong one would treat a live secret as gone. The
+`DELETE` below inherits the same rule, which is why it can say `deleted: false`
+and mean it.
+
+**`DELETE /api/service/secrets`** removes one application path and every
+version of it. This is the half of provisioning the lane did not have: an
+application that goes away otherwise leaves its secret behind, and a KV path
+nobody is watching is the one whose values go stale in place.
+
+```json
+{
+  "acting_email": "operator@example.com",
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "apply": false
+}
+```
+
+Metadata and all versions, not KV v2's default soft delete: a soft-deleted path
+still exists, still lists, can be undeleted, and its versions still hold the
+values. Dry run by default, like every write here, and the dry run says what it
+would remove:
+
+```json
+{
+  "applied": false,
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "keys": ["API_KEY", "DB_URL"],
+  "would_delete": true
+}
+```
+
+With `apply`, `would_delete` becomes `deleted`. Deleting a path that is already
+gone is `"deleted": false` with an empty `keys` and a `200`, because a destroy
+step that fails when it is run twice is a destroy step nobody can retry. The key
+names are read before the delete and go into the audit row as `key_names`, so
+the record still says what was destroyed once the path is gone.
+
+The delete runs whether or not the read found anything, and the path is read
+once more afterwards. OpenBao answers a metadata delete the same either way, so
+skipping it on the strength of a read taken a moment earlier only adds a race;
+and a delete Ladon reported that OpenBao did not perform is worth catching here
+rather than the next time somebody finds the credential still live.
+
+Two grants this route needs that the write routes do not. The backend's OpenBao
+token needs `delete` on `kv/metadata/<path>`, which is the capability that
+removes the versions rather than soft-deleting one; without it the call reaches
+OpenBao and fails there. And the backend's ServiceAccount needs `delete` on
+`externalsecrets` for the route below, which `deploy/ladon/k8s/base/clusterrole.yaml`
+grants on that kind and no other.
 
 **`POST /api/service/sync`** makes sure the Kubernetes Secret exists. Writing
 the value into OpenBao is half the job; until an `ExternalSecret` reads the path,
@@ -423,6 +525,22 @@ verbs and object names:
 The store name comes from the same function that named it at onboarding, so a
 typo cannot point a document at a store nothing created.
 
+An ExternalSecret that is **already there** has to be this application's before
+it is converged, and the check is the one the `DELETE` applies: the live object
+must read through this application's own `ClusterSecretStore` and pull a path
+inside `apps/<app>/`, or the answer is `403`, and its live field manager must
+be `ladon`, or the answer is `409`. A name nobody has used is still this
+caller's to create.
+
+This is not belt and braces on top of the delete gate; it is what makes that
+gate mean anything. `app` is a field in the body and `k8s_namespace` defaults
+to it, and a server-side apply under Ladon's own field manager takes the fields
+it sets from Ladon's own earlier apply without a conflict, because as far as
+the API server can tell that is the manager doing its job. Without this check,
+a caller pinned to one namespace could write over another team's live
+ExternalSecret, repoint it at a store it does control, and then delete the
+object it had just made look like its own.
+
 #### Where the object lands
 
 `k8s_namespace` is optional and defaults to the application's name, which is
@@ -448,6 +566,119 @@ also how it would take over one it should not, so it is allowed only in a
 namespace the deployment admitted on purpose. In the default namespace, the
 target is the ExternalSecret's own name.
 
+**`DELETE /api/service/sync`** removes one ExternalSecret. Deleting the KV path
+without this leaves an object ESO keeps reconciling: an error in the operator's
+log every interval over a path that is gone on purpose, and the Kubernetes
+Secret it owns still sitting there.
+
+**It takes the Secret with it.** Ladon renders every ExternalSecret with
+`creationPolicy: Owner`, so the Secret ESO creates carries an owner reference
+back to it, and when the ExternalSecret goes the garbage collector deletes the
+Secret. A pod already running keeps the copy it mounted until it restarts, and
+then does not start. That is what taking an application down means, and it is
+the reason this route is the most guarded thing on the lane: its blast radius
+is a workload's Secret, not one custom resource. The answer says so in
+`removes_target_secret`, read from the live object rather than assumed, so a
+dry run tells a caller what an apply would take away.
+
+```json
+{
+  "acting_email": "operator@example.com",
+  "namespace": "team-a",
+  "app": "sample",
+  "k8s_namespace": "sample",
+  "name": "sample-demo",
+  "apply": true
+}
+```
+
+```json
+{
+  "applied": true,
+  "namespace": "team-a",
+  "app": "sample",
+  "store": "ladon-team-a-sample-<digest>",
+  "k8s_namespace": "sample",
+  "name": "sample-demo",
+  "removes_target_secret": true,
+  "state": "gone",
+  "recreated": false,
+  "report": ["ExternalSecret/sample/sample-demo: delete"],
+  "deleted": true
+}
+```
+
+`state` says where the cluster is now, which is not always the same as what was
+asked for. `gone` is the ordinary outcome. `terminating` means the API server
+accepted the delete and a finalizer has not finished, so the object and the
+Secret it owns are still there for the moment; `removes_target_secret` stays
+`true`, because the Secret is going and has not gone, and both of those are
+worth saying. `recreated` means somebody created a new object under the same
+name after this one was removed: what this call deleted is gone, and what
+stands at the name now is not it. That one is repeated as its own boolean,
+because a caller that reads `deleted` and stops would be leaving a live
+ExternalSecret it does not know about. `absent` and `unchanged` are the two
+where no delete ran.
+
+The uid is what tells those apart: the object is read before the delete and
+again after, and a different uid is a different object. This narrows the window
+rather than closing it. `kubectl delete` takes no uid precondition, so an
+object replaced between the check and the delete is one the delete removes;
+closing that needs a precondition only the API server can enforce.
+
+A dry run answers `would_delete` in place of `deleted`, like the secrets
+`DELETE`: what a call has not done, it does not report as done.
+
+The body names the object and nothing else. No path, no store, no refresh
+interval: a removal should not depend on the store name and the path still
+resolving the way they did when the object was created.
+
+Four rules stand in front of it.
+
+- **It must be Ladon's object.** The live object is read at the moment of the
+  delete, and if its `managedFields` do not record `ladon`, the answer is `409`
+  naming the manager that does own it and nothing is deleted. This is the
+  mirror of never passing `--force-conflicts` on the apply side: taking a field
+  from another manager is an operator's decision, and so is deleting that
+  manager's object. Entries for a subresource do not count as ownership, since
+  ESO records itself on the status of every ExternalSecret it reconciles.
+- **It must be this application's object, in this caller's namespace.** `app`
+  is a field in the body and `k8s_namespace` defaults to it, so the ownership
+  check alone would let a caller pinned to one OpenBao namespace name another
+  team's application and reach an ExternalSecret Ladon manages for somebody
+  else. The live object has to read through this application's own store,
+  whose name is derived exactly as the POST derives it, with
+  `secretStoreRef.kind` of `ClusterSecretStore` (ESO's default for a ref that
+  names no kind is the namespaced `SecretStore`, and a matching name in a ref
+  of the other kind is a different object), and it has to pull a path inside
+  `apps/<app>/`. Either mismatch is `403`. The message names the store this
+  caller's own application would use and the prefix it would read, both derived
+  from the request; it says nothing about the live object, whose store name
+  carries another tenant's team and application and whose key is their path. A
+  caller that may not touch an object may not learn about it either.
+- **The same pinning as the POST.** `k8s_namespace` defaults to the
+  application's name, and anywhere else must be in the caller's
+  `k8s_namespaces`; otherwise `403`.
+- **Dry run by default.** A dry run does the reads and both checks, so it
+  answers the same `403` and `409` an apply would, and deletes nothing.
+  `would_delete` is `false` when the object was already gone, which is a
+  success; the report line reads `absent`. An object the route's own read found
+  absent is answered there and not looked for a second time: the removal reads
+  again, and an object created in between would be one nothing had checked.
+
+kubectl is called with `--ignore-not-found` and `--wait=false`, and the object
+is read again afterwards: a delete kubectl accepted is not a delete the cluster
+performed, so the report says `delete` only for an object that is gone or
+carries a `deletionTimestamp`, and one still present raises.
+
+It removes the ExternalSecret and only that. The application's
+ClusterSecretStore, its JWT role, its read-only policy and its service account
+stay, and so does the KV path. Those are application off-boarding: they are
+cluster-scoped or namespace-wide, one of them is shared with anything else the
+application runs, and removing them is a decision about an application's whole
+identity rather than about one of its secrets. That is an operator and an apply
+phase, not a per-secret call on this lane.
+
 ### What a caller cannot do
 
 - Write outside `apps/`. This lane provisions application secrets and nothing
@@ -461,18 +692,40 @@ target is the ExternalSecret's own name.
   whatever the acting email holds on the human lane.
 - Place a cluster object in a Kubernetes namespace its config does not pin to
   it, or name a target Secret outside one. Also `403`; see above.
-- Read a secret, reveal a value, touch the allow list, approve a namespace
-  request, or run an apply phase. Those are human routes and stay human.
-- Exceed its call budget. Each caller has an in-process token bucket, 60 calls a
-  minute by default, shared across both routes; past it the answer is `429`. It
-  is a guard against a stuck loop filling the vault, not a distributed quota: a
-  second replica has a second bucket.
+- Read a value. The lane's read returns key names, and the reveal route, the
+  one place a plaintext value leaves Ladon, is not on it.
+- Touch the allow list, approve a namespace request, or run an apply phase.
+  Those are human routes and stay human.
+- Off-board an application: remove its ClusterSecretStore, its JWT role, its
+  policy or its service account. The lane takes one secret down, not an
+  application's identity.
+- Delete a cluster object another field manager owns. That is `409`, and the
+  message names the manager.
+- Exceed its call budget. Each caller has two in-process token buckets: 60
+  writes a minute and 300 reads, by default. Past either, the answer is `429`
+  and the message says which ran out. The read is counted separately because a
+  caller watching an application come up polls it, and one shared bucket would
+  let that polling spend the allowance the same caller's writes need: the call
+  that got refused would be the one it was polling in order to make. Neither is
+  a distributed quota, only a guard against a stuck loop filling the vault, so
+  a second replica has a second pair.
 
 ### Auditing
 
-One row per call, in the same table as everything else. Both routes record
-against `acting_email`, under `service.put_secret` and `service.sync_secret`,
-and every row this lane writes carries three arguments saying how it got there:
+One row per call, in the same table as everything else. Every route records
+against `acting_email`, under a tool name that says which one it was:
+
+| Route | Tool name |
+| --- | --- |
+| `POST /api/service/secrets` | `service.put_secret` |
+| `GET /api/service/secrets` | `service.get_secret` |
+| `DELETE /api/service/secrets` | `service.delete_secret` |
+| `POST /api/service/sync` | `service.sync_secret` |
+| `DELETE /api/service/sync` | `service.delete_sync` |
+
+A dry run is recorded as `dry-run` and an apply as `ok`, so the trail
+distinguishes what was asked from what happened. Every row this lane writes
+carries three arguments saying how it got there:
 
 | Argument | What it says |
 | --- | --- |
@@ -652,12 +905,12 @@ Every failure is one JSON object with an `error` string:
 | --- | --- |
 | 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name), the request named another environment, an apply body could not produce a plan or named another phase's fields or an address carrying credentials, or a namespace request had already been decided. |
 | 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. On `/api/service/*`, no token, or one that is not the configured caller's. |
-| 403 | Not on the allow list, not a member of the namespace, not an admin, reveal is not enabled, or a machine caller is not pinned to the namespace. |
+| 403 | Not on the allow list, not a member of the namespace, not an admin, reveal is not enabled, a machine caller is not pinned to the namespace, or a live ExternalSecret belongs to another application or namespace. |
 | 404 | No such namespace request, job, apply phase, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
 | 405 | A real route, asked with the wrong method. |
-| 409 | A job of that kind is already running. The body carries its `job_id` alongside the message. |
+| 409 | A conflict with state that changed under the request: a job of that kind is already running (the body carries its `job_id`), a cluster object another field manager owns, or a secret path that was created between the check and the write. |
 | 422 | The request body does not match the route, or names a field the route does not take. The message names the field and never quotes what was sent. |
-| 429 | A machine caller has spent its call budget for this minute. |
+| 429 | A machine caller has spent its read or its write budget for this minute. The message says which. |
 | 500 | Something broke. The body says only `internal error`; the traceback is in the log. |
 | 503 | The datastore or OpenBao is not configured, or OpenBao cannot be reached. |
 
