@@ -63,6 +63,7 @@ from ladon.hygiene import WriteRefused
 from ladon.install.k8s import (
     ABSENT,
     DELETE,
+    RECREATED,
     ApplyReport,
     ApplyResult,
     K8sError,
@@ -96,6 +97,11 @@ from ladon.web.deps import (
 )
 from ladon.web.errors import ApiError
 from ladon.web.settings import ServiceCaller
+
+# What the delete route answers when no delete ran and the object is still
+# there: a dry run. Not one of the cluster layer's states, which describe a
+# delete that happened.
+UNCHANGED = "unchanged"
 
 # The audit names for the things a machine may do. Prefixed, so one query
 # separates what a machine did from what a person did. Each names its route, so
@@ -907,13 +913,20 @@ def unsync_secret(
             )
             cascades = _owns_its_target(live)
             report = _cluster_call(cluster.remove, [document], dry_run=not body.apply)
-        outcome = report.results[0].action
+        result = report.results[0]
+        outcome = result.action
+        state = result.state or (ABSENT if outcome == ABSENT else UNCHANGED)
         _audit(
             session,
             user_email=body.acting_email,
             tool_name=UNSYNC_TOOL,
             status="ok" if body.apply else "dry-run",
-            args={**args, "outcome": outcome, "removes_target_secret": cascades},
+            args={
+                **args,
+                "outcome": outcome,
+                "state": state,
+                "removes_target_secret": cascades,
+            },
         )
     session.commit()
     answer: dict[str, Any] = {
@@ -925,8 +938,21 @@ def unsync_secret(
         "name": body.name,
         # The Kubernetes Secret goes with the ExternalSecret that owns it, and
         # a caller about to take a workload's Secret away should be told so by
-        # the dry run rather than find out from the workload.
+        # the dry run rather than find out from the workload. It stays true
+        # while the removal is terminating: the Secret is not gone yet, and it
+        # is going.
         "removes_target_secret": cascades,
+        # Where the cluster is now, not what was asked for. ``gone`` is the
+        # ordinary outcome; ``terminating`` means a finalizer has not run, so
+        # the object and what it owns are still there for the moment;
+        # ``recreated`` means somebody made a new object under the same name
+        # after this one was removed, which is the answer a caller has to act
+        # on rather than treat as done. ``absent`` and ``unchanged`` are the
+        # two where no delete ran.
+        "state": state,
+        # Spelled out beside the state because it is the one a caller must not
+        # skip past: what is there now is not what this call removed.
+        "recreated": state == RECREATED,
         "report": report.lines(),
     }
     # False when the object was already gone, which is a success either way.

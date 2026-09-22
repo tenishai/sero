@@ -62,6 +62,9 @@ class FakeCluster:
         self.stdins: list[str | None] = []
         self._blocked = set(blocked)
         self._mutate = mutate
+        self._uids = 0
+        for obj in self.objects.values():
+            obj.setdefault("metadata", {}).setdefault("uid", self._next_uid())
 
     @staticmethod
     def key(doc: dict) -> tuple[str, ...]:
@@ -107,6 +110,15 @@ class FakeCluster:
             )
         return Result(argv, stdout=json.dumps(obj))
 
+    def _next_uid(self) -> str:
+        """A fresh identity, the way the API server issues one per object.
+
+        Names are reusable and uids are not, so an object deleted and applied
+        again under the same name gets a new one here too.
+        """
+        self._uids += 1
+        return f"00000000-0000-4000-8000-{self._uids:012d}"
+
     def _apply(self, argv: list[str], stdin: str | None) -> Result:
         dry_run = "--dry-run=server" in argv
         suffix = " (server dry run)" if dry_run else ""
@@ -120,7 +132,12 @@ class FakeCluster:
             verb = "configured" if key in self.objects else "created"
             if not dry_run:
                 stored = self._mutate(doc) if self._mutate else copy.deepcopy(doc)
-                self.objects[key] = _managed_by(stored, _manager(argv))
+                stored = _managed_by(stored, _manager(argv))
+                existing = self.objects.get(key) or {}
+                stored.setdefault("metadata", {})["uid"] = (existing.get("metadata") or {}).get(
+                    "uid"
+                ) or self._next_uid()
+                self.objects[key] = stored
             lines.append(f"{key[2]} {verb}{suffix}\n")
         return Result(
             argv,

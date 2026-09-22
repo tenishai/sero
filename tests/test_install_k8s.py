@@ -879,11 +879,17 @@ def test_a_read_back_that_fails_after_the_write_also_carries_the_report():
 # delete_documents ------------------------------------------------------------
 
 
-def managed(doc, *managers, terminating=False):
+# Two identities the API server could have issued, for the read-back tests.
+UID = "00000000-0000-4000-8000-000000000001"
+OTHER_UID = "00000000-0000-4000-8000-000000000002"
+
+
+def managed(doc, *managers, terminating=False, uid=UID):
     """A live object with realistic managedFields entries for each manager."""
     doc["metadata"]["managedFields"] = [
         managed_field_entry(m, api_version=doc.get("apiVersion", "v1")) for m in managers
     ]
+    doc["metadata"]["uid"] = uid
     if terminating:
         doc["metadata"]["deletionTimestamp"] = "2026-09-22T10:05:00Z"
     return doc
@@ -1071,35 +1077,72 @@ def test_a_dry_run_delete_still_refuses_a_foreign_object():
         k8s.delete_documents([service_account_doc()], run=cluster, dry_run=True)
 
 
+def reads_then(after):
+    """A runner that answers the pre-delete read, then ``after`` for reads."""
+    state = {"deleted": False}
+
+    def handler(argv, stdin):
+        if argv[1] == "delete":
+            state["deleted"] = True
+            return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
+        if state["deleted"]:
+            return after(argv)
+        return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "ladon")))
+
+    return FakeRunner(handler=handler)
+
+
+def gone(argv):
+    missing = fake_cluster.NOT_FOUND.format(resource="serviceaccount", name="eso-ns-a-sample")
+    return _Result(argv, returncode=1, stderr=missing + "\n")
+
+
+def test_an_object_that_is_gone_is_reported_gone():
+    report = k8s.delete_documents([service_account_doc()], run=reads_then(gone), dry_run=False)
+    assert [(r.action, r.state) for r in report.results] == [("delete", "gone")]
+
+
 def test_an_object_still_present_after_the_delete_raises():
-    # kubectl accepting a delete is not the cluster having done it. An object
-    # that reads back unchanged, with no deletion timestamp, is a failure.
-    def handler(argv, stdin):
-        if argv[1] == "get":
-            return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "ladon")))
-        return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
-
-    with pytest.raises(K8sError, match="still on the cluster"):
-        k8s.delete_documents(
-            [service_account_doc()], run=FakeRunner(handler=handler), dry_run=False
-        )
-
-
-def test_an_object_held_by_a_finalizer_counts_as_deleted():
-    # --wait=false means the read-back can still see an object the API server
-    # has accepted the delete for. A deletionTimestamp says so.
-    def handler(argv, stdin):
-        if argv[1] == "get":
-            return _Result(
-                argv,
-                stdout=json.dumps(managed(service_account_doc(), "ladon", terminating=True)),
-            )
-        return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
-
-    report = k8s.delete_documents(
-        [service_account_doc()], run=FakeRunner(handler=handler), dry_run=False
+    # kubectl accepting a delete is not the cluster having done it. The same
+    # object, with the same uid and no deletion timestamp, is a failure.
+    still_there = lambda argv: _Result(  # noqa: E731
+        argv, stdout=json.dumps(managed(service_account_doc(), "ladon"))
     )
-    assert [r.action for r in report.results] == ["delete"]
+    with pytest.raises(K8sError, match="still on the cluster"):
+        k8s.delete_documents([service_account_doc()], run=reads_then(still_there), dry_run=False)
+
+
+def test_an_object_held_by_a_finalizer_is_terminating():
+    # --wait=false means the read-back can still see an object the API server
+    # has accepted the delete for. A deletionTimestamp says so, and the caller
+    # is told the removal is still in flight rather than finished: what the
+    # object owns is still there until the finalizer runs.
+    terminating = lambda argv: _Result(  # noqa: E731
+        argv,
+        stdout=json.dumps(managed(service_account_doc(), "ladon", terminating=True)),
+    )
+    report = k8s.delete_documents(
+        [service_account_doc()], run=reads_then(terminating), dry_run=False
+    )
+    assert [(r.action, r.state) for r in report.results] == [("delete", "terminating")]
+
+
+def test_an_object_recreated_under_the_same_name_is_not_a_failure():
+    # A different uid is a different object. The one that was read and checked
+    # is gone, which is what was asked; reporting a failure over a stranger's
+    # new object would be wrong, and deleting it would be worse.
+    recreated = lambda argv: _Result(  # noqa: E731
+        argv, stdout=json.dumps(managed(service_account_doc(), "ladon", uid=OTHER_UID))
+    )
+    report = k8s.delete_documents([service_account_doc()], run=reads_then(recreated), dry_run=False)
+    assert [(r.action, r.state) for r in report.results] == [("delete", "recreated")]
+
+
+def test_a_dry_run_records_no_state():
+    cluster = FakeCluster()
+    k8s.apply_documents([service_account_doc()], run=cluster, dry_run=False)
+    report = k8s.delete_documents([service_account_doc()], run=cluster, dry_run=True)
+    assert [(r.action, r.state) for r in report.results] == [("delete", "")]
 
 
 def test_delete_raises_with_only_the_first_stderr_line_when_kubectl_fails():

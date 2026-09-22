@@ -10,6 +10,7 @@ lands proves the lane authorized on the caller's pinned namespaces rather than
 on the human it names.
 """
 
+import copy
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -22,7 +23,7 @@ from fake_assertion import ISSUER, JWKS_URL, KEY, KID, OTHER_KEY, jwks, token
 from fake_assertion import SETTINGS as ASSERTION_SETTINGS
 from fake_assertion import token as assertion_token
 from fake_assertion import verifier as assertion_verifier
-from fake_cluster import FakeCluster, eso_status_entry, managed_field_entry
+from fake_cluster import FakeCluster, Result, eso_status_entry, managed_field_entry
 from ladon.config.apps import MAX_KV_PATH_LENGTH, app_store_name
 from ladon.config.teams import ConfigError
 from ladon.datastore.models import Base, ToolCallLog
@@ -1381,6 +1382,8 @@ def test_a_dry_run_unsync_says_what_it_would_remove_and_removes_nothing(client, 
         "k8s_namespace": DEFAULT_K8S_NAMESPACE,
         "name": "sample-demo",
         "removes_target_secret": True,
+        "state": "unchanged",
+        "recreated": False,
         "report": ["ExternalSecret/sample/sample-demo: delete"],
         "would_delete": True,
     }
@@ -1393,8 +1396,69 @@ def test_an_applied_unsync_removes_the_external_secret(client, cluster):
     response = unsync(client, unsync_body(apply=True))
     assert response.status_code == 200
     assert response.json()["deleted"] is True
+    assert response.json()["state"] == "gone"
+    assert response.json()["recreated"] is False
     assert response.json()["report"] == ["ExternalSecret/sample/sample-demo: delete"]
     assert cluster.objects == {}
+
+
+class RecreatingCluster(FakeCluster):
+    """A cluster where the object comes back under the same name, new identity.
+
+    The window a uid check narrows and cannot close: kubectl has no uid
+    precondition, so something can put a new object at the name between the
+    read that checked it and the delete that removed it.
+    """
+
+    def _delete(self, argv):
+        key = self._key_for(argv[2], argv[argv.index("-n") + 1] if "-n" in argv else None)
+        doc = copy.deepcopy(self.objects[key])
+        result = super()._delete(argv)
+        doc["metadata"]["uid"] = "00000000-0000-4000-8000-999999999999"
+        self.objects[key] = doc
+        return result
+
+
+class FinalizerCluster(FakeCluster):
+    """A cluster that accepts a delete and leaves the object terminating."""
+
+    def _delete(self, argv):
+        key = self._key_for(argv[2], argv[argv.index("-n") + 1] if "-n" in argv else None)
+        self.objects[key]["metadata"]["deletionTimestamp"] = "2026-09-22T10:05:00Z"
+        return Result(argv, stdout=f"{argv[2]} deleted\n")
+
+
+def test_an_object_recreated_under_the_same_name_is_not_reported_as_finished(sessions, store):
+    cluster = RecreatingCluster(live=[live_external_secret()])
+    client = build_client(sessions, store, cluster, service_callers=callers())
+    response = unsync(client, unsync_body(apply=True))
+    assert response.status_code == 200
+    # The object this call checked and removed is gone, so the delete did what
+    # it was asked. What stands at the name now is not it, and a caller that
+    # reads "deleted" and stops has a live ExternalSecret it does not know of.
+    assert response.json()["deleted"] is True
+    assert response.json()["state"] == "recreated"
+    assert response.json()["recreated"] is True
+
+
+def test_a_removal_a_finalizer_has_not_finished_says_so(sessions, store):
+    cluster = FinalizerCluster(live=[live_external_secret()])
+    client = build_client(sessions, store, cluster, service_callers=callers())
+    response = unsync(client, unsync_body(apply=True))
+    assert response.status_code == 200
+    assert response.json()["state"] == "terminating"
+    # The Secret goes with it and has not gone yet. Both are true, and the
+    # answer says both rather than rounding one of them off.
+    assert response.json()["removes_target_secret"] is True
+    assert response.json()["deleted"] is True
+
+
+def test_the_state_is_audited(sessions, store):
+    cluster = FinalizerCluster(live=[live_external_secret()])
+    client = build_client(sessions, store, cluster, service_callers=callers())
+    unsync(client, unsync_body(apply=True))
+    (row,) = rows(sessions, "service.delete_sync")
+    assert row.redacted_args["state"] == "terminating"
 
 
 def test_unsyncing_twice_is_not_an_error(client, cluster):

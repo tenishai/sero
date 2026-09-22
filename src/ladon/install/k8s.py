@@ -62,6 +62,13 @@ BLOCKED = "blocked"
 DELETE = "delete"
 ABSENT = "absent"
 
+# Where the read-back found the object after a delete that ran. These are not
+# actions: the delete happened in all three cases, and these say what the
+# cluster holds now.
+GONE = "gone"
+TERMINATING = "terminating"
+RECREATED = "recreated"
+
 # The API server's reason code for an object that is not there. Only this counts
 # as absent: any other refusal (a denial, an unknown resource type) means Ladon
 # could not look, which is never the same as nothing being there.
@@ -194,6 +201,9 @@ class ApplyResult:
     name: str
     action: str
     reason: str = ""
+    # Where a delete left the object. Empty for everything else, and for a
+    # delete that did not run.
+    state: str = ""
 
     @property
     def target(self) -> str:
@@ -474,6 +484,16 @@ def _is_terminating(live: dict) -> bool:
     return bool((live.get("metadata") or {}).get("deletionTimestamp"))
 
 
+def _uid(live: dict) -> str:
+    """The API server's identity for one object.
+
+    Names are reusable and uids are not: an object deleted and recreated under
+    the same name is a different object, and the uid is the only field that
+    says so.
+    """
+    return str((live.get("metadata") or {}).get("uid") or "")
+
+
 def delete_documents(
     docs: Iterable[dict],
     *,
@@ -500,10 +520,13 @@ def delete_documents(
     stops the rest.
 
     An object that is not there is reported ``absent`` and no delete runs, so
-    asking twice is not an error. After a delete the object is read again: the
-    result is ``delete`` when it is gone or is terminating with a
-    ``deletionTimestamp``, and a still-present object raises, because kubectl
-    accepting a delete is not the same as the cluster having done it.
+    asking twice is not an error. After a delete the object is read again and
+    the result carries a ``state`` saying where the delete left it: ``gone``,
+    ``terminating`` when a finalizer has not finished, or ``recreated`` when
+    somebody made a new object under the same name. A still-present object
+    with the same uid and no deletion timestamp raises, because kubectl
+    accepting a delete is not the same as the cluster having done it. See
+    :func:`_state_after` for what the uid does and does not establish.
 
     Defaults to a dry run, like every other write surface. A dry run does the
     read and the ownership check, so it answers the same refusals an apply
@@ -521,19 +544,50 @@ def delete_documents(
         if dry_run:
             results.append(ApplyResult(kind, namespace, name, DELETE))
             continue
+        before = _uid(live)
         outcome = run(delete_argv(doc))
         if outcome.returncode != 0:
             message = outcome.stderr or outcome.stdout
             raise K8sError(
                 f"deleting {kind}/{name} failed ({outcome.returncode}): {_first_line(message)}"
             )
-        after = read_one(doc, missing_ok=True, run=run)
-        if after is not None and not _is_terminating(after):
-            raise K8sError(
-                f"{kind}/{name} is still on the cluster after kubectl accepted the delete"
-            )
-        results.append(ApplyResult(kind, namespace, name, DELETE))
+        results.append(
+            ApplyResult(kind, namespace, name, DELETE, state=_state_after(doc, before, run=run))
+        )
     return ApplyReport(results=tuple(results), dry_run=dry_run)
+
+
+def _state_after(doc: dict, before: str, *, run: Runner) -> str:
+    """Where the delete left the object, read back from the cluster.
+
+    Three outcomes, and the uid is what tells them apart. Gone is the ordinary
+    one. An object carrying a ``deletionTimestamp`` under the same uid was
+    accepted and is waiting on a finalizer: the delete did what it was asked
+    and the objects that depend on it, a Secret it owns included, are still
+    there for now, so the caller is told ``terminating`` rather than that
+    everything is finished. A *different* uid is a different object that
+    somebody created under the same name after the delete; the one that was
+    read and checked is gone, and reporting a failure over a stranger's new
+    object would be wrong.
+
+    The same uid with no timestamp is a delete kubectl accepted and the cluster
+    did not perform, and that raises.
+
+    This narrows a window rather than closing it. ``kubectl delete`` has no uid
+    precondition, so between the read that established what the object was and
+    the delete that removed it, the object could have been replaced, and the
+    delete would have removed the replacement. Only the API server can close
+    that, with a precondition Ladon cannot express through this command.
+    """
+    kind, _, name = _identify(doc)
+    after = read_one(doc, missing_ok=True, run=run)
+    if after is None:
+        return GONE
+    if _uid(after) != before:
+        return RECREATED
+    if _is_terminating(after):
+        return TERMINATING
+    raise K8sError(f"{kind}/{name} is still on the cluster after kubectl accepted the delete")
 
 
 def read_one(doc: dict, *, missing_ok: bool = False, run: Runner = run) -> dict | None:
