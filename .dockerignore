@@ -1,0 +1,73 @@
+# What never enters the build context.
+#
+# Two reasons to keep this tight: a smaller context is a faster build, and
+# anything that is not sent cannot end up in a layer by accident. Local secret
+# material and environment files are excluded first, before convenience.
+
+# --- Local secret material and environment (never build with it) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+*.kubeconfig
+kubeconfig
+*-credentials.json
+*_credentials.json
+credentials.json
+service-account*.json
+sa-*.json
+*.tfvars
+*.unseal
+unseal-keys*
+root-token*
+vault-token*
+bao-token*
+.bao-token
+.vault-token
+
+# --- Version control and CI ---
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Build outputs and caches (the image builds its own) ---
+ui/node_modules
+ui/dist
+node_modules
+dist
+build
+__pycache__
+*.py[cod]
+.venv
+venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+*.egg-info
+
+# --- Not part of the runtime ---
+tests
+terraform
+deploy
+docs
+.agents
+.claude
+.editorconfig
+.python-version
+*.md
+
+# --- Editors and OS ---
+.DS_Store
+.idea
+.vscode
+*.swp
+*.swo
