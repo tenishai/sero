@@ -135,13 +135,13 @@ account refused with invalid subject, re-onboarding a no-op); the audit
 clean, then a widened default policy caught as HIGH, then clean after
 repair; the backend deployed from the image in the cluster, migrating at
 boot and serving the UI's routes through a port-forward; app onboarding run
-as a job through the admin endpoint.
+as a job through the admin endpoint. The platform vault runs on cloud-KMS
+auto-unseal, migrated in place from Shamir on the running vault and proven by
+a pod delete it came back from unsealed on its own.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
 sync; reveal step-up not built (gate denies by default); no fleet / second
-cluster; no KMS auto-unseal in the dev shape (the Shamir vault sealed itself
-once during the build with no pod restart: auto-unseal is required beyond
-dev); one process, one replica (the job runner and the allow list are per
+cluster; one process, one replica (the job runner and the allow list are per
 process); the image workflow publishes only once the deployer grants its
 identity; a front door (proxy + assertion) is a deployment step.
 

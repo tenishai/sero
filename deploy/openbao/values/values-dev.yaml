@@ -25,7 +25,9 @@ server:
           path = "/openbao/data"
         }
 
-        # Dev uses Shamir (manual unseal); no cloud KMS dependency.
+        # Shamir (manual unseal) unless you layer a seal-values overlay on top;
+        # see docs/deployment-order.md step 2a. As it stands there is no cloud
+        # KMS dependency, and a person unseals after every restart.
 
         service_registration "kubernetes" {}
 

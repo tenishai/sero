@@ -223,9 +223,10 @@ of it, and bringing one up should not require reading all of it either. This is
 the short path: one cluster, one namespace, one node's worth of vault, and the
 backend running beside it.
 
-It is the D13a shape. Raft on a single node with Shamir unseal, no cloud KMS,
-no HA. KMS auto-unseal and more replicas come later by configuration; nothing
-in the consumer contract depends on either.
+It is the D13a shape. Raft on a single node, no HA. Unseal is Shamir out of the
+box and cloud KMS by layering one rendered values overlay (step 2a); more
+replicas come later by configuration. Nothing in the consumer contract depends
+on either.
 
 Everything below runs in one namespace, `ladon`, and every angle-bracketed
 value is a placeholder.
@@ -265,20 +266,138 @@ one release named `ladon-openbao` per cluster. If you need a second vault on
 the same cluster, give it a different release name and expect a second
 ClusterRoleBinding.
 
+### 2a. Auto-unseal from a cloud KMS
+
+Shamir means a person unseals the vault by hand after every restart, including
+the restart nobody was watching. Point the deployment at a cloud KMS key and the
+vault unseals itself. This is the shape the platform vault runs in; do it here
+rather than promising to do it later.
+
+Name the key in the deployment config. References only, never key material:
+
+```
+deployment:
+  kms:
+    provider: gcpckms
+    project: <project>
+    region: <kms-location>
+    key_ring: <kms-keyring>
+    crypto_key: <kms-key>
+```
+
+`awskms` and `azurekeyvault` take their own fields; see
+[config/example.yaml](../config/example.yaml) for all three shapes.
+
+Render the values overlay that carries the seal stanza, and the annotation that
+binds the vault's service account to the identity the key is granted to:
+
+```
+scripts/ladon seal-values \
+  --config <deployment-config.yaml> \
+  --base-config deploy/openbao/values/values-dev.yaml \
+  --service-account-annotation iam.gke.io/gcp-service-account=<unseal-sa>@<project>.iam.gserviceaccount.com \
+  > seal-values.yaml
+```
+
+The command prints the overlay and nothing else, so it goes straight to a file
+or through a review. `--base-config` is the values file whose
+`server.ha.raft.config` the overlay extends (a plain `.hcl` file is accepted
+too): a Helm value is replaced rather than merged, so the overlay has to carry
+the whole server config, and rendering it from the file you already install with
+is what keeps the two from drifting. A deployment whose provider is `shamir` is
+refused with exit 2, because there is no stanza to render.
+
+Install with the overlay last, so it wins:
+
+```
+helm upgrade --install ladon-openbao openbao/openbao \
+  --version <pinned-chart-version> \
+  --namespace ladon \
+  -f deploy/openbao/values/values-base.yaml \
+  -f deploy/openbao/values/values-dev.yaml \
+  -f seal-values.yaml
+```
+
+Two IAM roles for the unseal identity, both on the key and neither on the
+project:
+
+- `roles/cloudkms.cryptoKeyEncrypterDecrypter`, to wrap and unwrap the root key.
+- `roles/cloudkms.viewer`, because the `gcpckms` seal calls `cryptoKeys.get` at
+  startup to check the key exists. Encrypt and decrypt do not grant that read,
+  and without it the vault logs `error checking key existence` and never
+  unseals.
+
+[terraform/modules/unseal-key/gcp](../terraform/modules/unseal-key/gcp) applies
+the key and both grants as one unit.
+
+One network rule, already in
+[the manifests](../deploy/ladon/k8s/base/networkpolicy.yaml) and worth knowing
+about: workload identity fetches the pod's credentials from the node metadata
+server at `169.254.169.254` over plain TCP 80. Under the default deny, the rule
+next to it opens that address on port 53 for DNS only, so without the port 80
+rule the vault crash-loops at startup and says nothing about the network. It is
+on the vault's policy alone; the backend holds no cloud identity.
+
 ### 3. Initialize and unseal (manual, one-time)
 
 This is phase 3 above, unchanged and still the one irreducibly manual step.
-With Shamir there is no KMS to unseal for you, so the pod needs unsealing again
-after every restart.
 
 ```
 kubectl -n ladon exec -it ladon-openbao-0 -- bao operator init
 kubectl -n ladon exec -it ladon-openbao-0 -- bao operator unseal
 ```
 
+The second command is the Shamir path, and with Shamir the pod needs unsealing
+again after every restart. With a seal stanza from step 2a, `bao operator init`
+returns recovery keys instead of unseal keys and the vault is already unsealed:
+skip the `unseal` command, then and after every restart.
+
 Record the recovery shares and the initial root token the way you would any
 break-glass material. They do not belong in the cluster, in this repository, or
 in a terminal scrollback you keep.
+
+### Migrating a running Shamir vault to KMS
+
+A vault that is already initialized and holding data does not have to be rebuilt
+to change its seal. The migration runs in place, and this is the sequence that
+worked on the platform vault.
+
+Take a snapshot first. It is the way back.
+
+```
+kubectl -n ladon exec ladon-openbao-0 -- bao operator raft snapshot save /tmp/pre-kms.snap
+kubectl -n ladon cp ladon-openbao-0:/tmp/pre-kms.snap ./pre-kms.snap
+```
+
+1. Render the overlay and `helm upgrade` with it, exactly as in step 2a. It adds
+   the seal stanza and the service-account annotation together; an annotation
+   that did not land shows up as the same crash loop as a missing grant.
+2. Delete the pod. The chart's StatefulSet updates `OnDelete`, so a values
+   change restarts nothing by itself and the old config keeps serving until you
+   say otherwise.
+
+   ```
+   kubectl -n ladon delete pod ladon-openbao-0
+   ```
+
+3. The vault comes back in seal-migration mode. `bao status` reports
+   `migration: true` and exits 2 while it is sealed, so that exit code is the
+   expected state here and not a failure to chase.
+4. Unseal once per threshold share, each with `-migrate`:
+
+   ```
+   kubectl -n ladon exec -it ladon-openbao-0 -- bao operator unseal -migrate <shamir-share>
+   ```
+
+   The Shamir shares become the recovery keys. Keep them exactly as carefully as
+   before: they are the break-glass path when the KMS key is unavailable.
+5. Prove it unseals itself. Delete the pod once more and watch it come back
+   ready with nobody typing anything.
+
+   ```
+   kubectl -n ladon delete pod ladon-openbao-0
+   kubectl -n ladon exec ladon-openbao-0 -- bao status
+   ```
 
 ### DNS under the default deny
 
