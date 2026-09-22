@@ -90,6 +90,56 @@ jobs:
       - name: Test
         run: uv run pytest
 
+  image-smoke:
+    name: image smoke
+    runs-on: ubuntu-24.04
+    steps:
+      # actions/checkout v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      # Build only. Nothing is pushed and no registry credential is used, so
+      # this runs on a pull request from a fork like any other check.
+      - name: Build the image
+        run: docker build --platform linux/amd64 --tag ladon:ci .
+      # The other jobs prove the code; this proves the image. A Dockerfile can
+      # build and still produce something that cannot start: a missing runtime
+      # file, a path the non-root user cannot read, a dependency left in the
+      # dev group. Running it once and asking /healthz is the cheapest way to
+      # find that on the pull request instead of on a cluster.
+      #
+      # The flags match how a deployment runs it: unprivileged, read-only root
+      # filesystem, writable scratch and data mounts only. So this also proves
+      # the securityContext in deploy/ladon/standalone is one the image can
+      # actually live under.
+      - name: Run it and probe /healthz
+        run: |
+          set -euo pipefail
+          cleanup() {
+            echo "--- container logs ---"
+            docker logs ladon-ci 2>&1 || true
+            docker rm -f ladon-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach --name ladon-ci \
+            --read-only \
+            --tmpfs /tmp \
+            --tmpfs /data:uid=10001,gid=10001 \
+            --env LADON_DATABASE_URL=sqlite:////data/ladon.db \
+            --publish 18000:8000 \
+            ladon:ci
+
+          for _ in $(seq 1 30); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              http://127.0.0.1:18000/healthz || true)"
+            if [ "$code" = "200" ]; then
+              echo "healthz answered 200"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "healthz did not answer 200 within 60s (last code: ${code:-none})" >&2
+          exit 1
+
   ui:
     name: ui build
     runs-on: ubuntu-24.04
