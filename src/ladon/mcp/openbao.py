@@ -14,6 +14,9 @@ client and free of any connection concern:
   deployment maps users to namespaces (an identity-provider group lookup, a
   config file) is pluggable; this layer does not assume a provider.
 
+One deployment serves one environment, so ``env`` never picks a client: see
+:class:`OpenBaoSecrets`.
+
 The read path masks every value through ``ladon.hygiene.mask`` before returning,
 so the port's value-free contract holds at the boundary. The write path takes
 values and writes them, but returns only key names. ``reveal_value`` is the one
@@ -40,9 +43,13 @@ class OpenBaoSecrets:
     """Read and write secrets in OpenBao for the MCP tools.
 
     Implements both ``SecretReader`` and ``SecretWriter``. The KV path a tool
-    passes is used directly under the ``kv/`` mount of the user's namespace; the
-    ``env`` a tool passes selects which deployment/namespace client to use, via
-    ``client_for``.
+    passes is used directly under the ``kv/`` mount of the user's namespace.
+
+    ``env`` selects nothing here, and must not: one Ladon serves one OpenBao,
+    which holds one environment. It travels with a call so results can say which
+    environment they describe, and the surfaces above refuse a call naming an
+    environment this deployment does not serve. Treating it as a selector is
+    what would let two environments share one set of paths.
     """
 
     def __init__(

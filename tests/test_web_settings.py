@@ -14,6 +14,7 @@ from ladon.web.settings import DEFAULT_IDENTITY_HEADER, parse_web_settings
 
 CONFIG = """
 deployment:
+  environment: dev
   kv_mount: kv
   openbao:
     address: https://vault.example.com
@@ -38,6 +39,7 @@ access:
 
 def test_settings_come_from_the_config():
     settings = parse_web_settings(load_deployment_config_text(CONFIG), env={})
+    assert settings.environment == "dev"
     assert settings.identity.header == "x-forwarded-email"
     assert settings.identity.allow_dev_identity is True
     assert settings.openbao_address == "https://vault.example.com"
@@ -51,6 +53,8 @@ def test_defaults_when_the_config_says_nothing():
     settings = parse_web_settings(load_deployment_config_text(""), env={})
     assert settings.identity.header == DEFAULT_IDENTITY_HEADER
     assert settings.identity.allow_dev_identity is False
+    # Nothing declared means nothing pinned.
+    assert settings.environment is None
     assert settings.openbao_address is None
     assert settings.kv_mount == "kv"
     assert settings.ui_dist is None

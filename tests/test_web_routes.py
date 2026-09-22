@@ -110,10 +110,11 @@ def allowed(sessions):
         session.commit()
 
 
-def build_settings(*, reveal_enabled=False, ui_dist=None, access=ACCESS):
+def build_settings(*, reveal_enabled=False, ui_dist=None, access=ACCESS, environment="dev"):
     return WebSettings(
         identity=IdentitySettings(),
         access=access,
+        environment=environment,
         openbao_address="https://vault.example.com",
         kv_mount="kv",
         ui_dist=ui_dist,
@@ -188,7 +189,12 @@ def test_every_api_route_refuses_a_request_with_no_identity(client, method, path
 def test_me_reports_the_caller_their_namespaces_and_admin_standing(client):
     resp = as_member(client, "GET", "/api/me")
     assert resp.status_code == 200
-    assert resp.json() == {"email": MEMBER, "namespaces": ["team-a"], "is_admin": False}
+    assert resp.json() == {
+        "email": MEMBER,
+        "namespaces": ["team-a"],
+        "is_admin": False,
+        "environment": "dev",
+    }
 
 
 def test_me_strips_the_issuer_prefix_the_proxy_adds(client):
@@ -588,6 +594,7 @@ def test_secret_routes_say_so_when_openbao_is_not_configured(sessions):
     settings = WebSettings(
         identity=IdentitySettings(),
         access=AccessSettings(),
+        environment="dev",
         openbao_address=None,
         kv_mount="kv",
         ui_dist=None,
@@ -717,3 +724,59 @@ def test_an_unexpected_value_error_is_not_reported_as_a_refusal(sessions, store,
     assert resp.status_code == 500
     assert resp.json() == {"error": "internal error"}
     assert "sentinel" not in resp.text
+
+
+# ── One deployment, one environment ────────────────────────────────────
+
+
+def test_reading_another_environment_is_refused(client):
+    resp = as_member(client, "GET", "/api/namespaces/team-a/secrets/app?env=prod")
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "this deployment serves environment 'dev'"}
+
+
+def test_creating_in_another_environment_is_refused(client, store):
+    resp = as_member(
+        client,
+        "POST",
+        "/api/namespaces/team-a/secrets",
+        json={
+            "path": "new",
+            "env": "prod",
+            "values": {"TOKEN": "dummy-token-value"},
+            "apply": True,
+        },
+    )
+    assert resp.status_code == 400
+    assert "environment 'dev'" in resp.json()["error"]
+    assert "new" not in store
+
+
+def test_updating_in_another_environment_is_refused(client, store):
+    resp = as_member(
+        client,
+        "PATCH",
+        "/api/namespaces/team-a/secrets/app",
+        json={"env": "prod", "values": {"API_KEY": "dummy-rotated"}, "apply": True},
+    )
+    assert resp.status_code == 400
+    assert store["app"]["API_KEY"] == "dummy-api-key-value"
+
+
+def test_revealing_from_another_environment_is_refused(sessions, store, allowed):
+    client = build_client(sessions, store, reveal_enabled=True)
+    resp = as_member(
+        client, "GET", "/api/namespaces/team-a/secrets/app/reveal?env=prod&key=API_KEY"
+    )
+    assert resp.status_code == 400
+    assert "dummy-api-key-value" not in resp.text
+
+
+def test_an_undeclared_environment_pins_nothing(sessions, store, allowed):
+    # An instance that has not said which environment it serves still works;
+    # it just cannot enforce something nobody told it.
+    client = build_client(sessions, store, environment=None)
+    assert (
+        as_member(client, "GET", "/api/namespaces/team-a/secrets/app?env=prod").status_code == 200
+    )
+    assert as_member(client, "GET", "/api/me").json()["environment"] is None

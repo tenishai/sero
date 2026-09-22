@@ -60,6 +60,11 @@ def create_app(
     replaces it, which is how the tests run against SQLite and a fake vault.
     """
     env = os.environ if env is None else env
+    if not settings.environment:
+        log.warning(
+            "deployment.environment is not set: requests naming any environment "
+            "are accepted. Declare the one environment this deployment serves."
+        )
     groups = groups or ConfigGroupSource(settings.access)
     if secrets is None and settings.openbao_address:
         secrets = _live_secrets(settings, groups)

@@ -66,6 +66,10 @@ class WebSettings:
 
     identity: IdentitySettings
     access: AccessSettings
+    # The one environment this deployment serves. A request naming another is
+    # refused: one Ladon, one vault, one environment. None means the deployment
+    # has not said, in which case nothing is pinned.
+    environment: str | None
     openbao_address: str | None
     kv_mount: str
     ui_dist: Path | None
@@ -122,9 +126,11 @@ def parse_web_settings(config: DeploymentConfig, *, env: Mapping[str, str]) -> W
     ui_dist = env.get(UI_DIST_ENV) or deployment.get("ui_dist")
     address = openbao.get("address") or _first(env, ADDRESS_ENV_VARS)
 
+    environment = deployment.get("environment")
     return WebSettings(
         identity=parse_identity(config.identity),
         access=parse_access(config.access),
+        environment=str(environment) if environment else None,
         openbao_address=address or None,
         kv_mount=deployment.get("kv_mount") or DEFAULT_KV_MOUNT,
         ui_dist=Path(ui_dist) if ui_dist else None,

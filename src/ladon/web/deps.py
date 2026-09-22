@@ -63,6 +63,18 @@ def require_admin(request: Request, email: CallerEmail) -> str:
     return email
 
 
+def require_environment(request: Request, env: str) -> None:
+    """Refuse a request for an environment this deployment does not serve.
+
+    One Ladon serves one vault, which holds one environment's secrets at one set
+    of paths. A request naming another environment would otherwise read and
+    write the same paths under a label that says otherwise.
+    """
+    declared = services(request).settings.environment
+    if declared and env != declared:
+        raise ApiError(400, f"this deployment serves environment {declared!r}")
+
+
 def require_secrets(request: Request) -> Any:
     """The secret reader/writer, or 503 when no vault is configured."""
     secrets = services(request).secrets
