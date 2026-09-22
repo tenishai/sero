@@ -54,6 +54,16 @@ class WriteBroke(RuntimeError):
     """What a vault that will not take a write looks like from up here."""
 
 
+class InvalidPath(Exception):
+    """Named like hvac's: a 404, which is the only failure meaning "absent"."""
+
+
+class InvalidRequest(Exception):
+    """Named like hvac's: what a failed check-and-set write comes back as."""
+
+    status_code = 400
+
+
 class FakeKvV2:
     """The ``client.secrets.kv.v2`` surface, over a plain dict of paths."""
 
@@ -66,10 +76,13 @@ class FakeKvV2:
 
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
         if path not in self._store:
-            raise KeyError("not found")
+            raise InvalidPath(f"no secret at {path!r}")
         return {"data": {"data": dict(self._store[path]), "metadata": {"version": 3}}}
 
-    def create_or_update_secret(self, *, path, secret, mount_point):
+    def create_or_update_secret(self, *, path, secret, mount_point, cas=None):
+        # KV v2's check-and-set: cas=0 means "only if nothing is here".
+        if cas == 0 and path in self._store:
+            raise InvalidRequest("check-and-set parameter did not match the current version")
         if self._writes_fail:
             raise WriteBroke("the vault refused the write")
         self._store[path] = dict(secret)
@@ -1026,3 +1039,33 @@ def test_no_vault_configured_is_not_a_boot_failure(sessions):
     app = create_app(settings, session_factory=sessions, secrets=None)
     client = TestClient(app)
     assert client.get("/api/namespaces", headers={HEADER: MEMBER}).status_code == 503
+
+
+def test_a_lost_create_race_answers_409(sessions, store):
+    class Racing(FakeKvV2):
+        def create_or_update_secret(self, *, path, secret, mount_point, cas=None):
+            if cas == 0:
+                raise InvalidRequest("check-and-set parameter did not match the current version")
+            return super().create_or_update_secret(
+                path=path, secret=secret, mount_point=mount_point
+            )
+
+    settings = build_settings()
+    groups = ConfigGroupSource(settings.access)
+    fake = FakeClient(store)
+    fake.secrets.kv.v2 = Racing(store)
+    secrets = OpenBaoSecrets(
+        client_for=lambda ns: fake,
+        namespaces_for=groups.namespaces_for,
+    )
+    app = create_app(settings, session_factory=sessions, secrets=secrets, groups=groups)
+    with sessions() as session:
+        repo.allow(session, email=MEMBER, added_by=ADMIN)
+        session.commit()
+    resp = TestClient(app).post(
+        "/api/namespaces/team-a/secrets",
+        json={"path": "fresh", "env": "dev", "values": {"A": "1"}, "apply": True},
+        headers={HEADER: MEMBER},
+    )
+    assert resp.status_code == 409
+    assert "fresh" in resp.json()["error"]

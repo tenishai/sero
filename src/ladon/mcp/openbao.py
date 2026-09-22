@@ -34,6 +34,7 @@ from ladon.mcp.ports import (
     SecretDetail,
     SecretListing,
     SecretPath,
+    SecretPathTaken,
     WriteResult,
     require_non_empty_merge,
 )
@@ -51,6 +52,17 @@ MAX_LISTED_SECRETS = 500
 def _is_not_found(exc: BaseException) -> bool:
     """hvac raises `InvalidPath` for a 404; an empty KV listing is one."""
     return type(exc).__name__ == "InvalidPath" or getattr(exc, "status_code", None) == 404
+
+
+# What OpenBao says when a check-and-set write loses. hvac reports it as a
+# 400, which is also what a malformed request is, so the wording is what
+# separates them; matched loosely, and anything unrecognised is re-raised.
+_CAS_FAILURE = "check-and-set"
+
+
+def _is_cas_conflict(exc: BaseException) -> bool:
+    """True when a write was refused because the path was not as expected."""
+    return _CAS_FAILURE in str(exc).lower()
 
 
 class SecretNotDeleted(RuntimeError):
@@ -193,10 +205,26 @@ class OpenBaoSecrets:
     def create_secret(
         self, user_email: str, namespace: str, path: str, env: str, values: dict[str, str]
     ) -> WriteResult:
+        """Write a new path, and only if it is still new.
+
+        ``cas=0`` is KV v2's "this path has no version yet": the store refuses
+        the write if anything is there. The surfaces above read before they
+        create, so without it the window between that read and this write is
+        one in which another caller's secret gets replaced by this one, and
+        neither caller is told.
+        """
         client = self._client_for(namespace)
-        client.secrets.kv.v2.create_or_update_secret(
-            path=path, secret=dict(values), mount_point=self._mount
-        )
+        try:
+            client.secrets.kv.v2.create_or_update_secret(
+                path=path, secret=dict(values), mount_point=self._mount, cas=0
+            )
+        except Exception as exc:
+            if not _is_cas_conflict(exc):
+                raise
+            raise SecretPathTaken(
+                f"{namespace}/{path} was created while this call was running; "
+                "read it and update it rather than creating it"
+            ) from exc
         return WriteResult(
             namespace=namespace,
             path=path,

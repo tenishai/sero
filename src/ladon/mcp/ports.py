@@ -89,6 +89,16 @@ class WriteResult:
     removed_keys: list[str] = field(default_factory=list)
 
 
+class SecretPathTaken(WriteRefused):
+    """A create lost a race: the path was there by the time the write ran.
+
+    Every surface checks that a path is absent before creating one, and the
+    check and the write are two calls. A ``WriteRefused``, because it is a
+    decision and not a failure: nothing was overwritten, and the caller's next
+    move is to read what is there and update it instead.
+    """
+
+
 class SecretReader(Protocol):
     """Read-only access to namespaces and secrets for the MCP read tools.
 
@@ -156,7 +166,14 @@ class SecretWriter(Protocol):
     def create_secret(
         self, user_email: str, namespace: str, path: str, env: str, values: dict[str, str]
     ) -> WriteResult:
-        """Create a new secret path with ``values``."""
+        """Create a new secret path with ``values``.
+
+        Creates, never overwrites: the surfaces above check that the path is
+        absent first, and an implementation must make the write itself
+        conditional on that still being true, raising
+        :class:`SecretPathTaken` when it is not. Two calls arriving together
+        would otherwise have one silently replace the other's secret.
+        """
         ...
 
     def update_secret(

@@ -33,6 +33,7 @@ from ladon.datastore import engine as datastore
 from ladon.hygiene import WriteRefused
 from ladon.install.k8s import ForeignObjectError
 from ladon.mcp.openbao import OpenBaoSecrets
+from ladon.mcp.ports import SecretPathTaken
 from ladon.mcp.server import AccessDeniedError, WrongEnvironment
 from ladon.web import routes_admin, routes_secrets
 from ladon.web.assertion import AssertionVerifier
@@ -219,6 +220,12 @@ def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(WrongEnvironment)
     def _wrong_environment(request: Request, exc: WrongEnvironment) -> JSONResponse:
         return error(400, str(exc))
+
+    @app.exception_handler(SecretPathTaken)
+    def _path_taken(request: Request, exc: SecretPathTaken) -> JSONResponse:
+        # A conflict for the same reason the cluster one is: the request was
+        # well formed and permitted, and the state it assumed changed under it.
+        return error(409, str(exc))
 
     @app.exception_handler(ForeignObjectError)
     def _foreign_object(request: Request, exc: ForeignObjectError) -> JSONResponse:

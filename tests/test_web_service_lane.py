@@ -155,6 +155,12 @@ class InvalidPath(Exception):
     """What hvac raises for a 404. The only failure that means "not there"."""
 
 
+class InvalidRequest(Exception):
+    """Named like hvac's: what a failed check-and-set write comes back as."""
+
+    status_code = 400
+
+
 class Forbidden(Exception):
     """A denial from OpenBao, shaped like hvac's, with its status code."""
 
@@ -180,7 +186,10 @@ class FakeKvV2:
             }
         }
 
-    def create_or_update_secret(self, *, path, secret, mount_point):
+    def create_or_update_secret(self, *, path, secret, mount_point, cas=None):
+        # KV v2's check-and-set: cas=0 means "only if nothing is here".
+        if cas == 0 and path in self._store:
+            raise InvalidRequest("check-and-set parameter did not match the current version")
         self._store[path] = dict(secret)
         return {"data": {"version": 1}}
 

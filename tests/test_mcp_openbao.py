@@ -7,6 +7,7 @@ stores plaintext; the reader must only ever return masked values.
 import pytest
 
 from ladon.mcp.openbao import MAX_LISTED_SECRETS, OpenBaoSecrets, SecretNotDeleted
+from ladon.mcp.ports import SecretPathTaken
 
 # What the store says about when the current version was written.
 WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
@@ -14,6 +15,12 @@ WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
 
 class InvalidPath(Exception):
     """Named like hvac's: an empty KV listing is a 404 from OpenBao."""
+
+
+class InvalidRequest(Exception):
+    """Named like hvac's: what a failed check-and-set write comes back as."""
+
+    status_code = 400
 
 
 class Forbidden(Exception):
@@ -57,7 +64,10 @@ class FakeKvV2:
             }
         }
 
-    def create_or_update_secret(self, *, path, secret, mount_point):
+    def create_or_update_secret(self, *, path, secret, mount_point, cas=None):
+        # KV v2's check-and-set: cas=0 means "only if nothing is here".
+        if cas == 0 and path in self._store:
+            raise InvalidRequest("check-and-set parameter did not match the current version")
         self._store[path] = dict(secret)
         return {"data": {"version": 1}}
 
@@ -357,3 +367,33 @@ def test_a_denied_listing_is_raised_not_reported_as_empty():
     obs = OpenBaoSecrets(client_for=lambda ns: client, namespaces_for=lambda email: ["team-a"])
     with pytest.raises(Forbidden):
         obs.list_secrets("op@example.com", "team-a")
+
+
+def test_create_refuses_to_overwrite_a_path_that_appeared():
+    # The surfaces above read before they create. This is the window between
+    # that read and this write, in which somebody else's secret would
+    # otherwise be replaced by this one with nobody told.
+    store = {"app": {"THEIRS": "v"}}
+    obs = make_secrets(store)
+    with pytest.raises(SecretPathTaken, match="was created while this call was running"):
+        obs.create_secret("op@example.com", "team-a", "app", "dev", {"MINE": "v"})
+    assert store == {"app": {"THEIRS": "v"}}
+
+
+def test_create_writes_when_the_path_is_still_new():
+    store = {}
+    obs, client = make_secrets_and_client(store)
+    obs.create_secret("op@example.com", "team-a", "app", "dev", {"API_KEY": "v"})
+    assert store == {"app": {"API_KEY": "v"}}
+
+
+def test_a_write_refused_for_another_reason_is_not_reported_as_a_race():
+    class Broken(FakeKvV2):
+        def create_or_update_secret(self, *, path, secret, mount_point, cas=None):
+            raise InvalidRequest("the request body was not valid")
+
+    client = FakeClient({})
+    client.secrets.kv.v2 = Broken({})
+    obs = OpenBaoSecrets(client_for=lambda ns: client, namespaces_for=lambda email: ["team-a"])
+    with pytest.raises(InvalidRequest):
+        obs.create_secret("op@example.com", "team-a", "app", "dev", {"A": "1"})
