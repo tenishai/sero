@@ -82,6 +82,34 @@ access:
   group_members:
     platform-engineering: [lead@example.com, operator@example.com]
 
+# Machines permitted to write on a person's behalf. Commented out because the
+# machine lane is closed until a deployment opens it: with no callers named,
+# every request to /api/service/* is refused.
+#
+# Each entry pins everything that decides what one machine can do. The audience
+# MUST differ from identity.assertion.audience above (a config that repeats it
+# is refused at load), so a person's proxy assertion cannot be replayed here.
+# The subject is the workload identity the token carries in its "sub" claim: a
+# Kubernetes service account, a cloud service account's id or address. The
+# namespaces are the only ones this caller may write in.
+#
+# A caller may merge keys into one path under apps/ and converge one
+# ExternalSecret for one application. It cannot read a secret, reveal a value,
+# administer the deployment, or reach a namespace not listed here. See the
+# machine lane in docs/backend.md.
+#
+# service_callers:
+#   - name: assembly-room
+#     issuer: https://issuer.example.com
+#     jwks_url: https://issuer.example.com/keys   # https only
+#     audience: https://ladon.example.com/service
+#     subject: system:serviceaccount:ladon:assembly-room
+#     namespaces: [team-a]
+#     # Always true: the lane records the person every machine write is for.
+#     acting_email_required: true
+#     # Calls a minute, across both service routes. Defaults to 60.
+#     rate_limit_per_minute: 60
+
 # Teams. Root config creates a namespace per team and, inside it, the KV v2
 # mount above, the policy the team's access level grants (team-readwrite, or
 # team-readonly), and external-secrets-read. An empty list is valid: the

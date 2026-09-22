@@ -206,6 +206,170 @@ That ordering means a new deployment bootstraps through its admins: an admin
 comes from the config, `/api/me` is outside the allow list so they can see
 themselves, and `POST /api/admin/allow-list` is how the first person gets on.
 
+## The machine lane
+
+Some writers are not people. An assembly room that stands up an application
+provisions that application's secret on behalf of whoever asked it to, minutes
+or hours later, with nobody's browser in the loop. There are only bad ways to do
+that on the human lane: hold a person's credential past their session, or let
+the proxy header be set by something the proxy never authenticated.
+
+So machines get their own lane (D16), reachable at `/api/service/*` and nowhere
+else. It shares the human lane's token verification and shares nothing else.
+
+### Why it is separate
+
+- **A different audience.** A caller whose `audience` equals the human
+  assertion's is refused at config load, not at request time. Share the audience
+  and a person's proxy assertion is a machine credential, which is the failure
+  the separation exists to prevent.
+- **A pinned subject.** Trusting an issuer is not trusting every workload that
+  issuer will sign for. The lane accepts exactly one `sub` per caller.
+- **Pinned namespaces.** A machine that can reach one namespace must not thereby
+  reach all of them. The namespaces a caller may write are config, next to its
+  subject.
+- **A named human.** `acting_email` says who the write is for. It is recorded
+  and never authorizes: the caller supplies it, so it could say anything.
+
+The plain identity header is not read on these routes, the development hatch is
+not read, and a deployment that configures no callers refuses the lane entirely.
+The lane opens because somebody configured it, never because somebody forgot to.
+
+### Configuration
+
+```yaml
+service_callers:
+  - name: assembly-room
+    issuer: https://issuer.example.com
+    jwks_url: https://issuer.example.com/keys
+    audience: https://ladon.example.com/service
+    subject: system:serviceaccount:ladon:assembly-room
+    namespaces: [team-a]
+    acting_email_required: true
+    rate_limit_per_minute: 60
+```
+
+Every field except the last two is required, because each one is a boundary.
+`jwks_url` must be https: over plain HTTP anyone on the path chooses the signer.
+`acting_email_required` may only be `true`; a lane that wrote on nobody's behalf
+would leave a machine write with no trace of a human, so `false` is refused
+rather than honoured. Two callers may not share an issuer and audience pair,
+because that pair is what picks the caller a token belongs to.
+
+### What the token must be
+
+`Authorization: Bearer <OIDC ID token>`, verified by the same machinery the
+human assertion uses: ES256 or RS256 only (which is what refuses an `alg: none`
+downgrade) over a key published at `jwks_url`, the configured issuer and
+audience, thirty seconds of clock leeway, the same key cache and the same
+one-hour grace when the key endpoint is down. On top of that the lane requires
+`iat` and `sub`, and the subject must equal the caller's pinned one.
+
+Anything else is `401 {"error": "no service identity"}`: an absent token, a
+token for the human lane, another audience, another issuer, another subject, an
+expired token, a signature from a key that is not published.
+
+### What a caller can do
+
+Two things.
+
+**`POST /api/service/secrets`** merges keys into one application path. The
+semantics are the human lane's, because they are the same two functions: values
+merge into what is there, `remove_keys` removes, a key named on both sides is
+refused, a merge that would empty the path is refused, placeholder values are
+refused, and nothing is written without `apply`.
+
+```json
+{
+  "acting_email": "operator@example.com",
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "values": {"DB_URL": "<the value, never logged or stored by Ladon>"},
+  "remove_keys": [],
+  "apply": false
+}
+```
+
+The answer is the write summary the other surfaces return, key names only:
+
+```json
+{
+  "applied": false,
+  "action": "update",
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "env": "dev",
+  "written_keys": ["DB_URL"],
+  "removed_keys": []
+}
+```
+
+**`POST /api/service/sync`** makes sure the Kubernetes Secret exists. Writing
+the value into OpenBao is half the job; until an `ExternalSecret` reads the path,
+the workload's Secret is not there and the pod does not start. One document,
+converged, so a second call over the same application reports it already current
+and writes nothing.
+
+```json
+{
+  "namespace": "team-a",
+  "app": "sample",
+  "path": "apps/sample/demo",
+  "k8s_namespace": "ladon-sample",
+  "name": "sample-demo",
+  "target_name": "sample-credentials",
+  "refresh_interval": "1h",
+  "apply": true
+}
+```
+
+The answer carries the store it pointed at and the converge report, which is
+verbs and object names:
+
+```json
+{
+  "applied": true,
+  "namespace": "team-a",
+  "app": "sample",
+  "path": "apps/sample/demo",
+  "store": "ladon-team-a-sample-<digest>",
+  "k8s_namespace": "ladon-sample",
+  "name": "sample-demo",
+  "target_name": "sample-credentials",
+  "report": ["ExternalSecret/ladon-sample/sample-demo: create"],
+  "blocked": []
+}
+```
+
+The store name comes from the same function that named it at onboarding, so a
+typo cannot point a document at a store nothing created.
+
+### What a caller cannot do
+
+- Write outside `apps/`. This lane provisions application secrets and nothing
+  else; any other path is `400`. A path with an empty or relative segment is
+  refused too, because `..` reads as inside the prefix while naming something
+  outside it.
+- Write outside the application's own prefix, on sync: `apps/<app>` is the only
+  prefix that application's identity can read.
+- Write in a namespace its config does not pin to it. That is `403`, whatever
+  the acting email holds on the human lane.
+- Read a secret, reveal a value, touch the allow list, approve a namespace
+  request, or run an apply phase. Those are human routes and stay human.
+- Exceed its call budget. Each caller has an in-process token bucket, 60 calls a
+  minute by default, shared across both routes; past it the answer is `429`. It
+  is a guard against a stuck loop filling the vault, not a distributed quota: a
+  second replica has a second bucket.
+
+### Auditing
+
+One row per call, in the same table as everything else. A write is recorded
+against `acting_email` under `service.put_secret`, a sync under
+`service.sync_secret`, and both carry the caller's `name` and pinned subject in
+their arguments, so one query separates what a machine wrote from what a person
+wrote and says which machine. Denials are recorded too, including the ones that
+never got past the token, against the caller the token claimed to be.
+
 ## Migrations
 
 Migrations run at boot, from `LADON_DATABASE_URL`. SQLite is the development
@@ -225,11 +389,12 @@ Every failure is one JSON object with an `error` string:
 | Status | When |
 | --- | --- |
 | 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name) or the request named another environment. |
-| 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. |
-| 403 | Not on the allow list, not a member of the namespace, not an admin, or reveal is not enabled. |
+| 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. On `/api/service/*`, no token, or one that is not the configured caller's. |
+| 403 | Not on the allow list, not a member of the namespace, not an admin, reveal is not enabled, or a machine caller is not pinned to the namespace. |
 | 404 | No such namespace request, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
 | 405 | A real route, asked with the wrong method. |
 | 422 | The request body does not match the route. The message names the field and never quotes what was sent. |
+| 429 | A machine caller has spent its call budget for this minute. |
 | 500 | Something broke. The body says only `internal error`; the traceback is in the log. |
 | 503 | The datastore or OpenBao is not configured, or OpenBao cannot be reached. |
 
