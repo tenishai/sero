@@ -56,9 +56,19 @@ blocks. Pin each exactly; module bumps are their own reviewed PRs.
 
 Images Ladon builds on or ships. Pin by digest where practical, not only tag.
 
+Digests are the multi-architecture index digest, so one pin covers `amd64` and
+`arm64`. A tag moves; a digest does not, and an image that moves under you is an
+unreviewed dependency bump.
+
 | Image | Pinned tag | Digest | Verified against | Date |
 | --- | --- | --- | --- | --- |
-| _none yet_ | | | | |
+| python (backend runtime) | 3.14-slim | `sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2` | `docker buildx imagetools inspect python:3.14-slim` (hub.docker.com/_/python; 3.14.7-slim-trixie) | 2026-09-22 |
+| node (UI build stage) | 22-trixie-slim | `sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6` | `docker buildx imagetools inspect node:22-trixie-slim` (hub.docker.com/_/node) | 2026-09-22 |
+
+The node stage is a builder: it produces `ui/dist` and is not part of the
+shipped image. The runtime stage runs `apt-get update && apt-get -y upgrade`
+before anything else, because a base image is only as fresh as the day it was
+built and a stale base ships every CVE patched since.
 
 ## Language runtimes
 
@@ -107,7 +117,8 @@ container images; do not rely on whatever is on the path.
 
 | Tool | Pinned version | Verified against | Date | Notes |
 | --- | --- | --- | --- | --- |
-| Helm | 4.2.1 | github.com/helm/helm/releases/latest | 2026-06-17 | Used for the OpenBao install layer (D3a). |
+| Helm | 4.2.1 | github.com/helm/helm/releases/latest | 2026-06-17 | Used for the OpenBao install layer (D3a). Also carried in the backend image (Dockerfile), downloaded from `get.helm.sh` and verified against the published sha256 per architecture. One version across CI, the image, and an operator's laptop. |
+| kubectl | 1.37.0 | dl.k8s.io/release/stable.txt | 2026-09-22 | Used for the cluster-apply layer (D18), carried in the backend image and installed in CI. Downloaded from `dl.k8s.io` and verified against the published sha256 per architecture. Note the client/server skew policy: kubectl supports one minor either side of the cluster, so a cluster more than one minor behind needs this pin lowered to match. |
 
 ## CI: GitHub Actions
 
@@ -121,6 +132,9 @@ when the CI skeleton lands.
 | `astral-sh/setup-uv` | `fac544c07dec837d0ccb6301d7b5580bf5edae39` | v8.2.0 | github.com/astral-sh/setup-uv/releases/latest | 2026-06-17 |
 | `hashicorp/setup-terraform` | `dfe3c3f87815947d99a8997f908cb6525fc44e9e` | v4.0.1 | github.com/hashicorp/setup-terraform/releases/latest | 2026-06-23 |
 | `actions/setup-node` | `48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e` | v6.4.0 | github.com/actions/setup-node/releases/latest | 2026-07-06 |
+| `Azure/setup-kubectl` | `829323503d1be3d00ca8346e5391ca0b07a9ab0d` | v5.1.0 | github.com/Azure/setup-kubectl/releases/latest | 2026-09-22 |
+| `google-github-actions/auth` | `7c6bc770dae815cd3e89ee6cdf493a5fab2cc093` | v3.0.0 | github.com/google-github-actions/auth/releases/latest | 2026-09-22 |
+| `google-github-actions/setup-gcloud` | `aa5489c8933f4cc7a4f7d45035b3b1440c9c10db` | v3.0.1 | github.com/google-github-actions/setup-gcloud/releases/latest | 2026-09-22 |
 
 The CI runner image is pinned too: workflows use `ubuntu-24.04`, never
 `ubuntu-latest`.

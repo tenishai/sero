@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ladon
+  namespace: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ladon
+subjects:
+  - kind: ServiceAccount
+    name: ladon
+    namespace: ladon

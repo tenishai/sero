@@ -1,0 +1,43 @@
+# What Ladon may do outside its own namespace.
+#
+# Kept as narrow as the job allows. Ladon needs cluster scope for exactly three
+# reasons, and this role grants nothing beyond them:
+#
+#   1. `ClusterSecretStore` is a cluster-scoped resource, so there is no
+#      namespaced alternative. Ladon only ever touches stores it named
+#      `ladon-<group>-<app>` (D18a); RBAC cannot express that, so the guard is
+#      in the code and this role is the blast radius if that guard fails.
+#   2. `ExternalSecret` is namespaced, but the applications Ladon onboards live
+#      in their own namespaces, so the grant cannot be pinned to one.
+#   3. Detecting an operator that is already installed (D18a) means listing
+#      Deployments across namespaces and reading the CRDs to probe which API
+#      version they serve.
+#
+# There is no `delete` anywhere, and no access to Secrets outside Ladon's own
+# namespace: a cluster-wide Secret read would make this role a way to exfiltrate
+# every synced value on the cluster, which is exactly what the platform exists
+# to prevent.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+rules:
+  - apiGroups: ["external-secrets.io"]
+    resources:
+      - clustersecretstores
+      - externalsecrets
+    verbs: ["get", "list", "create", "patch", "update"]
+  # Confirm a target namespace exists before applying into it.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  # Probe which API version the ESO custom resources serve.
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get"]
+  # Detect and report an operator already running on the cluster.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
