@@ -109,6 +109,36 @@ point of view, not a list of commit subjects.
   CI job runs fmt and validate; pins Terraform, the Google provider, the KMS
   module, and `hashicorp/setup-terraform`.
 
+- Team namespaces are created from the deployment config. Root config now
+  ensures `sys/namespaces/<namespace>` for every team in `teams:` and then,
+  inside each namespace, enables the KV v2 mount the config names and writes the
+  policies the team's `access:` level grants plus `external-secrets-read`. A
+  namespace is only ever created, never deleted, and a second run reports it
+  already current like every other operation. No config change is needed: the
+  teams a deployment already lists are the namespaces it gets. The credential
+  this step runs with now needs to be able to create namespaces and to write
+  inside them, not just to configure the root.
+- Per-application ESO identities (`ladon.config.apps`, and a new
+  `app-onboarding` phase taking `--config`, `--team`, `--app` and `--cluster`,
+  run through `scripts/ladon`):
+  one application gets one path prefix (`kv/apps/<app>/...`), a policy
+  `eso-<app>-readonly` granting read on that prefix and the four token self
+  paths and nothing else, a JWT role `eso-<team>-<app>-<digest>` carrying only
+  that policy and bound by subject to a service account created for that
+  application alone, a `ServiceAccount` in Ladon's own namespace, and a
+  `ClusterSecretStore ladon-<team>-<app>-<digest>` admitted into one Kubernetes
+  namespace. A team namespace holds every application a team runs, so a single
+  team-wide identity let one compromised workload read its neighbours' secrets.
+  The names carry a short digest of the team and application pair because both
+  parts may contain hyphens, which makes joining them with one ambiguous. The
+  deployment config is required: the team's namespace and the KV mount are facts
+  about the platform, and guessing either renders an identity that grants access
+  to a path nothing uses. `--k8s-namespace`, `--sa-namespace` and `--audience`
+  default sensibly; the plan prints the OpenBao operations and then the cluster
+  documents as YAML. Applying the documents to a cluster is a later step; the
+  command prints them and says so, and marks them as not to be applied when the
+  OpenBao half did not land.
+
 ### Changed
 
 - Apply model refined into three separated, agent-driven layers, each with its
@@ -122,13 +152,14 @@ point of view, not a list of commit subjects.
   triggered for the hub cluster at bring-up and per target cluster from the
   UI/MCP, rather than a static deploy step. Target clusters are registered over
   time, so ESO is installed on demand once networking and auth are in place.
-- `ladon apply` converges instead of writing blind. Each operation is diffed
-  against the live object and reported as create, update (naming the fields that
-  differ), already current, or blocked; only the first two are written, so
-  running it twice is safe. The dry-run now connects read-only to produce that
-  diff, so it describes what would really change; `ladon plan` remains the
-  offline render. Every write is read back and verified, so a change OpenBao
-  accepts but does not hold fails loudly instead of appearing to succeed.
+- The `apply` command converges instead of writing blind. Each operation is
+  diffed against the live object and reported as create, update (naming the
+  fields that differ), already current, or blocked; only the first two are
+  written, so running it twice is safe. The dry-run now connects read-only to
+  produce that diff, so it describes what would really change; the `plan`
+  command remains the offline render. Every write is read back and verified, so
+  a change OpenBao accepts but does not hold fails loudly instead of appearing
+  to succeed.
 - A difference Ladon will not converge is reported as a blocked operation rather
   than an error that hides the rest of the plan. The whole plan is diffed before
   anything is written, so the report is always complete, and if any operation is
@@ -185,6 +216,15 @@ point of view, not a list of commit subjects.
   actually stores (`v1` or `v1beta1`) rather than at a version assumed from the
   chart. This is the API mismatch deployment-order.md warns about, now
   answerable at runtime. An absent CRD is an error, not an older version.
+- Every apply operation carries the OpenBao namespace it runs in, and the
+  executor sets the namespace header for that operation's read, write and
+  read-back before restoring it. One connection therefore serves a whole plan
+  across many namespaces, and an operation is always diffed against the state in
+  the namespace it would be written to: the same mount name in two namespaces is
+  two objects, not one. Team onboarding now runs inside the team's namespace for
+  this reason, and `--namespace` names the namespace the operations run in
+  rather than scoping the connection. The rendered plan shows the namespace on
+  each line, so two identical paths in two namespaces can be told apart.
 
 ### Fixed
 

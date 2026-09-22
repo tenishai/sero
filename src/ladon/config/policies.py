@@ -28,7 +28,8 @@ class Policy:
         return cls(name=name, hcl="\n\n".join(blocks) + "\n")
 
 
-def _block(path: str, capabilities: list[str]) -> str:
+def path_block(path: str, capabilities: list[str]) -> str:
+    """One HCL path grant. Shared, so every policy renderer grants in one dialect."""
     caps = ", ".join(f'"{c}"' for c in capabilities)
     return f'path "{path}" {{\n  capabilities = [{caps}]\n}}'
 
@@ -41,11 +42,11 @@ def team_readwrite(mount: str = DEFAULT_KV_MOUNT) -> Policy:
     system access; the team namespace already isolates it.
     """
     blocks = [
-        _block(f"{mount}/data/*", ["create", "read", "update", "delete", "list"]),
-        _block(f"{mount}/metadata/*", ["read", "list", "delete"]),
-        _block(f"{mount}/delete/*", ["update"]),
-        _block(f"{mount}/undelete/*", ["update"]),
-        _block(f"{mount}/destroy/*", ["update"]),
+        path_block(f"{mount}/data/*", ["create", "read", "update", "delete", "list"]),
+        path_block(f"{mount}/metadata/*", ["read", "list", "delete"]),
+        path_block(f"{mount}/delete/*", ["update"]),
+        path_block(f"{mount}/undelete/*", ["update"]),
+        path_block(f"{mount}/destroy/*", ["update"]),
     ]
     return Policy.from_blocks("team-readwrite", blocks)
 
@@ -53,8 +54,8 @@ def team_readwrite(mount: str = DEFAULT_KV_MOUNT) -> Policy:
 def team_readonly(mount: str = DEFAULT_KV_MOUNT) -> Policy:
     """Read and list only, on a team's KV v2 mount."""
     blocks = [
-        _block(f"{mount}/data/*", ["read", "list"]),
-        _block(f"{mount}/metadata/*", ["read", "list"]),
+        path_block(f"{mount}/data/*", ["read", "list"]),
+        path_block(f"{mount}/metadata/*", ["read", "list"]),
     ]
     return Policy.from_blocks("team-readonly", blocks)
 
@@ -66,8 +67,8 @@ def external_secrets_read(mount: str = DEFAULT_KV_MOUNT) -> Policy:
     grants no write and no system access.
     """
     blocks = [
-        _block(f"{mount}/data/*", ["read"]),
-        _block(f"{mount}/metadata/*", ["read", "list"]),
+        path_block(f"{mount}/data/*", ["read"]),
+        path_block(f"{mount}/metadata/*", ["read", "list"]),
     ]
     return Policy.from_blocks("external-secrets-read", blocks)
 
@@ -82,8 +83,8 @@ def external_secrets_root(mount: str = DEFAULT_KV_MOUNT) -> Policy:
     it only when cloud secret-manager sync is turned on.
     """
     blocks = [
-        _block(f"+/{mount}/data/*", ["read"]),
-        _block(f"+/{mount}/metadata/*", ["read", "list"]),
+        path_block(f"+/{mount}/data/*", ["read"]),
+        path_block(f"+/{mount}/metadata/*", ["read", "list"]),
     ]
     return Policy.from_blocks("external-secrets-root", blocks)
 

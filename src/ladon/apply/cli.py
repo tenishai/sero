@@ -3,8 +3,10 @@
 This is the thin seam that makes the render -> plan -> execute -> connect layers
 runnable end to end. Two subcommands:
 
-* ``plan`` builds a plan from flags and renders it to stdout. It never connects
-  to OpenBao, so it is always safe to run.
+* ``plan`` builds a plan from flags and renders it to stdout. It makes no
+  connection, so it is always safe to run. It does read the OpenBao address for
+  app-onboarding, because the store document has to name the server it dials,
+  but it never contacts it.
 * ``apply`` builds the same plan, connects to OpenBao using the environment
   (address and token, or another credential), and diffs it against live state.
   It is a dry-run by default, per the secrets-hygiene rule that writes are
@@ -12,32 +14,56 @@ runnable end to end. Two subcommands:
   (read-only), because a diff is only useful against what is really there; use
   ``plan`` when there is nothing to connect to.
 
-Run as ``python -m ladon plan ...`` / ``python -m ladon apply ...``. Inputs are
-explicit flags per phase. A ``--config`` deployment file supplies the parts it
-already models (the KV mount, and a team's namespace via ``--team``); auth inputs
-stay explicit flags. Built on the standard library only (argparse), so the CLI
-adds no dependency.
+Run as ``scripts/ladon plan ...`` / ``scripts/ladon apply ...`` (the wrapper puts
+``src`` on the path; there is no installed console script). Inputs are explicit
+flags per phase. A ``--config`` deployment file supplies the parts it already
+models (the KV mount, the teams whose namespaces root config creates, and a
+team's namespace via ``--team``); auth inputs stay explicit flags. Built on the
+standard library only (argparse), so the CLI adds no dependency.
+
+The ``app-onboarding`` phase has two halves (D17): the OpenBao objects, which
+are a plan like any other, and the Kubernetes documents, which are printed as
+YAML. Applying the documents to a cluster is the install layer's job, not this
+one's, so ``apply`` writes the OpenBao half and prints the other.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 
-from ladon.apply.client import BaoConnection, BaoConnectionError, TokenAuth, connect
+import yaml
+
+from ladon.apply.client import (
+    ADDRESS_ENV_VARS,
+    BaoConnection,
+    BaoConnectionError,
+    TokenAuth,
+    connect,
+)
 from ladon.apply.executor import ApplyError, apply_plan
 from ladon.apply.plan import (
     DEFAULT_KV_MOUNT,
     Plan,
+    app_onboarding_plan,
     root_config_plan,
     team_onboarding_plan,
 )
 from ladon.config import derive
+from ladon.config.apps import (
+    DEFAULT_APP_AUDIENCE,
+    DEFAULT_SA_NAMESPACE,
+    AppIdentity,
+    app_cluster_documents,
+    app_identity,
+)
 from ladon.config.auth import jwt_auth, oidc_auth
 from ladon.config.loader import DeploymentConfig, load_deployment_config
 from ladon.config.policies import baseline_team_policies, external_secrets_read
 from ladon.config.teams import ConfigError
+from ladon.hygiene import has_url_userinfo
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,11 +85,6 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Actually write to OpenBao. Without this flag, apply is a dry-run.",
             )
-            p.add_argument(
-                "--namespace",
-                default=None,
-                help="OpenBao namespace to scope the client to (for team onboarding).",
-            )
 
     return parser
 
@@ -72,16 +93,24 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--phase",
         required=True,
-        choices=("root-config", "team-onboarding"),
+        choices=("root-config", "team-onboarding", "app-onboarding"),
         help="Which plan to build.",
     )
     p.add_argument(
         "--config",
         default=None,
         help=(
-            "Path to a deployment config file. Supplies the KV mount and, for "
-            "team-onboarding, the team's namespace (via --team). Auth inputs "
-            "stay explicit flags."
+            "Path to a deployment config file. Supplies the KV mount, the teams "
+            "root-config creates namespaces for, and a team's namespace (via "
+            "--team). Auth inputs stay explicit flags."
+        ),
+    )
+    p.add_argument(
+        "--namespace",
+        default=None,
+        help=(
+            "OpenBao namespace the phase's operations run in. Overrides the "
+            "namespace resolved from --team and --config."
         ),
     )
     p.add_argument(
@@ -94,7 +123,10 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--team",
-        help="team-onboarding: team name; its namespace is resolved from --config.",
+        help=(
+            "team-onboarding and app-onboarding: team name; its namespace is "
+            "resolved from --config, or defaults to the team name."
+        ),
     )
     # root-config inputs
     p.add_argument(
@@ -113,8 +145,45 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
         "--oidc-client-secret-ref",
         help="root-config: reference the apply layer resolves to the OIDC client secret.",
     )
-    # team-onboarding inputs
-    p.add_argument("--cluster", help="team-onboarding: cluster name; mount is jwt-<cluster>.")
+    # team-onboarding and app-onboarding inputs
+    p.add_argument(
+        "--cluster",
+        help="team-onboarding and app-onboarding: cluster name; the mount is jwt-<cluster>.",
+    )
+    # app-onboarding inputs
+    p.add_argument("--app", help="app-onboarding: application name (a DNS-1123 label).")
+    p.add_argument(
+        "--k8s-namespace",
+        default=None,
+        help=(
+            "app-onboarding: the one Kubernetes namespace allowed to use the "
+            "application's store. Defaults to the application name."
+        ),
+    )
+    p.add_argument(
+        "--sa-namespace",
+        default=DEFAULT_SA_NAMESPACE,
+        help=(
+            "app-onboarding: the namespace holding the per-application service "
+            f"accounts, which Ladon owns. Defaults to {DEFAULT_SA_NAMESPACE}."
+        ),
+    )
+    p.add_argument(
+        "--audience",
+        default=DEFAULT_APP_AUDIENCE,
+        help=(
+            "app-onboarding: the token audience the store requests and the role "
+            f"binds. Defaults to {DEFAULT_APP_AUDIENCE}."
+        ),
+    )
+    p.add_argument(
+        "--server",
+        default=None,
+        help=(
+            "app-onboarding: the OpenBao address the rendered store dials. "
+            f"Defaults to {' or '.join(ADDRESS_ENV_VARS)}."
+        ),
+    )
 
 
 def _load_config(args: argparse.Namespace) -> DeploymentConfig | None:
@@ -133,13 +202,20 @@ def _resolve_kv_mount(args: argparse.Namespace, config: DeploymentConfig | None)
     return DEFAULT_KV_MOUNT
 
 
-def build_plan(args: argparse.Namespace) -> Plan:
-    """Build the plan selected by ``--phase`` from the flags and optional config."""
-    config = _load_config(args)
+def build_plan(args: argparse.Namespace, config: DeploymentConfig | None = None) -> Plan:
+    """Build the plan selected by ``--phase`` from the flags and the config.
+
+    ``config`` is passed in by the run paths, which load it once and use it for
+    both halves of an onboarding; it is loaded here when a caller has none.
+    """
+    if config is None:
+        config = _load_config(args)
     if args.phase == "root-config":
         return _build_root_config_plan(args, config)
     if args.phase == "team-onboarding":
         return _build_team_onboarding_plan(args, config)
+    if args.phase == "app-onboarding":
+        return app_onboarding_plan(build_app_identity(args, config))
     raise ConfigError(f"unknown phase {args.phase!r}")  # pragma: no cover - argparse guards
 
 
@@ -174,6 +250,9 @@ def _build_root_config_plan(args: argparse.Namespace, config: DeploymentConfig |
         policies=policies,
         auth_methods=auth_methods,
         kv_mount=mount,
+        # Every team in the config gets its namespace and the baseline inside
+        # it. With no config there are no teams, and the root alone is planned.
+        teams=config.teams if config else (),
     )
 
 
@@ -186,40 +265,127 @@ def _build_team_onboarding_plan(args: argparse.Namespace, config: DeploymentConf
         cluster=args.cluster,
         oidc_discovery_url=args.oidc_discovery_url,
         kv_mount=_resolve_kv_mount(args, config),
+        namespace=resolve_namespace(args, config),
     )
 
 
-def resolve_namespace(args: argparse.Namespace) -> str | None:
-    """The namespace to scope the apply client to.
+def build_app_identity(args: argparse.Namespace, config: DeploymentConfig | None) -> AppIdentity:
+    """Resolve one application's identity from the flags and the deployment config.
 
-    An explicit ``--namespace`` wins. Otherwise, for team-onboarding with a
-    ``--team`` and a ``--config``, the team's namespace is resolved from the
-    config so it comes from the one place it is defined.
+    The config is required, as it is for team onboarding. Everything this
+    renders is keyed to the team's OpenBao namespace and the deployment's KV
+    mount, and guessing either of them writes a policy and a role that look
+    right and grant access to a path nothing uses.
+    """
+    if not args.team:
+        raise ConfigError("app-onboarding requires --team")
+    if not args.app:
+        raise ConfigError("app-onboarding requires --app")
+    if not args.cluster:
+        raise ConfigError("app-onboarding requires --cluster")
+    if config is None:
+        raise ConfigError(
+            "app-onboarding requires --config: the team's namespace and the KV "
+            "mount come from the deployment config, not from a guess"
+        )
+    return app_identity(
+        team=args.team,
+        app=args.app,
+        cluster=args.cluster,
+        namespace=resolve_namespace(args, config),
+        k8s_namespace=args.k8s_namespace,
+        sa_namespace=args.sa_namespace,
+        audience=args.audience,
+        kv_mount=_resolve_kv_mount(args, config),
+    )
+
+
+def resolve_namespace(
+    args: argparse.Namespace, config: DeploymentConfig | None = None
+) -> str | None:
+    """The OpenBao namespace this phase's operations run in.
+
+    An explicit ``--namespace`` wins. Otherwise a ``--team`` resolves to the
+    team's namespace through the config, so it comes from the one place it is
+    defined rather than from a guess that would silently configure the wrong
+    namespace.
     """
     explicit = getattr(args, "namespace", None)
     if explicit:
         return explicit
-    if args.phase == "team-onboarding" and getattr(args, "team", None):
-        config = _load_config(args)
-        if config is None:
-            raise ConfigError("--team requires --config to resolve the namespace")
-        return derive.team_namespace(config, args.team)
-    return None
+    team = getattr(args, "team", None)
+    if not team:
+        return None
+    config = config if config is not None else _load_config(args)
+    if config is None:
+        raise ConfigError("--team requires --config to resolve the namespace")
+    return derive.team_namespace(config, team)
+
+
+def _build(args: argparse.Namespace) -> tuple[Plan, list[dict]]:
+    """The plan, and the cluster documents for the phases that have them.
+
+    One place loads the config and builds the application identity, so both
+    halves of an onboarding are rendered from exactly the same values.
+    """
+    config = _load_config(args)
+    if args.phase != "app-onboarding":
+        return build_plan(args, config), []
+    identity = build_app_identity(args, config)
+    documents = app_cluster_documents(identity, server=_resolve_server(args))
+    return app_onboarding_plan(identity), documents
+
+
+def _resolve_server(args: argparse.Namespace) -> str:
+    """The OpenBao address the rendered store dials.
+
+    It is a location, not a credential, so reading it from the environment the
+    apply already uses keeps one address in one place. An address carrying
+    embedded credentials is refused rather than rendered: this value is written
+    verbatim into a document that gets printed, reviewed and applied, and the
+    error must not repeat what it found.
+    """
+    server = args.server
+    if not server:
+        server = next((os.environ[n] for n in ADDRESS_ENV_VARS if os.environ.get(n)), None)
+    if not server:
+        raise ConfigError(
+            "app-onboarding renders a store that must name the OpenBao address: "
+            f"pass --server or set {' or '.join(ADDRESS_ENV_VARS)}"
+        )
+    if has_url_userinfo(server):
+        raise ConfigError(
+            "the OpenBao address carries embedded credentials; give a plain "
+            "address, and supply the credential through the environment"
+        )
+    return server
+
+
+def _print_documents(documents: list[dict], out, *, note: str) -> None:
+    """Print the cluster documents as YAML, with what happens to them."""
+    print(f"\nCluster documents ({note}):", file=out)
+    for document in documents:
+        print("---", file=out)
+        print(yaml.safe_dump(document, sort_keys=False).rstrip(), file=out)
 
 
 def _run_plan(args: argparse.Namespace, out) -> int:
-    plan = build_plan(args)
+    plan, documents = _build(args)
     print(plan.render(), file=out)
+    if documents:
+        _print_documents(documents, out, note="rendered, not applied")
     return 0
 
 
 def _run_apply(args: argparse.Namespace, out) -> int:
-    plan = build_plan(args)
+    # Both halves are rendered before connecting: they describe one onboarding,
+    # so if the cluster half cannot be rendered nothing should be written.
+    plan, documents = _build(args)
 
     # Both modes connect: a dry-run reads live state so the diff is against what
     # is really there. Only --apply writes. Use `plan` for an offline render.
-    namespace = resolve_namespace(args)
-    conn = BaoConnection.from_env(namespace=namespace)
+    # The connection is not scoped: each op carries the namespace it runs in.
+    conn = BaoConnection.from_env()
     client = connect(conn, TokenAuth.from_env())
     result = apply_plan(plan, client=client, apply=args.apply)
 
@@ -235,6 +401,19 @@ def _run_apply(args: argparse.Namespace, out) -> int:
         print("Nothing to apply: every object is already current.", file=out)
 
     _print_diffs(result, out)
+
+    if documents:
+        # The cluster half is applied by the install layer, not here. Printing
+        # it keeps one command the whole description of an onboarding. If the
+        # OpenBao half did not land, say so on the documents themselves: a store
+        # applied against a role that does not exist fails at refresh time,
+        # somewhere else, later.
+        note = (
+            "DO NOT APPLY: the OpenBao half was not applied"
+            if result.blocked
+            else "rendered, not applied: the cluster layer applies these"
+        )
+        _print_documents(documents, out, note=note)
 
     if result.blocked:
         print(

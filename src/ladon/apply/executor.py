@@ -23,6 +23,12 @@ leaves a half-applied plan behind. After each write the object is read back and
 compared again: a policy that silently fails to land is worse than one that
 fails loudly.
 
+An op that names an OpenBao namespace is performed with the client scoped to
+it: the namespace header is set for that op's read, write and read-back, then
+restored. One connection therefore serves a whole plan across many namespaces,
+and the state an op is diffed against is always the state in the namespace it
+would be written to.
+
 Each :class:`~ladon.apply.plan.WriteOp` kind maps to one handler holding
 everything kind-specific: how to read the live state, what the desired state is,
 how to create it, and how to update it. The two enable/mount operations use
@@ -40,9 +46,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from ladon.apply.plan import Plan, WriteOp
+from ladon.hygiene import strip_url_userinfo
 
 # This module does not import hvac: the caller constructs and authenticates the
 # ``hvac.Client`` and passes it in. That keeps the executor testable with a fake
@@ -166,6 +174,26 @@ def _unwrap(response) -> dict:
     return data if isinstance(data, dict) else response
 
 
+def _read_namespace(client, op: WriteOp) -> dict | None:
+    # OpenBao has no read endpoint for a single namespace, so existence comes
+    # from the parent's listing. An empty parent answers 404, which _call maps
+    # to None, and that is "no children", not an error.
+    listing = _unwrap(_call(client.sys.list_namespaces))
+    keys = listing.get("keys") or []
+    name = _mount_name(op)
+    if f"{name}/" in keys or name in keys:
+        return {"path": name}
+    return None
+
+
+def _desired_namespace(op: WriteOp) -> dict:
+    return {"path": _mount_name(op)}
+
+
+def _create_namespace(client, op: WriteOp) -> None:
+    client.sys.create_namespace(path=_mount_name(op))
+
+
 def _read_secrets_engine(client, op: WriteOp) -> dict | None:
     mounts = _unwrap(_call(client.sys.list_mounted_secrets_engines))
     mount = mounts.get(f"{_mount_name(op)}/")
@@ -275,6 +303,13 @@ class _Handler:
 # programming error in the plan layer, not user input, so it fails loudly rather
 # than being silently skipped.
 _HANDLERS: dict[str, _Handler] = {
+    # A namespace exists or it does not: there is no field to converge, and
+    # Ladon never deletes one, because everything a team holds lives inside it.
+    "ensure-namespace": _Handler(
+        read=_read_namespace,
+        desired=_desired_namespace,
+        create=_create_namespace,
+    ),
     # A mount's engine type and KV version are both fixed at creation. Tuning the
     # version on a live v1 mount triggers OpenBao's one-way KV upgrade, which
     # moves every secret under <mount>/data/*, so neither is converged here. No
@@ -347,10 +382,6 @@ _SHOWABLE_FIELDS = frozenset(
     }
 )
 
-# Credentials embedded in a URL ("https://user:pass@host/..."). A discovery URL
-# should never carry them, but one that does must not be echoed.
-_URL_USERINFO = re.compile(r"//[^/@\s]*:[^/@\s]*@")
-
 _MAX_SHOWN = 60
 
 
@@ -418,7 +449,9 @@ def _show(name: str, value) -> str | None:
         text = "[" + ", ".join(str(v) for v in value) + "]"
     else:
         text = str(value)
-    text = _URL_USERINFO.sub("//", text)
+    # A discovery URL should never carry credentials, but one that does must
+    # not be echoed into a diff.
+    text = strip_url_userinfo(text)
     if "\n" in text or len(text) > _MAX_SHOWN:
         return None
     return text
@@ -456,10 +489,50 @@ def _blocking_reason(handler: _Handler, changes: tuple[FieldChange, ...]) -> str
     return None
 
 
+def _join_namespace(base: str | None, child: str) -> str:
+    """An op's namespace as OpenBao reads it: a path below the client's own.
+
+    ``X-Vault-Namespace`` is a path, not a name. A client already scoped to a
+    parent must run the op in the child below it; joining rather than replacing
+    is what keeps a nested deployment working and stops an op from landing in a
+    sibling of its parent.
+    """
+    base = (base or "").strip("/")
+    return f"{base}/{child}" if base else child
+
+
+@contextmanager
+def _scoped(client, op: WriteOp):
+    """Run one op's requests with the client scoped to the op's namespace.
+
+    Switching the header on one connection, rather than building a client per
+    namespace, keeps a plan to a single authenticated session. The previous
+    scope is always restored, so a failure mid-op cannot leave the client
+    pointing somewhere the next op does not expect.
+    """
+    if not op.namespace:
+        yield
+        return
+    adapter = getattr(client, "adapter", None)
+    if adapter is None or not hasattr(adapter, "namespace"):
+        raise ApplyError(
+            f"cannot run {op.summary()}: this client cannot be scoped to an OpenBao namespace"
+        )
+    base = adapter.namespace
+    adapter.namespace = _join_namespace(base, op.namespace)
+    try:
+        yield
+    finally:
+        adapter.namespace = base
+
+
 def _diff_op(client, op: WriteOp) -> OpDiff:
     handler = _HANDLERS[op.kind]
     try:
-        live = handler.read(client, op)
+        with _scoped(client, op):
+            live = handler.read(client, op)
+    except ApplyError:
+        raise
     except Exception as exc:  # noqa: BLE001 - re-raised as ApplyError with op context
         raise ApplyError(f"failed to read {op.summary()}: {exc}") from exc
 
@@ -483,7 +556,8 @@ def _write_op(client, op: WriteOp, diff: OpDiff) -> None:
     handler = _HANDLERS[op.kind]
     write = handler.create if diff.action == CREATE else handler.update
     try:
-        write(client, op)
+        with _scoped(client, op):
+            write(client, op)
     except ApplyError:
         raise
     except Exception as exc:  # noqa: BLE001 - re-raised as ApplyError with op context
@@ -502,7 +576,10 @@ def _verify_op(client, op: WriteOp) -> None:
     """
     handler = _HANDLERS[op.kind]
     try:
-        live = handler.read(client, op)
+        with _scoped(client, op):
+            live = handler.read(client, op)
+    except ApplyError:
+        raise
     except Exception as exc:  # noqa: BLE001 - re-raised as ApplyError with op context
         raise ApplyError(f"failed to read back {op.summary()}: {exc}") from exc
 

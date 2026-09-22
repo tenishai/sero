@@ -1,8 +1,9 @@
-"""Tests for the phase-10 team-onboarding plan (D3b).
+"""Tests for the team-onboarding and app-onboarding plans (D3b, D17).
 
 These cover the op shape and ordering, faithfulness to the source convention
-(jwt-<cluster> mount, audience-bound open role, ESO read policy), the value-free
-render contract, and that the plan is executable by the existing executor.
+(jwt-<cluster> mount, audience-bound open role, ESO read policy), the namespace
+each op runs in, the value-free render contract, and that both plans are
+executable by the existing executor.
 """
 
 import pytest
@@ -12,8 +13,10 @@ from ladon.apply.plan import (
     DEFAULT_ESO_AUDIENCE,
     DEFAULT_ESO_POLICY,
     DEFAULT_ESO_ROLE,
+    app_onboarding_plan,
     team_onboarding_plan,
 )
+from ladon.config.apps import app_identity, eso_app_policy
 from ladon.config.policies import external_secrets_read
 from ladon.config.teams import ConfigError
 
@@ -129,3 +132,51 @@ def test_render_is_value_free():
 def test_plan_is_executable_by_the_executor():
     plan = team_onboarding_plan(cluster="team-a", oidc_discovery_url=ISSUER)
     assert {o.kind for o in plan.ops} <= supported_kinds()
+
+
+def test_every_onboarding_op_runs_inside_the_teams_namespace():
+    plan = team_onboarding_plan(cluster="cluster-a", oidc_discovery_url=ISSUER, namespace="team-a")
+    assert [o.namespace for o in plan.ops] == ["team-a"] * len(plan)
+    assert plan.render().splitlines()[0] == "[team-a] enable-auth-method sys/auth/jwt-cluster-a"
+
+
+def test_onboarding_without_a_namespace_runs_where_the_client_points():
+    plan = team_onboarding_plan(cluster="cluster-a", oidc_discovery_url=ISSUER)
+    assert [o.namespace for o in plan.ops] == [None] * len(plan)
+
+
+# App onboarding (D17) --------------------------------------------------------
+
+
+def app():
+    return app_identity(team="team-a", app="sample", cluster="cluster-a")
+
+
+def test_app_onboarding_writes_the_policy_then_the_role_that_names_it():
+    plan = app_onboarding_plan(app())
+    assert [o.summary() for o in plan.ops] == [
+        "[team-a] write-policy sys/policies/acl/eso-sample-readonly",
+        f"[team-a] write-auth-role auth/jwt-cluster-a/role/{app().name}",
+    ]
+
+
+def test_app_onboarding_ops_carry_the_rendered_policy_and_role():
+    plan = app_onboarding_plan(app())
+    assert plan.ops[0].data["policy"] == eso_app_policy(app()).hcl
+    assert plan.ops[1].data["token_policies"] == ["eso-sample-readonly"]
+    assert plan.ops[1].data["bound_subject"] == f"system:serviceaccount:ladon:{app().name}"
+
+
+def test_app_onboarding_runs_inside_the_teams_openbao_namespace():
+    ident = app_identity(team="team-a", app="sample", cluster="cluster-a", namespace="ns-a")
+    assert [o.namespace for o in app_onboarding_plan(ident).ops] == ["ns-a", "ns-a"]
+
+
+def test_app_onboarding_render_is_value_free():
+    rendered = app_onboarding_plan(app()).render()
+    assert "capabilities" not in rendered
+    assert len(rendered.splitlines()) == 2
+
+
+def test_app_onboarding_plan_is_executable_by_the_executor():
+    assert {o.kind for o in app_onboarding_plan(app()).ops} <= supported_kinds()

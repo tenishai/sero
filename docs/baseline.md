@@ -36,6 +36,23 @@ The baseline namespaces are deliberately minimal:
   [Customization model](#customization-model)) and Ladon creates a namespace per
   team, each with the standard policy set, auth roles, and a KV mount.
 
+Creating the team namespaces is part of the root config step: for every team in
+the config, Ladon ensures `sys/namespaces/<namespace>` exists and then, inside
+it, enables the KV v2 mount and writes the policies the team's configured
+access level grants (`team-readwrite`, or `team-readonly` for a team configured
+read-only) plus `external-secrets-read`, which every team needs to sync secrets
+and which grants no write. A namespace is only ever created, never deleted or
+renamed, because everything the team holds lives inside it. Each operation
+carries the namespace it runs in, so one connection configures the root and
+every team, and the same mount name in two namespaces stays two separate
+objects.
+
+Because root config now creates namespaces and writes inside them, the token it
+runs with needs more than root-level configuration rights: it must be able to
+create namespaces (`sys/namespaces/*`) and to mount engines and write policies
+within each one. On a fresh install that is the initial root token; afterwards
+it is whatever policy an operator is given for this step.
+
 That is the whole baseline: a platform root plus config-driven team namespaces.
 No operations/backend/frontend grouping, no team-specific names in the repo.
 
@@ -51,6 +68,7 @@ the source; the bindings come from config.
 | `team-readonly` | one team namespace | read/list on the namespace's KV mount |
 | `external-secrets-read` | one team namespace | read/list on the namespace's KV data and metadata, nothing else: the per-team ESO read role |
 | `external-secrets-root` | root, cross-namespace | read/list on the KV data and metadata of every team namespace, for a centralized ESO that pushes to cloud secret managers |
+| `eso-<app>-readonly` | one application's prefix in one team namespace | read on that application's KV data and metadata, plus the four token self paths, and nothing else (see [Per-application identities](#per-application-identities)) |
 
 The first two are the per-team baseline. `external-secrets-read` is the per-team
 ESO read policy; `external-secrets-root` is the platform-level cross-namespace
@@ -90,6 +108,49 @@ lands.
 KV version 2, one mount per namespace, mounted at a conventional path. This is
 the only engine in the baseline. Other engines (PKI, database, transit) are out
 of scope for the baseline and can be added per deployment later.
+
+## Per-application identities
+
+A team namespace is not a small enough boundary on its own. It holds every
+application the team runs, so one identity for the whole team can read all of
+them, and a single compromised workload reads its neighbours' secrets. The
+baseline therefore puts the boundary at the application.
+
+Each application gets one path prefix inside its team's KV mount,
+`kv/apps/<app>/<purpose>`, and four objects that all name each other:
+
+- a policy `eso-<app>-readonly` in the team's namespace, granting read on
+  everything under the application's data prefix (`kv/data/apps/<app>/*`), read
+  on the bare data path itself (`kv/data/apps/<app>`, which the glob does not
+  match), read and list on its metadata prefix (`kv/metadata/apps/<app>/*`), and
+  the four self paths a token needs to look itself up, renew itself, revoke
+  itself, and answer a capability check. Nothing else;
+- a JWT role `eso-<team>-<app>-<digest>` on the cluster's `jwt-<cluster>` mount,
+  carrying only that policy, refusing the namespace's `default` policy, bound to
+  the audience the store asks for, and bound by subject to one service account;
+- a `ServiceAccount eso-<team>-<app>-<digest>` in Ladon's own Kubernetes
+  namespace (not the secrets operator's, which is shared), with token
+  automounting off;
+- a `ClusterSecretStore ladon-<team>-<app>-<digest>` naming the team's OpenBao
+  namespace, the JWT mount, the role, and that service account, and admitted
+  into exactly one Kubernetes namespace by the API-server-set
+  `kubernetes.io/metadata.name` label, which a namespace owner cannot forge.
+
+Every name that is visible outside the team's namespace carries the team, so
+one team's application cannot claim the identity of another team's application
+of the same name. It also carries `<digest>`, the first six hex characters of a
+SHA-256 of the team and application names: both parts may contain hyphens, so
+joining them with one is ambiguous on its own (team `a-b` with application `c`
+and team `a` with application `b-c` both read as `a-b-c`), and those two live in
+different OpenBao namespaces but share one cluster. The digest disambiguates the
+pair; it is not a security boundary. It is derived from the two names and
+nothing else, so onboarding the same application again never renames it.
+
+Applications are onboarded by command, one at a time; they are not listed in the
+deployment config, because an application is a thing a team adds, not a fact
+about the platform. The command does need the deployment config, because the
+team's OpenBao namespace and the KV mount are facts about the platform and
+guessing either renders an identity that grants access to a path nothing uses.
 
 ## Customization model
 
