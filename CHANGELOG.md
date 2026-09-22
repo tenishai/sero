@@ -122,5 +122,32 @@ point of view, not a list of commit subjects.
   triggered for the hub cluster at bring-up and per target cluster from the
   UI/MCP, rather than a static deploy step. Target clusters are registered over
   time, so ESO is installed on demand once networking and auth are in place.
+- `ladon apply` converges instead of writing blind. Each operation is diffed
+  against the live object and reported as create, update (naming the fields that
+  differ), or already current; only the first two are written, so running it
+  twice is safe. The dry-run now connects read-only to produce that diff, so it
+  describes what would really change; `ladon plan` remains the offline render.
+  Every write is read back and verified, so a change OpenBao accepts but does
+  not hold fails loudly instead of appearing to succeed.
+- The conventions lint also rejects cloud region literals, and the regions in
+  the Terraform module docs, variables, and tests became placeholders or
+  made-up values.
+
+### Fixed
+
+- JWT auth mounts pin `bound_issuer` to the discovery URL. Left empty, a mount
+  accepted any token its discovery keys verified.
+- JWT roles set `token_no_default_policy`, so a scoped workload role no longer
+  also inherits the namespace's `default` policy, whose grants are outside
+  Ladon's control.
+- The per-team ESO role binds the operator's service account subject, not just
+  the audience: any workload in a cluster can mint a token for a known audience.
+- The rendered OpenBao `ClusterSecretStore` sets the OpenBao namespace it reads
+  (without it, it read the root namespace rather than the team's KV) and carries
+  conditions restricting which Kubernetes namespaces may reference it, matching
+  on the API-server-set `kubernetes.io/metadata.name` label.
+- Documentation drift: the baseline auth methods are JWT plus OIDC, with
+  Kubernetes auth deliberately excluded, in the roadmap and source review as
+  well as the baseline and design documents.
 
 [Unreleased]: https://github.com/tenishai/ladon/commits/main

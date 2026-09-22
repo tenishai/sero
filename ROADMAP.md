@@ -38,7 +38,8 @@ Stand up OpenBao on a single environment with the chosen architecture.
 
 - Pinned Helm install of OpenBao on Integrated Storage (Raft), HA
 - The generic baseline: namespaces, policies, KV engines
-- Auth methods: Kubernetes (workloads) and OIDC (operators)
+- Auth methods: JWT (workloads) and OIDC (operators); Kubernetes auth is
+  deliberately out of the baseline (D6, [docs/baseline.md](docs/baseline.md))
 - The direct apply tooling with dry-run by default
 - cert-manager for TLS, confirmed and pinned
 

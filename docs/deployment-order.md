@@ -178,7 +178,10 @@ apply layers hang from.
 
 The SDK config phases (4 and 10) are runnable from a checkout with the `ladon`
 CLI wrapper. It builds a plan and either renders it or applies it; every apply is
-a dry-run unless `--apply` is passed.
+a dry-run unless `--apply` is passed. Both apply modes connect, because the
+dry-run diffs the plan against live state and reports, per operation, whether it
+would create, update, or find it already current. Use `plan` for the offline
+render.
 
 ```
 # Render a plan, no connection made:
@@ -193,7 +196,7 @@ scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
   --oidc-discovery-url URL --namespace TEAM --apply
 ```
 
-For an apply, the OpenBao address and token come from the environment
+For either apply mode, the OpenBao address and token come from the environment
 (`BAO_ADDR`/`VAULT_ADDR` and `BAO_TOKEN`/`VAULT_TOKEN`). The token is never
 logged, and a placeholder value is refused.
 
