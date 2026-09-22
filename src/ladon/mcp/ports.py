@@ -30,6 +30,23 @@ class SecretPath:
 
 
 @dataclass(frozen=True)
+class SecretListing:
+    """The secret paths in one namespace, and whether that is all of them.
+
+    ``truncated`` is the honest half of a bounded walk. KV v2 lists one level
+    at a time, so finding every leaf means following folders, and an
+    implementation that follows them without limit hands one namespace the
+    ability to keep a request busy. The bounds are therefore real, and a
+    listing that hit one is not the whole namespace: saying so is the
+    difference between a caller seeing everything and a caller believing it
+    has.
+    """
+
+    secrets: tuple[SecretPath, ...] = ()
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
 class SecretDetail:
     """One secret path's state in one environment, with keys already masked.
 
@@ -84,8 +101,13 @@ class SecretReader(Protocol):
         """Namespaces the user may read."""
         ...
 
-    def list_secrets(self, user_email: str, namespace: str) -> list[SecretPath]:
-        """Secret paths in ``namespace`` (path and key count only, no values)."""
+    def list_secrets(self, user_email: str, namespace: str) -> SecretListing:
+        """Secret paths in ``namespace`` (path and key count only, no values).
+
+        The listing says whether it is complete. An implementation that bounds
+        its walk must report ``truncated``, since a caller cannot tell a
+        namespace with forty secrets from one with four hundred otherwise.
+        """
         ...
 
     def get_secret(self, user_email: str, namespace: str, path: str, env: str) -> SecretDetail:

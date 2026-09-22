@@ -30,7 +30,13 @@ from collections.abc import Callable
 from typing import Any
 
 from ladon.hygiene import mask
-from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult, require_non_empty_merge
+from ladon.mcp.ports import (
+    SecretDetail,
+    SecretListing,
+    SecretPath,
+    WriteResult,
+    require_non_empty_merge,
+)
 
 # KV v2 mount the tools operate on within a namespace. Matches the baseline.
 DEFAULT_KV_MOUNT = "kv"
@@ -90,7 +96,7 @@ class OpenBaoSecrets:
     def list_namespaces(self, user_email: str) -> list[str]:
         return list(self._namespaces_for(user_email))
 
-    def list_secrets(self, user_email: str, namespace: str) -> list[SecretPath]:
+    def list_secrets(self, user_email: str, namespace: str) -> SecretListing:
         """Every leaf secret in the namespace, by full path.
 
         KV v2 lists one level at a time and marks folders with a trailing
@@ -98,9 +104,15 @@ class OpenBaoSecrets:
         cannot pin the request) and reports leaves only. An empty mount is a
         404 from OpenBao; here it is an empty list, because a namespace with
         nothing in it yet is the ordinary state of a new team.
+
+        Both bounds are reported rather than applied quietly. Stopping at
+        :data:`MAX_LISTED_SECRETS` leaves secrets unlisted, and declining to
+        descend past :data:`MAX_LIST_DEPTH` leaves a whole subtree unlisted,
+        and a caller told neither would read a short list as a small namespace.
         """
         client = self._client_for(namespace)
         out: list[SecretPath] = []
+        truncated = False
         pending: list[tuple[str, int]] = [("", 0)]
         while pending and len(out) < MAX_LISTED_SECRETS:
             prefix, depth = pending.pop(0)
@@ -109,11 +121,20 @@ class OpenBaoSecrets:
                 if key.endswith("/"):
                     if depth + 1 < MAX_LIST_DEPTH:
                         pending.append((full, depth + 1))
+                    else:
+                        # A folder this walk will not open. Whatever is under
+                        # it is real and is not in this answer.
+                        truncated = True
                     continue
+                if len(out) >= MAX_LISTED_SECRETS:
+                    truncated = True
+                    break
                 detail = self._read(client, namespace, full, env="")
                 out.append(SecretPath(path=full, key_count=detail.key_count))
+        # Folders still queued when the count ran out hold secrets too.
+        truncated = truncated or bool(pending)
         out.sort(key=lambda p: p.path)
-        return out
+        return SecretListing(secrets=tuple(out), truncated=truncated)
 
     def _list_level(self, client: Any, prefix: str) -> list[str]:
         try:

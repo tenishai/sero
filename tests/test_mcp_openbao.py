@@ -6,7 +6,7 @@ stores plaintext; the reader must only ever return masked values.
 
 import pytest
 
-from ladon.mcp.openbao import OpenBaoSecrets, SecretNotDeleted
+from ladon.mcp.openbao import MAX_LISTED_SECRETS, OpenBaoSecrets, SecretNotDeleted
 
 # What the store says about when the current version was written.
 WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
@@ -106,25 +106,55 @@ def test_list_secrets_walks_folders_to_the_leaves():
         "apps/sample/cabal": {"TOKEN": "t", "URL": "x"},
     }
     obs = make_secrets(store)
-    paths = obs.list_secrets("op@example.com", "team-a")
-    by_path = {p.path: p.key_count for p in paths}
+    listing = obs.list_secrets("op@example.com", "team-a")
+    by_path = {p.path: p.key_count for p in listing.secrets}
     assert by_path == {"app": 2, "apps/sample/cabal": 2, "apps/sample/demo": 1}
-    assert not any(p.path.endswith("/") for p in paths)
+    assert not any(p.path.endswith("/") for p in listing.secrets)
+    assert listing.truncated is False
 
 
 def test_list_secrets_on_an_empty_mount_is_an_empty_list():
     # OpenBao answers an empty KV listing with a 404; a namespace with no
     # secrets yet is an ordinary state, not an internal error.
     obs = make_secrets({})
-    assert obs.list_secrets("op@example.com", "team-a") == []
+    listing = obs.list_secrets("op@example.com", "team-a")
+    assert listing.secrets == ()
+    assert listing.truncated is False
 
 
-def test_list_secrets_stops_at_the_depth_bound():
+def test_list_secrets_stops_at_the_depth_bound_and_says_so():
+    # The subtree under the folder it will not open is real and unlisted. A
+    # caller told only "shallow" would read that as the whole namespace.
     deep = "/".join(["d"] * 12)
     store = {deep: {"K": "v"}, "shallow": {"K": "v"}}
     obs = make_secrets(store)
-    paths = obs.list_secrets("op@example.com", "team-a")
-    assert [p.path for p in paths] == ["shallow"]
+    listing = obs.list_secrets("op@example.com", "team-a")
+    assert [p.path for p in listing.secrets] == ["shallow"]
+    assert listing.truncated is True
+
+
+def test_list_secrets_stops_at_the_count_bound_and_says_so():
+    store = {f"app-{n:03d}": {"K": "v"} for n in range(MAX_LISTED_SECRETS + 5)}
+    obs = make_secrets(store)
+    listing = obs.list_secrets("op@example.com", "team-a")
+    assert len(listing.secrets) == MAX_LISTED_SECRETS
+    assert listing.truncated is True
+
+
+def test_a_listing_exactly_at_the_count_bound_is_not_truncated():
+    store = {f"app-{n:03d}": {"K": "v"} for n in range(MAX_LISTED_SECRETS)}
+    obs = make_secrets(store)
+    listing = obs.list_secrets("op@example.com", "team-a")
+    assert len(listing.secrets) == MAX_LISTED_SECRETS
+    assert listing.truncated is False
+
+
+def test_a_folder_at_the_last_allowed_depth_is_still_followed():
+    store = {"a/b/c/d/e": {"K": "v"}}
+    obs = make_secrets(store)
+    listing = obs.list_secrets("op@example.com", "team-a")
+    assert [p.path for p in listing.secrets] == ["a/b/c/d/e"]
+    assert listing.truncated is False
 
 
 def test_get_secret_masks_values():

@@ -131,7 +131,7 @@ def list_secrets_impl(
     _require_namespace(reader, user_email, namespace)
     args = {"namespace": namespace}
     try:
-        paths = reader.list_secrets(user_email, namespace)
+        listing = reader.list_secrets(user_email, namespace)
     except Exception as exc:
         _audit(
             session,
@@ -145,7 +145,10 @@ def list_secrets_impl(
     _audit(session, user_email=user_email, tool_name="list_secrets", status="ok", args=args)
     return {
         "namespace": namespace,
-        "secrets": [{"path": p.path, "key_count": p.key_count} for p in paths],
+        "secrets": [{"path": p.path, "key_count": p.key_count} for p in listing.secrets],
+        # A bounded walk that stopped short says so, so a caller does not read
+        # a short list as a small namespace.
+        "truncated": listing.truncated,
     }
 
 

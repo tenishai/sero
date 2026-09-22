@@ -223,7 +223,11 @@ def test_namespaces_lists_the_callers_namespaces(client):
 def test_secrets_listing_reports_paths_and_key_counts(client):
     resp = as_member(client, "GET", "/api/namespaces/team-a/secrets")
     assert resp.status_code == 200
-    assert resp.json() == {"namespace": "team-a", "secrets": [{"path": "app", "key_count": 2}]}
+    assert resp.json() == {
+        "namespace": "team-a",
+        "secrets": [{"path": "app", "key_count": 2}],
+        "truncated": False,
+    }
 
 
 def test_secret_detail_is_masked(client):
