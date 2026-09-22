@@ -45,6 +45,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 import yaml
 
@@ -62,7 +63,7 @@ from ladon.apply.client import (
     TokenAuth,
     connect,
 )
-from ladon.apply.executor import ApplyError, apply_plan
+from ladon.apply.executor import ApplyError, ApplyResult, apply_plan
 from ladon.apply.plan import (
     DEFAULT_KV_MOUNT,
     Plan,
@@ -88,7 +89,7 @@ from ladon.config.policies import baseline_team_policies, external_secrets_read
 from ladon.config.teams import ConfigError
 from ladon.hygiene import has_url_userinfo
 from ladon.install.eso import DEFAULT_NAMESPACE as ESO_NAMESPACE
-from ladon.install.eso import ESORelease, install_eso
+from ladon.install.eso import ESOInstallResult, ESORelease, install_eso
 from ladon.install.helm import HelmError
 from ladon.install.k8s import CREATE as CLUSTER_CREATE
 from ladon.install.k8s import UPDATE as CLUSTER_UPDATE
@@ -219,6 +220,16 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
             "is resolved from --config, or defaults to the team name."
         ),
     )
+    p.add_argument(
+        "--teams",
+        nargs="+",
+        default=None,
+        help=(
+            "root-config: narrow the run to these teams. Their namespaces and "
+            "the baseline inside them are applied, and nothing at the root, so "
+            "the root's auth inputs are not needed."
+        ),
+    )
     # root-config inputs
     p.add_argument(
         "--jwt-discovery-url",
@@ -345,10 +356,25 @@ def build_plan(args: argparse.Namespace, config: DeploymentConfig | None = None)
 
 
 def _build_root_config_plan(args: argparse.Namespace, config: DeploymentConfig | None) -> Plan:
+    mount = _resolve_kv_mount(args, config)
+    teams = config.teams if config else ()
+
+    only_teams = getattr(args, "teams", None)
+    if only_teams:
+        # A narrowed run is one team's namespace and the baseline inside it.
+        # Nothing at the root is planned, so the root's auth inputs are not
+        # required: this is what an approved namespace request applies.
+        return root_config_plan(
+            policies=[],
+            auth_methods=[],
+            kv_mount=mount,
+            teams=teams,
+            only_teams=only_teams,
+        )
+
     if not args.jwt_discovery_url:
         raise ConfigError("root-config requires --jwt-discovery-url")
 
-    mount = _resolve_kv_mount(args, config)
     policies = [*baseline_team_policies(mount), external_secrets_read(mount)]
 
     auth_methods = [jwt_auth(discovery_url=args.jwt_discovery_url)]
@@ -377,7 +403,7 @@ def _build_root_config_plan(args: argparse.Namespace, config: DeploymentConfig |
         kv_mount=mount,
         # Every team in the config gets its namespace and the baseline inside
         # it. With no config there are no teams, and the root alone is planned.
-        teams=config.teams if config else (),
+        teams=teams,
     )
 
 
@@ -447,7 +473,9 @@ def resolve_namespace(
     return derive.team_namespace(config, team)
 
 
-def _build(args: argparse.Namespace) -> tuple[Plan, DocumentRenderer | None]:
+def _build(
+    args: argparse.Namespace, config: DeploymentConfig | None = None
+) -> tuple[Plan, DocumentRenderer | None]:
     """The plan, and how to render the cluster documents for phases that have them.
 
     One place loads the config and builds the application identity, so both
@@ -455,8 +483,13 @@ def _build(args: argparse.Namespace) -> tuple[Plan, DocumentRenderer | None]:
     documents come back as a renderer rather than a list because they carry the
     ESO custom-resource version the target cluster stores, and that is not known
     until the cluster is probed.
+
+    ``config`` is the already-loaded deployment config, for a caller that has
+    one (the backend, which never takes a config path from a request); it is
+    loaded from ``--config`` when none is passed.
     """
-    config = _load_config(args)
+    if config is None:
+        config = _load_config(args)
     if args.phase == "sync":
         document = build_sync_document(args)
         return Plan(), lambda api_version: [_at_api_version(document, api_version)]
@@ -554,63 +587,134 @@ def _run_plan(args: argparse.Namespace, out) -> int:
     return 0
 
 
-def _run_apply(args: argparse.Namespace, out) -> int:
-    # Both halves are rendered before anything is written: they describe one
-    # operation, so if the cluster half cannot be rendered nothing is written.
-    # The operator probe is part of that (D18a): a store applied to a cluster
-    # with no operator is a document nothing reads, and by the time that showed,
-    # the OpenBao half would already be written.
-    plan, render = _build(args)
-    documents = render(_require_eso()) if render is not None else []
+@dataclass(frozen=True)
+class PhaseRun:
+    """What one apply phase did, to OpenBao and to the cluster.
+
+    ``openbao`` is None for a phase with no OpenBao half (sync). ``cluster`` is
+    None for one with no cluster half, and also when the OpenBao half was
+    blocked, because then nothing was sent to the cluster at all.
+
+    ``error`` carries the one failure that happens *after* the cluster
+    documents are written (the cluster did not store what was applied). It is
+    reported rather than raised because the report has to travel with it: an
+    operator, or a job row, that cannot see what landed has to go and look by
+    hand. Every other failure raises.
+    """
+
+    openbao: ApplyResult | None = None
+    documents: tuple[dict, ...] = ()
+    cluster: ApplyReport | None = None
+    dry_run: bool = True
+    error: str | None = None
+
+    @property
+    def blocked(self) -> bool:
+        """Whether anything in either half could not converge."""
+        if self.openbao is not None and self.openbao.blocked:
+            return True
+        return bool(self.cluster is not None and self.cluster.blocked)
+
+
+def run_phase(
+    args: argparse.Namespace,
+    *,
+    config: DeploymentConfig | None = None,
+    apply: bool = False,
+    address: str | None = None,
+) -> PhaseRun:
+    """Run one phase's apply, both halves, and report what it did.
+
+    The CLI and the backend's job runner both call this, so the ordering that
+    makes an onboarding safe exists in one place. Both halves are rendered
+    before anything is written: they describe one operation, so if the cluster
+    half cannot be rendered nothing is written. The operator probe is part of
+    that (D18a): a store applied to a cluster with no operator is a document
+    nothing reads, and by the time that showed, the OpenBao half would already
+    be written. OpenBao is converged first, and a blocked OpenBao half stops
+    the cluster half from being applied at all: a store applied against a role
+    that does not exist fails at refresh time, somewhere else, later.
+
+    Both modes connect: a dry-run reads live state so the diff is against what
+    is really there, and only ``apply`` writes. The client is built here, from
+    ``address`` (or the environment) and the token in the environment, so no
+    caller hands one in: a job runs on the deployment's own credential and
+    never on something a request carried.
+    """
+    plan, render = _build(args, config)
+    documents = tuple(render(_require_eso())) if render is not None else ()
 
     result = None
     if plan.ops:
-        # Both modes connect: a dry-run reads live state so the diff is against
-        # what is really there. Only --apply writes. Use `plan` for an offline
-        # render. The connection is not scoped: each op carries its namespace.
-        conn = BaoConnection.from_env()
-        client = connect(conn, TokenAuth.from_env())
-        result = apply_plan(plan, client=client, apply=args.apply)
-        _print_openbao_result(result, args, out)
+        # The connection is not scoped: each op carries its namespace.
+        client = connect(BaoConnection.from_env(address=address), TokenAuth.from_env())
+        result = apply_plan(plan, client=client, apply=apply)
+        if result.blocked:
+            return PhaseRun(openbao=result, documents=documents, dry_run=not apply)
 
-    if result is not None and result.blocked:
-        # Nothing was written to OpenBao, so nothing goes to the cluster either:
-        # a store applied against a role that does not exist fails at refresh
-        # time, somewhere else, later.
-        if documents:
+    if not documents:
+        return PhaseRun(openbao=result, dry_run=not apply)
+
+    try:
+        report = converge_documents(documents, dry_run=not apply)
+    except ClusterApplyError as exc:
+        return PhaseRun(
+            openbao=result,
+            documents=documents,
+            cluster=exc.report,
+            dry_run=not apply,
+            error=str(exc),
+        )
+    return PhaseRun(openbao=result, documents=documents, cluster=report, dry_run=not apply)
+
+
+def run_eso_install(namespace: str = ESO_NAMESPACE, *, apply: bool = False) -> ESOInstallResult:
+    """Install the External Secrets Operator, or reuse the one already there.
+
+    The seam the CLI and the backend's job runner share, so both surfaces reuse
+    an operator somebody else installed rather than fighting it for the CRDs.
+    """
+    return install_eso(ESORelease(namespace=namespace), apply=apply)
+
+
+def _run_apply(args: argparse.Namespace, out) -> int:
+    run = run_phase(args, apply=args.apply)
+
+    if run.openbao is not None:
+        _print_openbao_result(run.openbao, args, out)
+    if run.openbao is not None and run.openbao.blocked:
+        if run.documents:
             print("\nNothing was applied to the cluster: the OpenBao half did not land.", file=out)
         print(
-            f"\n{len(result.blocked)} operation(s) blocked. Resolve them in OpenBao, then re-run.",
+            f"\n{len(run.openbao.blocked)} operation(s) blocked. Resolve them in OpenBao, "
+            "then re-run.",
             file=out,
         )
         return 2
 
-    if documents:
-        notes = _document_notes(documents)
-        try:
-            report = converge_documents(documents, dry_run=not args.apply)
-        except ClusterApplyError as exc:
-            # The documents were written before this failed, so what landed is
-            # reported before the error line names what went wrong.
-            _print_cluster_report(exc.report, out, notes=notes)
-            raise
-        _print_cluster_report(report, out, notes=notes)
-        if report.blocked:
-            print(
-                f"\n{len(report.blocked)} cluster document(s) blocked. Resolve them on the "
-                "cluster, then re-run.",
-                file=out,
-            )
-            return 2
+    if run.cluster is not None:
+        _print_cluster_report(run.cluster, out, notes=_document_notes(run.documents))
+    if run.error:
+        # The documents were written before this failed, so what landed is
+        # reported above before this line names what went wrong.
+        print(f"error: {run.error}", file=sys.stderr)
+        return 2
+    if run.cluster is not None and run.cluster.blocked:
+        print(
+            f"\n{len(run.cluster.blocked)} cluster document(s) blocked. Resolve them on the "
+            "cluster, then re-run.",
+            file=out,
+        )
+        return 2
 
     if not args.apply:
-        print(f"\nRe-run with --apply to write to {_targets(plan, documents)}.", file=out)
+        print(f"\nRe-run with --apply to write to {_targets(run)}.", file=out)
     return 0
 
 
 def _run_install_eso(args: argparse.Namespace, out) -> int:
     """Install the External Secrets Operator, or reuse the one already there."""
-    result = install_eso(ESORelease(namespace=args.namespace), apply=args.apply)
+    result = run_eso_install(args.namespace, apply=args.apply)
     print(result.summary, file=out)
     if result.api_version:
         print(
@@ -690,9 +794,13 @@ def _require_eso() -> str:
     return eso_api_version()
 
 
-def _targets(plan: Plan, documents: list[dict]) -> str:
+def _targets(run: PhaseRun) -> str:
     """What a dry-run would have written to, named in the re-run line."""
-    named = [name for name, used in (("OpenBao", plan.ops), ("the cluster", documents)) if used]
+    named = [
+        name
+        for name, used in (("OpenBao", run.openbao is not None), ("the cluster", run.documents))
+        if used
+    ]
     return " and ".join(named)
 
 
@@ -716,7 +824,7 @@ def _print_diffs(result, out) -> None:
         print(f"  {diff.render()}", file=out)
 
 
-def _document_notes(documents: list[dict]) -> dict[tuple[str, str | None, str], str]:
+def _document_notes(documents: Sequence[dict]) -> dict[tuple[str, str | None, str], str]:
     """What a document does, for the documents whose target is not in the name.
 
     An ``ExternalSecret`` is the one that carries a secret somewhere: the report

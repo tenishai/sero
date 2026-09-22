@@ -62,3 +62,26 @@ def test_get_job_is_none_when_absent(session):
 def test_updating_an_unknown_job_raises(session):
     with pytest.raises(KeyError):
         repo.mark_job_running(session, job_id=404)
+
+
+def test_unfinished_jobs_are_failed_as_interrupted(session):
+    # Jobs are threads inside one process: a restart takes them with it, and a
+    # row left saying "running" would hold that kind against every later job.
+    queued = repo.create_job(session, kind="root-config", requested_by=ADMIN)
+    running = repo.create_job(session, kind="app-onboarding", requested_by=ADMIN)
+    repo.mark_job_running(session, job_id=running.id)
+    done = repo.create_job(session, kind="team-onboarding", requested_by=ADMIN)
+    repo.mark_job_done(session, job_id=done.id, report={"operations": []})
+
+    assert repo.fail_unfinished_jobs(session, error="interrupted by a restart") == 2
+
+    assert repo.get_job(session, queued.id).state == "failed"
+    assert repo.get_job(session, running.id).state == "failed"
+    assert repo.get_job(session, running.id).error == "interrupted by a restart"
+    assert repo.get_job(session, running.id).finished_at is not None
+    # A job that had already finished is left exactly as it was.
+    assert repo.get_job(session, done.id).state == "done"
+    assert repo.get_job(session, done.id).error is None
+    # Nothing left to sweep on the next start.
+    assert repo.fail_unfinished_jobs(session, error="interrupted by a restart") == 0
+    assert repo.active_job(session, kind="app-onboarding") is None

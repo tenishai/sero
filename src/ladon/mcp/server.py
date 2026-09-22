@@ -18,12 +18,14 @@ follow in their own slice.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from sqlalchemy.orm import Session, sessionmaker
 
+from ladon.audit import DENIED, REFUSED, UNIDENTIFIED, AuditRecorder
 from ladon.datastore import repositories as repo
 from ladon.hygiene import WriteRefused, assert_not_placeholder
 from ladon.mcp.ports import SecretReader, SecretWriter, require_non_empty_merge
@@ -48,9 +50,15 @@ Hard rules, not preferences:
 class AccessDeniedError(Exception):
     """The user is not permitted to perform the requested operation."""
 
+    # How this ends up in the audit trail: we would not let you.
+    audit_status = DENIED
+
 
 class WrongEnvironment(ValueError):
     """The call named an environment this deployment does not serve."""
+
+    # Not a denial: the caller asked for something this deployment does not do.
+    audit_status = REFUSED
 
 
 def require_environment(env: str, declared: str | None) -> None:
@@ -516,6 +524,46 @@ def request_namespace_impl(
 # ── FastMCP wiring (thin) ────────────────────────────────────────────────
 
 
+def _run_tool(
+    recorder: AuditRecorder,
+    session_factory: sessionmaker[Session],
+    *,
+    tool_name: str,
+    identify: Callable[[], str],
+    call: Callable[[Session, str], dict[str, Any]],
+    args: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one registered tool, auditing whatever goes wrong inside it.
+
+    The tool functions record the call that succeeds. This records the ones
+    that do not: a call refused before the tool function starts (the allow
+    list, the namespace gate) writes no row at all on its own, and a call that
+    fails halfway writes one into a session the exception then unwinds. The
+    recorder writes outside that session, so the row survives either way.
+
+    A call with no identity is attributed to nobody rather than dropped: the
+    one pattern worth spotting, somebody probing for a way in, is the one that
+    would otherwise leave nothing behind. ``args`` names the operation and is
+    redacted before it is stored; it never carries a value.
+    """
+    with session_factory() as session:
+        try:
+            user_email = identify()
+        except AccessDeniedError as exc:
+            recorder.record(
+                user_email=UNIDENTIFIED,
+                tool_name=tool_name,
+                status=DENIED,
+                args=args,
+                error=str(exc),
+            )
+            raise
+        with recorder.guard(tool_name, user_email, args, session=session):
+            result = call(session, user_email)
+            session.commit()
+            return result
+
+
 def build_server(
     reader: SecretReader,
     session_factory: sessionmaker[Session],
@@ -553,41 +601,59 @@ def build_server(
         except Exception as exc:  # noqa: BLE001 - normalized to a closed failure
             raise AccessDeniedError(f"unauthenticated: {exc}") from exc
 
+    # Every tool runs through this: one session, one audited failure path.
+    recorder = AuditRecorder(session_factory)
+
+    def run(tool_name: str, ctx: Context, call, args=None) -> dict[str, Any]:
+        return _run_tool(
+            recorder,
+            session_factory,
+            tool_name=tool_name,
+            identify=lambda: _user_email(ctx),
+            call=call,
+            args=args,
+        )
+
     read_only = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
 
     @server.tool(annotations=read_only)
     def list_my_namespaces(ctx: Context) -> dict[str, Any]:
         """List the namespaces you may read."""
-        with session_factory() as session:
-            result = list_my_namespaces_impl(reader, session, user_email=_user_email(ctx))
-            session.commit()
-            return result
+        return run(
+            "list_my_namespaces",
+            ctx,
+            lambda session, email: list_my_namespaces_impl(reader, session, user_email=email),
+        )
 
     @server.tool(annotations=read_only)
     def list_secrets(namespace: str, ctx: Context) -> dict[str, Any]:
         """List the secret paths in a namespace (names and key counts, no values)."""
-        with session_factory() as session:
-            result = list_secrets_impl(
-                reader, session, user_email=_user_email(ctx), namespace=namespace
-            )
-            session.commit()
-            return result
+        return run(
+            "list_secrets",
+            ctx,
+            lambda session, email: list_secrets_impl(
+                reader, session, user_email=email, namespace=namespace
+            ),
+            {"namespace": namespace},
+        )
 
     @server.tool(annotations=read_only)
     def get_secret(namespace: str, path: str, env: str, ctx: Context) -> dict[str, Any]:
         """Inspect one secret path in one environment. Returns masked key names only."""
-        with session_factory() as session:
-            result = get_secret_impl(
+        return run(
+            "get_secret",
+            ctx,
+            lambda session, email: get_secret_impl(
                 reader,
                 session,
-                user_email=_user_email(ctx),
+                user_email=email,
                 namespace=namespace,
                 path=path,
                 env=env,
                 deployment_environment=environment,
-            )
-            session.commit()
-            return result
+            ),
+            {"namespace": namespace, "path": path, "env": env},
+        )
 
     # A namespace request writes only to Ladon's own request queue, so it is
     # available whether or not a secret writer is configured.
@@ -600,29 +666,27 @@ def build_server(
         description: str | None = None,
     ) -> dict[str, Any]:
         """Request a new team namespace. Records a request for an admin to action."""
-        with session_factory() as session:
-            result = request_namespace_impl(
+        return run(
+            "request_namespace",
+            ctx,
+            lambda session, email: request_namespace_impl(
                 session,
-                user_email=_user_email(ctx),
+                user_email=email,
                 team_name=team_name,
                 environments=environments,
                 members=members or [],
                 description=description,
-            )
-            session.commit()
-            return result
+            ),
+            {"team_name": team_name, "environments": environments},
+        )
 
     if writer is not None:
-        _register_write_tools(
-            server, reader, writer, session_factory, _user_email, environment=environment
-        )
+        _register_write_tools(server, reader, writer, run, environment=environment)
 
     return server
 
 
-def _register_write_tools(
-    server, reader, writer, session_factory, _user_email, *, environment=None
-):
+def _register_write_tools(server, reader, writer, run, *, environment=None):
     """Register the secret-write tools. Split out so build_server stays readable."""
     write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
 
@@ -636,21 +700,23 @@ def _register_write_tools(
         apply: bool = False,
     ) -> dict[str, Any]:
         """Create a secret path. Dry-run unless apply=True. Never echoes values."""
-        with session_factory() as session:
-            result = create_secret_impl(
+        return run(
+            "create_secret",
+            ctx,
+            lambda session, email: create_secret_impl(
                 reader,
                 writer,
                 session,
-                user_email=_user_email(ctx),
+                user_email=email,
                 namespace=namespace,
                 path=path,
                 env=env,
                 values=values,
                 apply=apply,
                 deployment_environment=environment,
-            )
-            session.commit()
-            return result
+            ),
+            {"namespace": namespace, "path": path, "env": env},
+        )
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False)
@@ -665,12 +731,14 @@ def _register_write_tools(
         apply: bool = False,
     ) -> dict[str, Any]:
         """Merge values into a path and delete remove_keys. Dry-run unless apply=True."""
-        with session_factory() as session:
-            result = update_secret_impl(
+        return run(
+            "update_secret",
+            ctx,
+            lambda session, email: update_secret_impl(
                 reader,
                 writer,
                 session,
-                user_email=_user_email(ctx),
+                user_email=email,
                 namespace=namespace,
                 path=path,
                 env=env,
@@ -678,6 +746,6 @@ def _register_write_tools(
                 remove_keys=remove_keys,
                 apply=apply,
                 deployment_environment=environment,
-            )
-            session.commit()
-            return result
+            ),
+            {"namespace": namespace, "path": path, "env": env},
+        )

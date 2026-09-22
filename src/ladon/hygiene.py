@@ -147,12 +147,25 @@ def _looks_high_entropy(s: str) -> bool:
 
 def _redact_value(value: Any) -> Any:
     if isinstance(value, str):
-        return REDACTED if _looks_high_entropy(value) else value
+        # Credentials embedded in a URL come out of every string, whatever key
+        # it sits under: an address is a location, and one that carries a
+        # password is not made safe by the key it arrived on being benign.
+        return REDACTED if _looks_high_entropy(value) else strip_url_credentials(value)
     if isinstance(value, dict):
         return redact(value)
     if isinstance(value, list):
         return [_redact_value(v) for v in value]
     return value
+
+
+def strip_url_credentials(value: str) -> str:
+    """Replace credentials embedded in a URL with the redaction marker.
+
+    Unlike :func:`strip_url_userinfo`, which leaves a plain address behind for
+    printing, this keeps a marker where the credential was, so a stored value
+    says that something was removed rather than looking like it was never there.
+    """
+    return URL_USERINFO.sub("//" + REDACTED + "@", value)
 
 
 def redact_text(text: str) -> str:
@@ -165,7 +178,7 @@ def redact_text(text: str) -> str:
     """
     if not text:
         return text
-    cleaned = URL_USERINFO.sub("//" + REDACTED + "@", text)
+    cleaned = strip_url_credentials(text)
     return _TOKEN_WORD.sub(
         lambda m: REDACTED if _looks_high_entropy(m.group(0)) else m.group(0), cleaned
     )
@@ -176,7 +189,8 @@ def redact(args: dict[str, Any]) -> dict[str, Any]:
 
     A value under a key in ``_REDACT_KEYS`` (matched case-insensitively) is
     replaced with ``"<redacted>"``; any string value that looks high-entropy is
-    also redacted, even under a benign key. Nested dicts and lists are walked.
+    also redacted, even under a benign key, and credentials embedded in a URL
+    are taken out of every string. Nested dicts and lists are walked.
     Use before storing arguments in the audit trail or otherwise logging them, so
     a secret never reaches durable state.
     """

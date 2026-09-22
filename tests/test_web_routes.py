@@ -485,7 +485,12 @@ def test_admin_lists_and_filters_requests(client, sessions):
     assert filtered["requests"] == []
 
 
-def test_admin_approves_a_request(client, sessions):
+def test_approving_a_request_for_a_team_the_config_does_not_define_is_refused(client, sessions):
+    # Approving applies that team's namespace, and the namespace, the mount and
+    # the policies all come from the team's entry in the deployment config. With
+    # no entry there is nothing to apply, so there is nothing to approve either.
+    # The applied path is in tests/test_web_jobs.py, where a config defines the
+    # team and the vault is faked.
     created = as_member(
         client,
         "POST",
@@ -496,9 +501,9 @@ def test_admin_approves_a_request(client, sessions):
         f"/api/admin/namespace-requests/{created['request_id']}/approve",
         headers={HEADER: ADMIN},
     )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "approved"
-    assert audit_rows(sessions, "approve_namespace_request")
+    assert resp.status_code == 400
+    assert "team-c" in resp.json()["error"]
+    assert not audit_rows(sessions, "approve_namespace_request")
 
 
 def test_admin_rejects_a_request_with_a_reason(client):

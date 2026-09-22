@@ -132,6 +132,47 @@ point of view, not a list of commit subjects.
   surface too. Pins FastAPI and uvicorn.
 - Background apply runs are recorded in a `jobs` table (kind, state, requester,
   timings, and the op-by-op report), ahead of the endpoints that drive them.
+- Apply operations are endpoints that run as background jobs
+  (`POST /api/admin/apply/{root-config|team-onboarding|app-onboarding|eso-install}`,
+  admin only, documented in `docs/backend.md`). A phase takes longer than a load
+  balancer will hold a request open, so the call answers `202` with a job id and
+  `GET /api/admin/jobs/<id>` is what a caller polls: state, the elapsed time the
+  server computes, and the op-by-op report, which names the object each
+  operation touched and never a value, a policy body, or a token. The body is
+  the flags the matching CLI command takes, and is a dry-run unless it says
+  `{"apply": true}`; it cannot name a deployment config, because the config is
+  the one the process was started with. One job of a kind runs at a time and a
+  second request answers `409` with the running job's id. A job dials OpenBao on
+  the deployment's own address and token rather than on anything a request
+  carried. The ordering that makes an onboarding safe (both halves rendered
+  before anything is written, OpenBao first, no cluster half after a blocked
+  OpenBao half) is now one function the CLI and the endpoints share.
+- Review fixes on the apply jobs: a restart now ends the jobs it interrupted
+  (`failed`, `interrupted by a restart`) instead of leaving rows that claim a
+  kind forever; the finish hook runs after the job's ending is recorded and in
+  its own transaction, so a broken hook cannot roll a job back to `running`; an
+  apply body naming another phase's fields, or a `server` carrying credentials
+  in the URL, is a `400` rather than a job that fails later; a request that has
+  already been decided cannot be decided again; approval records the decision
+  before it starts the run, so the decision stands even when the run cannot
+  start; the audit row is built from a named list of inputs and never records
+  the OIDC client-secret reference; a dry-run operator install reports `would
+  install` rather than claiming it installed; and credentials embedded in a URL
+  are now stripped out of every string on its way into the audit trail, not
+  only out of error messages.
+- Approving a namespace request now applies that one team's namespace, as a
+  `root-config` run narrowed to it (its namespace, the deployment's KV mount
+  inside it, and the policies its access level grants; nothing at the root). The
+  request records the job it started, and a run that does not land leaves its
+  error on the row with the approval still standing. Approving a request for a
+  team the deployment config does not define is refused: the namespace, the
+  mount and the policies all come from that entry. The CLI takes the same
+  narrowing as `--teams`.
+- The agent surface records its denials and failures. The audit recorder moved
+  to `ladon.audit`, which neither surface owns, and every MCP tool now runs
+  through it, so a call refused before it starts (the allow list, the namespace
+  gate) and a call that fails halfway leave the same rows they leave on the HTTP
+  surface instead of nothing at all.
 
 - Team namespaces are created from the deployment config. Root config now
   ensures `sys/namespaces/<namespace>` for every team in `teams:` and then,
@@ -476,6 +517,17 @@ Proven live on a shared development cluster, against the platform vault:
 
 ### Fixed
 
+- A migrated SQLite datastore assigns its own row ids. The first migration
+  declared the generated ids as `BIGINT`, and SQLite only fills in a primary key
+  it stores as the rowid alias, which is the exactly-`INTEGER` declaration. So
+  on a database brought up by the migrations, every insert into `tool_call_log`
+  and `namespace_requests` failed on the id it was supposed to be given: the
+  audit write is one of those, so a request that reached it answered
+  `internal error` and left no row to say so. A new revision restates both
+  columns with the SQLite variant the models already carry (on PostgreSQL the
+  type and its sequence are unchanged), and the tests now insert through every
+  repository, and serve requests, against a migrated database rather than one
+  built from the models.
 - A failed or refused operation now leaves an audit row. It was written into the
   caller's session and rolled back with it, so the calls most worth
   investigating were exactly the ones that left no trace. Reads are covered as

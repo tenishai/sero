@@ -140,6 +140,10 @@ class WebSettings:
     # default, which closes the machine lane: a deployment opts in by naming
     # callers, never by forgetting to.
     service_callers: tuple[ServiceCaller, ...] = ()
+    # The deployment config this process was started with, kept whole because
+    # the apply endpoints plan from it. It is the only config they read: a
+    # request names a phase and its inputs, never a configuration.
+    deployment: DeploymentConfig = field(default_factory=DeploymentConfig)
 
 
 def parse_identity(data: object) -> IdentitySettings:
@@ -359,6 +363,7 @@ def parse_web_settings(config: DeploymentConfig, *, env: Mapping[str, str]) -> W
             config.service_callers,
             human_audience=identity.assertion.audience if identity.assertion else None,
         ),
+        deployment=config,
     )
 
 

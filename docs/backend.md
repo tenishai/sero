@@ -1,8 +1,8 @@
 # The backend
 
 One long-running process serves the API the UI calls, the built UI itself, and
-(as they land) the apply operations as background jobs. It is the `web` workload
-a deployment runs next to OpenBao.
+the apply operations, which run as background jobs. It is the `web` workload a
+deployment runs next to OpenBao.
 
 It never holds a secret value. Listings and details return masked key names;
 values live only in OpenBao. The one route that returns plaintext is `reveal`,
@@ -473,6 +473,141 @@ Those carry `via` as the caller the token claimed to be, or `unknown` when it
 matched none, and are filed under `unidentified`. A `429` is filed under the
 caller's name, which is known by then.
 
+## Apply operations as jobs
+
+An apply phase reads and writes dozens of objects across OpenBao and the
+cluster. That takes longer than a load balancer will hold a request open, so an
+apply is started, not awaited:
+
+```
+POST /api/admin/apply/root-config
+POST /api/admin/apply/team-onboarding
+POST /api/admin/apply/app-onboarding
+POST /api/admin/apply/eso-install
+```
+
+Each answers `202` with `{"job_id": 7, "kind": "app-onboarding", "state":
+"queued"}`. Admin only, like the rest of `/api/admin`.
+
+The body is the flags the matching CLI command takes, with one deliberate
+exception: there is no `config`. The deployment config is the one this process
+was started with, and a request that could name another could plan against
+teams, namespaces and mounts nobody deployed. An unknown field is refused with
+`422`, and a field belonging to another phase with `400` naming it, rather than
+either being ignored: it was sent to do something, and dropping it quietly is
+how a caller ends up believing a run was narrowed or pointed somewhere it was
+not.
+
+| Phase | Body |
+| --- | --- |
+| `root-config` | `jwt_discovery_url`, optionally `oidc_discovery_url` with `oidc_client_id` and `oidc_client_secret_ref`; or `teams: ["team-a"]` to narrow the run to those teams' namespaces and apply nothing at the root. |
+| `team-onboarding` | `team`, `cluster`, `oidc_discovery_url`. |
+| `app-onboarding` | `team`, `app`, `cluster`, optionally `k8s_namespace`, `sa_namespace`, `audience`, `server`. |
+| `eso-install` | optionally `namespace` (where to install; an operator already on the cluster is reused where it is). |
+
+Every body takes `apply`, which is `false` by default: a dry-run job whose
+report is the diff against live state. Nothing is written until a caller says
+`{"apply": true}`, the same rule the CLI follows.
+
+A body that cannot produce a plan (a missing input, a team the config does not
+define) is a `400` while the caller is still listening, rather than a job that
+fails a second later for a reason nobody is watching for. So is a `server` that
+carries credentials in the URL: an address is a location, and the refusal does
+not repeat what it found.
+
+`eso-install` reports `would install` on a dry run and `install` only when it
+installed. An operator already on the cluster is `already current`, whichever
+mode asked.
+
+### One job per kind
+
+Two applies of the same phase converge the same objects against each other's
+half-written state, so one job of a kind runs at a time. A second request while
+one is in flight answers `409` with the job that holds it:
+
+```json
+{"error": "an app-onboarding job is already running (job 7)", "job_id": 7, "kind": "app-onboarding"}
+```
+
+Another kind may start meanwhile. A job builds its own OpenBao client from this
+deployment's address and the token in the environment, so nothing a request
+carried does the writing, and it runs on its own datastore session, so the
+request it came from is free to finish.
+
+### Reading a report
+
+```
+GET /api/admin/jobs/7
+GET /api/admin/jobs?kind=app-onboarding&limit=20
+```
+
+```json
+{
+  "id": 7,
+  "kind": "app-onboarding",
+  "state": "done",
+  "requested_by": "admin@example.com",
+  "created_at": "2026-09-22T12:47:13",
+  "started_at": "2026-09-22T12:47:13.773830",
+  "finished_at": "2026-09-22T12:47:13.776860",
+  "elapsed_seconds": 0.003,
+  "report": [
+    {"surface": "openbao", "action": "create",
+     "target": "[team-a] write-policy sys/policies/acl/eso-sample-readonly"},
+    {"surface": "cluster", "action": "already current",
+     "target": "ServiceAccount/ladon/eso-team-a-sample-a84085"}
+  ],
+  "error": null
+}
+```
+
+`state` is `queued`, `running`, `done` or `failed`. `elapsed_seconds` is
+computed by the server, so a client does not have to agree with it about the
+clock.
+
+Each report line is one operation: which half it ran against (`openbao` or
+`cluster`), what it did or would do (`create`, `update`, `already current`,
+`blocked`), and the object it names. An `update` carries `changes`, the fields
+that differ, and a `blocked` line carries the `reason` an operator has to
+resolve by hand. A line never carries a value, a policy body, or a token.
+
+A job is `failed` when the work raised, and also when an operation was blocked:
+nothing was written, which is not a success. The report is kept either way,
+because what a run managed to do before it stopped is what an operator needs.
+`error` is redacted on its way into the datastore, like every other stored
+message.
+
+Two runs of the same phase converge: the second reports every operation
+`already current` and writes nothing.
+
+### Approving a namespace request
+
+`POST /api/admin/namespace-requests/<id>/approve` records the decision and
+starts the run that carries it out: a `root-config` job narrowed to that one
+team, which creates its namespace, the deployment's KV mount inside it, and the
+policies its access level grants. Nothing at the root is touched, so approving
+one team's request cannot rewrite the deployment's auth methods.
+
+The decision is recorded and committed before the run is started, so it does
+not depend on one. The request row then carries `job_id`, and a run that does
+not land, or one that could not start at all because a `root-config` job was
+already in flight, leaves its message in `error` while the request stays
+`approved`: the decision stands, and what failed is the run.
+
+A team the deployment config does not define is refused with `400` before
+anything is decided, because the namespace, the mount and the policies all come
+from that entry. A request that has already been approved or rejected is
+refused with `400` too: a request is decided once, and a second decision would
+silently replace the first in the record.
+
+Jobs are threads inside the one process, and they do not survive a restart. The
+rows do, so at startup every job still saying `queued` or `running` is ended as
+`failed` with the error `interrupted by a restart`, and the count is logged
+once. Without that, a kind would stay claimed by a thread that no longer exists
+and every later job of that kind would answer `409`. A phase that was
+interrupted is re-run: applying converges, so running it again is how it
+finishes.
+
 ## Migrations
 
 Migrations run at boot, from `LADON_DATABASE_URL`. SQLite is the development
@@ -491,12 +626,13 @@ Every failure is one JSON object with an `error` string:
 
 | Status | When |
 | --- | --- |
-| 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name) or the request named another environment. |
+| 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name), the request named another environment, an apply body could not produce a plan or named another phase's fields or an address carrying credentials, or a namespace request had already been decided. |
 | 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. On `/api/service/*`, no token, or one that is not the configured caller's. |
 | 403 | Not on the allow list, not a member of the namespace, not an admin, reveal is not enabled, or a machine caller is not pinned to the namespace. |
-| 404 | No such namespace request, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
+| 404 | No such namespace request, job, apply phase, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
 | 405 | A real route, asked with the wrong method. |
-| 422 | The request body does not match the route. The message names the field and never quotes what was sent. |
+| 409 | A job of that kind is already running. The body carries its `job_id` alongside the message. |
+| 422 | The request body does not match the route, or names a field the route does not take. The message names the field and never quotes what was sent. |
 | 429 | A machine caller has spent its call budget for this minute. |
 | 500 | Something broke. The body says only `internal error`; the traceback is in the log. |
 | 503 | The datastore or OpenBao is not configured, or OpenBao cannot be reached. |
@@ -520,6 +656,17 @@ A request that never got past identity is recorded against `unidentified`, with
 the deciding header's name and whether one arrived, never what it said.
 Arguments and error messages are both redacted before they are stored, so a
 token quoted inside a message does not reach the table.
+
+The agent surface writes the same rows for the same reasons: the recorder lives
+in `ladon.audit`, which neither surface owns, and every tool call runs through
+it. A tool call refused before it starts, or one that fails halfway, leaves a
+`denied` or `error` row there exactly as it does here.
+
+Starting an apply is audited too, as `apply_<phase>`, with the job id and the
+inputs it was given. Those are recorded field by field from a named list, so a
+field added to the body later is not audited by accident, and the reference to
+the OIDC client secret is not recorded at all: it is a way to find a secret,
+and it is not needed to know what was asked for.
 
 ## Reveal
 

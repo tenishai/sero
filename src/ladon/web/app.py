@@ -38,6 +38,7 @@ from ladon.web.deps import Services
 from ladon.web.errors import ApiError
 from ladon.web.groups import ConfigGroupSource, GroupSource
 from ladon.web.identity import IdentityReader, resolve_dev_identity
+from ladon.web.jobs import JobRunner
 from ladon.web.reveal import AllowGate, DenyGate, RevealDeniedError, RevealGate
 from ladon.web.service_lane import ServiceLane, build_service_lane
 from ladon.web.service_lane import router as service_router
@@ -83,6 +84,14 @@ def create_app(
             "the authenticating proxy. See the trust boundary in docs/backend.md."
         )
 
+    sessions = session_factory if session_factory is not None else datastore.session_factory()
+    jobs = JobRunner(sessions) if sessions is not None else None
+    if jobs is not None:
+        # This process is the only thing that was running them, so whatever the
+        # last one left behind ended when it did. Said here, at startup, before
+        # a stale row can refuse the first job of its kind.
+        jobs.recover_interrupted()
+
     app = FastAPI(title="Ladon", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = Services(
         settings=settings,
@@ -93,10 +102,9 @@ def create_app(
         ),
         groups=groups,
         reveal_gate=reveal_gate or (AllowGate() if settings.reveal_enabled else DenyGate()),
-        session_factory=(
-            session_factory if session_factory is not None else datastore.session_factory()
-        ),
+        session_factory=sessions,
         secrets=secrets,
+        jobs=jobs,
     )
     # The machine lane's own state (D16): a verifier and a call budget per
     # configured caller. With none configured the lane refuses everything,
@@ -157,7 +165,9 @@ def _register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ApiError)
     def _api_error(request: Request, exc: ApiError) -> JSONResponse:
-        return error(exc.status_code, exc.message)
+        return JSONResponse(
+            status_code=exc.status_code, content={"error": exc.message, **exc.details}
+        )
 
     @app.exception_handler(AccessDeniedError)
     def _denied(request: Request, exc: AccessDeniedError) -> JSONResponse:

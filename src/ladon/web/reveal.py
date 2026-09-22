@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from ladon.audit import DENIED
+
 # The single message a refusing deployment gives back, so the UI can recognize
 # "this deployment does not do that" rather than "you may not".
 NOT_ENABLED = "reveal is not enabled in this deployment"
@@ -22,6 +24,9 @@ NOT_ENABLED = "reveal is not enabled in this deployment"
 
 class RevealDeniedError(Exception):
     """Revealing is not permitted. The route answers 403 with this message."""
+
+    # How this ends up in the audit trail: we would not let you.
+    audit_status = DENIED
 
 
 class RevealGate(Protocol):

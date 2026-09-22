@@ -19,10 +19,11 @@ from typing import Annotated, Any
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
-from ladon.web.audit import DENIED, AuditRecorder
+from ladon.web.audit import DENIED, UNIDENTIFIED, AuditRecorder
 from ladon.web.errors import ApiError
 from ladon.web.groups import GroupSource
 from ladon.web.identity import IdentityReader, NoIdentityError
+from ladon.web.jobs import JobRunner
 from ladon.web.reveal import RevealGate
 from ladon.web.settings import WebSettings
 
@@ -39,11 +40,9 @@ class Services:
     # The OpenBaoSecrets the tool functions take, or None when this deployment
     # has no vault address yet. Typed loosely so tests can pass a stand-in.
     secrets: Any | None
-
-
-# What an unauthenticated request is attributed to. Not an address, and not
-# empty, so these rows group together and cannot collide with a real caller.
-UNIDENTIFIED = "unidentified"
+    # Runs the apply phases in the background. None when this deployment has no
+    # datastore, since a job with nowhere to record itself is not a job.
+    jobs: JobRunner | None = None
 
 
 def services(request: Request) -> Services:
@@ -107,6 +106,14 @@ def require_secrets(request: Request) -> Any:
     return secrets
 
 
+def job_runner(request: Request) -> JobRunner:
+    """The background job runner, or 503 when there is nowhere to record a job."""
+    runner = services(request).jobs
+    if runner is None:
+        raise ApiError(503, "the datastore is not configured for this deployment")
+    return runner
+
+
 def db(request: Request) -> Iterator[Session]:
     """A datastore session for the request, or 503 when none is configured.
 
@@ -126,4 +133,5 @@ AdminEmail = Annotated[str, Depends(require_admin)]
 DbSession = Annotated[Session, Depends(db)]
 Secrets = Annotated[Any, Depends(require_secrets)]
 Auditor = Annotated[AuditRecorder, Depends(audit_recorder)]
+Jobs = Annotated[JobRunner, Depends(job_runner)]
 DeclaredEnvironment = Annotated[str | None, Depends(declared_environment)]

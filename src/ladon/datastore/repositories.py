@@ -16,11 +16,13 @@ Covers the five datastore domains:
   ``revoke_user``), with rotation and replay detection;
 * the namespace-request workflow (``create_namespace_request``,
   ``mark_request_approved``, ``mark_request_rejected``, ``mark_request_submitted``,
-  ``mark_request_failed``, ``list_namespace_requests``);
+  ``mark_request_failed``, ``record_request_job``, ``record_request_error``,
+  ``list_namespace_requests``);
 * step-up reveal flows and grants (``start_reveal_flow``, ``consume_reveal_flow``,
   ``grant_reveal``, ``active_reveal_grant``, ``revoke_reveal_grant``);
 * background apply jobs (``create_job``, ``mark_job_running``, ``mark_job_done``,
-  ``mark_job_failed``, ``get_job``).
+  ``mark_job_failed``, ``get_job``, ``active_job``, ``list_jobs``,
+  ``fail_unfinished_jobs``).
 """
 
 from __future__ import annotations
@@ -368,6 +370,37 @@ def mark_request_failed(session: Session, *, request_id: int, error: str) -> Nam
     return row
 
 
+def record_request_job(session: Session, *, request_id: int, job_id: int) -> NamespaceRequest:
+    """Point an approved request at the apply job that carries it out."""
+    row = _require_request(session, request_id)
+    row.job_id = job_id
+    row.updated_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def record_request_error(
+    session: Session, *, request_id: int, error: str | None
+) -> NamespaceRequest:
+    """Record why a request's apply run did not land, leaving its status alone.
+
+    The decision and the run are separate things: an admin approved this, and
+    that stands. What failed is the run, and the row says so where the admin is
+    already looking. ``None`` clears it, which is what a run that lands does to
+    the last one's failure. Errors name the object at fault, never a value.
+    """
+    row = _require_request(session, request_id)
+    row.error = redact_text(error) if error else None
+    row.updated_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def get_namespace_request(session: Session, request_id: int) -> NamespaceRequest:
+    """One request by id. Raises ``KeyError`` when there is no such request."""
+    return _require_request(session, request_id)
+
+
 def _require_request(session: Session, request_id: int) -> NamespaceRequest:
     row = session.get(NamespaceRequest, request_id)
     if row is None:
@@ -390,6 +423,10 @@ def list_namespace_requests(
 
 
 # ── Background apply jobs ───────────────────────────────────────────────
+
+# A job that has not reached an ending yet. One job per kind runs at a time, and
+# these are the two states that count as "one is running".
+ACTIVE_JOB_STATES = ("queued", "running")
 
 
 def create_job(session: Session, *, kind: str, requested_by: str) -> Job:
@@ -419,11 +456,22 @@ def mark_job_done(session: Session, *, job_id: int, report: dict[str, Any] | Non
     return row
 
 
-def mark_job_failed(session: Session, *, job_id: int, error: str) -> Job:
-    """Move a job to ``failed`` and record the error. Errors name fields, not values."""
+def mark_job_failed(
+    session: Session, *, job_id: int, error: str, report: dict[str, Any] | None = None
+) -> Job:
+    """Move a job to ``failed``, recording the error and whatever it did do.
+
+    The error goes through ``redact_text`` for the same reason the audit
+    trail's does: a message is written by many hands, and one that quotes what
+    it was given would carry a token into this table. A failed run still
+    carries its report: what it managed to do before it stopped is what an
+    operator has to be told.
+    """
     row = _require_job(session, job_id)
     row.state = "failed"
-    row.error = error
+    row.error = redact_text(error)
+    if report is not None:
+        row.report_json = report
     row.finished_at = datetime.now(UTC)
     session.flush()
     return row
@@ -432,6 +480,52 @@ def mark_job_failed(session: Session, *, job_id: int, error: str) -> Job:
 def get_job(session: Session, job_id: int) -> Job | None:
     """One job by id, or None when there is no such job."""
     return session.get(Job, job_id)
+
+
+def active_job(session: Session, *, kind: str) -> Job | None:
+    """The job of this kind that has not finished, if there is one.
+
+    One apply of a kind runs at a time: two of them converge the same objects
+    against each other's half-written state.
+    """
+    stmt = (
+        select(Job)
+        .where(Job.kind == kind, Job.state.in_(ACTIVE_JOB_STATES))
+        .order_by(Job.id.desc())
+        .limit(1)
+    )
+    return session.scalars(stmt).first()
+
+
+def fail_unfinished_jobs(session: Session, *, error: str) -> int:
+    """End every job that has not finished, and say how many there were.
+
+    A job is a thread inside one process, so a restart takes any that were in
+    flight with it. The rows they left behind say ``running``, which is both
+    untrue and, because one job of a kind runs at a time, enough to refuse
+    every later job of that kind. Flushed, not committed: the caller owns the
+    transaction.
+    """
+    result = session.execute(
+        update(Job)
+        .where(Job.state.in_(ACTIVE_JOB_STATES))
+        .values(state="failed", error=redact_text(error), finished_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
+    # A bulk update goes round any object the session is already holding, so
+    # everything is expired and read again rather than left saying what it said
+    # before. This runs once at startup, where there is nothing to lose.
+    session.expire_all()
+    return int(result.rowcount or 0)
+
+
+def list_jobs(session: Session, *, kind: str | None = None, limit: int = 50) -> Sequence[Job]:
+    """Recent jobs, newest first, optionally of one kind."""
+    stmt = select(Job).order_by(Job.created_at.desc(), Job.id.desc()).limit(limit)
+    if kind is not None:
+        stmt = stmt.where(Job.kind == kind)
+    return session.scalars(stmt).all()
 
 
 def _require_job(session: Session, job_id: int) -> Job:

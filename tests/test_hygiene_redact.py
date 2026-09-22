@@ -67,3 +67,17 @@ def test_redact_text_removes_credentials_embedded_in_a_url():
 
 def test_redact_text_handles_no_message():
     assert redact_text("") == ""
+
+
+def test_strips_credentials_embedded_in_a_url_anywhere():
+    # An address is a location, not a credential. One that carries a password
+    # must not reach the audit table under any key, benign or not.
+    out = redact({"server": "https://user:pw@vault.example:8200", "note": "see the server"})
+    assert out["server"] == f"https://{REDACTED}@vault.example:8200"
+    assert "pw" not in out["server"]
+    assert out["note"] == "see the server"
+
+
+def test_strips_url_credentials_inside_nested_values():
+    out = redact({"args": {"addresses": ["https://user:pw@vault.example"]}})
+    assert "pw" not in str(out)
