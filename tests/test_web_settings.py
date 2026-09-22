@@ -10,7 +10,11 @@ import pytest
 
 from ladon.config.loader import load_deployment_config_text
 from ladon.config.teams import ConfigError
-from ladon.web.settings import DEFAULT_IDENTITY_HEADER, parse_web_settings
+from ladon.web.settings import (
+    DEFAULT_IDENTITY_HEADER,
+    load_web_settings,
+    parse_web_settings,
+)
 
 CONFIG = """
 deployment:
@@ -122,3 +126,29 @@ def test_a_plaintext_jwks_url_is_rejected():
     )
     with pytest.raises(ConfigError, match="https"):
         parse_web_settings(load_deployment_config_text(plain), env={})
+
+
+def test_the_config_can_arrive_inline_in_an_environment_variable():
+    # A ConfigMap consumed with envFrom turns each key into an environment
+    # variable, so a "config.yaml" key becomes a variable of that name and
+    # never becomes a file. LADON_CONFIG_YAML is how that deployment passes
+    # the same document.
+    settings = load_web_settings({"LADON_CONFIG_YAML": CONFIG})
+    assert settings.environment == "dev"
+    assert settings.identity.header == "x-forwarded-email"
+    assert "admin@example.com" in settings.access.admins
+
+
+def test_a_config_path_wins_over_the_inline_value(tmp_path):
+    # Naming a file and not mounting it is a mistake worth failing on, not one
+    # to paper over with a second source.
+    path = tmp_path / "config.yaml"
+    path.write_text("deployment:\n  environment: from-the-file\n", encoding="utf-8")
+    settings = load_web_settings({"LADON_CONFIG": str(path), "LADON_CONFIG_YAML": CONFIG})
+    assert settings.environment == "from-the-file"
+
+
+def test_neither_config_variable_is_required():
+    settings = load_web_settings({})
+    assert settings.access.admins == frozenset()
+    assert settings.identity.header == DEFAULT_IDENTITY_HEADER

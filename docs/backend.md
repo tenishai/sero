@@ -100,7 +100,8 @@ ladon.web`, which migrates and then serves.
 
 | Variable | Required | What it does |
 | --- | --- | --- |
-| `LADON_CONFIG` | no | Path to the deployment config (`config/example.yaml` is the template). Without it nobody holds a namespace and nobody is an admin. |
+| `LADON_CONFIG` | no | Path to the deployment config (`config/example.yaml` is the template). Without it, and without `LADON_CONFIG_YAML`, nobody holds a namespace and nobody is an admin. |
+| `LADON_CONFIG_YAML` | no | The same document inline, for a deployment that delivers config as environment variables rather than a mounted file. `LADON_CONFIG` wins when both are set. |
 | `LADON_DATABASE_URL` | for anything but a smoke test | The datastore. Without it the routes that need one answer 503. |
 | `LADON_UI_DIST` | no | Directory holding the built UI. Overrides `deployment.ui_dist`. |
 | `LADON_DEV_IDENTITY` | no | The local identity hatch. Inert unless the config sets `identity.allow_dev_identity`, and inert whenever `identity.assertion` is configured. |

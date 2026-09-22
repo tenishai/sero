@@ -17,7 +17,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ladon.config.loader import DeploymentConfig, load_deployment_config
+from ladon.config.loader import (
+    DeploymentConfig,
+    load_deployment_config,
+    load_deployment_config_text,
+)
 from ladon.config.teams import ConfigError
 from ladon.web.assertion import (
     DEFAULT_ASSERTION_HEADER,
@@ -33,6 +37,9 @@ DEFAULT_IDENTITY_HEADER = "x-goog-authenticated-user-email"
 DEFAULT_KV_MOUNT = "kv"
 
 CONFIG_PATH_ENV = "LADON_CONFIG"
+# The same document inline, for a deployment whose config arrives as an
+# environment variable rather than a mounted file. See load_web_settings.
+CONFIG_INLINE_ENV = "LADON_CONFIG_YAML"
 UI_DIST_ENV = "LADON_UI_DIST"
 # Address fallbacks, shared with the apply layer's client so one deployment does
 # not need two spellings of the same address.
@@ -179,14 +186,29 @@ def parse_web_settings(config: DeploymentConfig, *, env: Mapping[str, str]) -> W
 def load_web_settings(env: Mapping[str, str] | None = None) -> WebSettings:
     """Load settings for a running process.
 
-    ``LADON_CONFIG`` points at the deployment config. It is optional: with no
-    config the backend still starts and serves ``/healthz`` and ``/api/me``, with
-    nobody holding any namespace, which is the honest answer for an instance that
-    has not been configured yet.
+    ``LADON_CONFIG`` points at the deployment config. ``LADON_CONFIG_YAML``
+    carries the same document inline, for a deployment that delivers config as
+    environment variables rather than as a mounted file: a ConfigMap consumed
+    with ``envFrom`` turns each key into a variable, so a ``config.yaml`` key
+    becomes a variable of that name and never becomes a file.
+
+    The path wins when both are set, and the inline value is not consulted
+    then: a deployment that names a file and does not mount it has a mistake
+    worth failing on, not one worth papering over with a second source.
+
+    Both are optional: with no config the backend still starts and serves
+    ``/healthz`` and ``/api/me``, with nobody holding any namespace, which is
+    the honest answer for an instance that has not been configured yet.
     """
     env = os.environ if env is None else env
     path = env.get(CONFIG_PATH_ENV)
-    config = load_deployment_config(path) if path else DeploymentConfig()
+    inline = env.get(CONFIG_INLINE_ENV)
+    if path:
+        config = load_deployment_config(path)
+    elif inline:
+        config = load_deployment_config_text(inline)
+    else:
+        config = DeploymentConfig()
     return parse_web_settings(config, env=env)
 
 

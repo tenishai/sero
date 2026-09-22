@@ -218,7 +218,11 @@ point of view, not a list of commit subjects.
   authenticates through workload identity federation, holds no long-lived
   credential, and reads the registry, the identity provider, and the build
   service account from repository variables, so nothing deployment-specific
-  appears in the repository. The tag is the short commit sha.
+  appears in the repository. The tag is the short commit sha, and the pushed
+  image's digest is printed and put in the job summary, since a tag can be moved
+  and a digest cannot. The job runs only for a push from this repository, so a
+  fork's run and a pull-request run (whose checks passed against merge-result
+  code nobody merged) cannot reach its credentials.
 - A deploy contract and manifests (`deploy/ladon/`). `gojira.yaml` describes the
   workload for a deployment platform whose generator emits the Deployment and
   Service; `k8s/base/` holds what that generator preserves (the service account,
@@ -226,19 +230,40 @@ point of view, not a list of commit subjects.
   limited to the ESO custom resources plus the namespace, CRD and Deployment
   reads the install layer needs, a 1Gi data volume, and default-deny network
   policies); `standalone/` holds a plain Deployment and Service for a cluster
-  where that platform is not in use. Both read the same ConfigMap, Secret, and
-  volume, so an instance moves between them without the application noticing.
-  The Service is ClusterIP in both, and the network policy admits the backend
-  only from a namespace labelled `ladon.dev/proxy=true`: there is no login form,
-  the backend trusts an identity header a proxy sets, and anything that can
-  reach it directly can claim any identity. `deploy/ladon/README.md` documents
-  the bootstrap Secret's two keys, the ConfigMap's one key, and why neither of
-  those two properties is optional.
+  where that platform is not in use. The class is `gateway`, not `web`: Ladon is
+  a single writer against a ReadWriteOnce volume, and a rolling update or a
+  scale-out would wedge on the volume or run a background job twice.
+  The Service is ClusterIP in both paths, and the network policy admits the
+  backend only from a namespace labelled `ladon.dev/proxy=true`: there is no
+  login form, the backend trusts an identity header a proxy sets, and anything
+  that can reach it directly can claim any identity. A second label,
+  `ladon.dev/eso=true`, admits the External Secrets Operator to OpenBao, which
+  runs in its own namespace and so matches no same-namespace rule. OpenBao gets
+  egress as well as ingress, because its JWT auth method calls out to the
+  cluster's OIDC issuer to verify what a workload presented, and the backend
+  gets outbound https for the proxy's JWKS and the chart repositories.
+  `deploy/ladon/README.md` documents the bootstrap Secret's two keys, how the
+  ConfigMap's key differs between the two paths, and why none of it is optional.
+- `LADON_CONFIG_YAML`: the deployment config inline, in an environment
+  variable. A ConfigMap consumed with `envFrom`, which is what the deploy
+  contract's `config_from` is, turns every key into an environment variable, so
+  a `config.yaml` key becomes a variable of that name and never becomes a file.
+  Without this the backend on that path would have started with no config at
+  all: nobody holding a namespace, nobody an admin, and nothing saying so.
+  `LADON_CONFIG` still names a file and wins when both are set, because a
+  deployment that names a file and does not mount it has a mistake worth
+  failing on.
 - `scripts/validate-deploy.sh`, wired into CI, checking both halves of the
   deploy directory without applying anything. With a reachable cluster it runs
   `kubectl apply --dry-run=client` for full schema validation; with none (CI) it
-  falls back to proving the kustomization builds and every document decodes, and
-  says which mode it ran in, so a green run never overstates what it proved.
+  proves the kustomization builds and the YAML parses, and says which mode it
+  ran in, so a green run never overstates what it proved. Both modes assert the
+  inventory: every object each half must produce, by kind and name, so a file
+  dropped from the kustomization fails here rather than at apply time.
+- An `image smoke` CI job building the image and running it once, with the
+  flags a deployment uses (unprivileged, read-only root filesystem, writable
+  scratch and data only), asserting `/healthz` answers 200. A Dockerfile can
+  build cleanly and still produce something that cannot start.
 - A "platform cluster, single node" path in `docs/deployment-order.md`: the
   short bring-up for one cluster operating one vault, from the namespace through
   the pinned chart, the manual initialize and unseal, the backend's own objects,
