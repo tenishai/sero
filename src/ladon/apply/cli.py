@@ -1,18 +1,22 @@
-"""Command-line entrypoint that wires the apply layer together (D3b).
+"""Command-line entrypoint that wires the apply layer together (D3b, D18).
 
 This is the thin seam that makes the render -> plan -> execute -> connect layers
-runnable end to end. Two subcommands:
+runnable end to end. Three subcommands:
 
 * ``plan`` builds a plan from flags and renders it to stdout. It makes no
   connection, so it is always safe to run. It does read the OpenBao address for
   app-onboarding, because the store document has to name the server it dials,
-  but it never contacts it.
+  but it never contacts it, and it never contacts the cluster either: the
+  documents it prints carry the current ESO custom-resource version rather than
+  one probed from a cluster it is not allowed to dial.
 * ``apply`` builds the same plan, connects to OpenBao using the environment
   (address and token, or another credential), and diffs it against live state.
   It is a dry-run by default, per the secrets-hygiene rule that writes are
   opt-in; an explicit ``--apply`` is required to write. The dry-run connects too
   (read-only), because a diff is only useful against what is really there; use
   ``plan`` when there is nothing to connect to.
+* ``install-eso`` puts the External Secrets Operator on the cluster, or reports
+  and reuses the one already running on it (D18a).
 
 Run as ``scripts/ladon plan ...`` / ``scripts/ladon apply ...`` (the wrapper puts
 ``src`` on the path; there is no installed console script). Inputs are explicit
@@ -21,10 +25,13 @@ models (the KV mount, the teams whose namespaces root config creates, and a
 team's namespace via ``--team``); auth inputs stay explicit flags. Built on the
 standard library only (argparse), so the CLI adds no dependency.
 
-The ``app-onboarding`` phase has two halves (D17): the OpenBao objects, which
-are a plan like any other, and the Kubernetes documents, which are printed as
-YAML. Applying the documents to a cluster is the install layer's job, not this
-one's, so ``apply`` writes the OpenBao half and prints the other.
+Two phases have a cluster half as well as (or instead of) an OpenBao one:
+``app-onboarding`` renders the per-application service account and store (D17),
+and ``sync`` renders one ``ExternalSecret`` pointing at an application's store.
+``apply`` converges both halves in one command, OpenBao first: a store applied
+against a role that was never written fails at refresh time, somewhere else,
+later. The cluster half follows the same read-diff-write-verify rule, so a
+second run reports every document already current and writes nothing.
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import yaml
 
@@ -53,17 +60,41 @@ from ladon.apply.plan import (
 )
 from ladon.config import derive
 from ladon.config.apps import (
+    APP_PATH_SEGMENT,
     DEFAULT_APP_AUDIENCE,
     DEFAULT_SA_NAMESPACE,
     AppIdentity,
     app_cluster_documents,
     app_identity,
+    app_store_name,
 )
 from ladon.config.auth import jwt_auth, oidc_auth
+from ladon.config.eso import DEFAULT_API_VERSION, external_secret
 from ladon.config.loader import DeploymentConfig, load_deployment_config
 from ladon.config.policies import baseline_team_policies, external_secrets_read
 from ladon.config.teams import ConfigError
 from ladon.hygiene import has_url_userinfo
+from ladon.install.eso import DEFAULT_NAMESPACE as ESO_NAMESPACE
+from ladon.install.eso import ESORelease, install_eso
+from ladon.install.helm import HelmError
+from ladon.install.k8s import ALREADY_CURRENT as CLUSTER_ALREADY_CURRENT
+from ladon.install.k8s import (
+    ApplyReport,
+    K8sError,
+    converge_documents,
+    detect_eso,
+    eso_api_version,
+)
+
+# The default refresh interval on a rendered ExternalSecret: how often ESO
+# re-reads the path. An hour is the ESO default and is frequent enough that a
+# rotated secret reaches a workload the same working day.
+DEFAULT_REFRESH_INTERVAL = "1h"
+
+# Documents rendered for one phase, at the ESO API version the target cluster
+# stores. A callable rather than a list because the version is not known until
+# the cluster is probed, and ``plan`` never probes.
+DocumentRenderer = Callable[[str], list[dict]]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,8 +114,30 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument(
                 "--apply",
                 action="store_true",
-                help="Actually write to OpenBao. Without this flag, apply is a dry-run.",
+                help=(
+                    "Actually write to OpenBao and to the cluster. Without this "
+                    "flag, apply is a dry-run."
+                ),
             )
+
+    eso = sub.add_parser(
+        "install-eso",
+        help="Install the External Secrets Operator, or reuse the one on the cluster.",
+    )
+    eso.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually install. Without this flag, install-eso is a dry-run.",
+    )
+    eso.add_argument(
+        "--namespace",
+        default=ESO_NAMESPACE,
+        help=(
+            f"Namespace to install into. Defaults to {ESO_NAMESPACE}. An operator "
+            "already running on the cluster is reused where it is, so this is "
+            "ignored then."
+        ),
+    )
 
     return parser
 
@@ -93,7 +146,7 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--phase",
         required=True,
-        choices=("root-config", "team-onboarding", "app-onboarding"),
+        choices=("root-config", "team-onboarding", "app-onboarding", "sync"),
         help="Which plan to build.",
     )
     p.add_argument(
@@ -124,8 +177,8 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--team",
         help=(
-            "team-onboarding and app-onboarding: team name; its namespace is "
-            "resolved from --config, or defaults to the team name."
+            "team-onboarding, app-onboarding and sync: team name; its namespace "
+            "is resolved from --config, or defaults to the team name."
         ),
     )
     # root-config inputs
@@ -151,13 +204,14 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
         help="team-onboarding and app-onboarding: cluster name; the mount is jwt-<cluster>.",
     )
     # app-onboarding inputs
-    p.add_argument("--app", help="app-onboarding: application name (a DNS-1123 label).")
+    p.add_argument("--app", help="app-onboarding and sync: application name (a DNS-1123 label).")
     p.add_argument(
         "--k8s-namespace",
         default=None,
         help=(
             "app-onboarding: the one Kubernetes namespace allowed to use the "
-            "application's store. Defaults to the application name."
+            "application's store; defaults to the application name. sync: the "
+            "namespace the ExternalSecret and its Secret live in (required)."
         ),
     )
     p.add_argument(
@@ -183,6 +237,33 @@ def _add_plan_flags(p: argparse.ArgumentParser) -> None:
             "app-onboarding: the OpenBao address the rendered store dials. "
             f"Defaults to {' or '.join(ADDRESS_ENV_VARS)}."
         ),
+    )
+    # sync inputs
+    p.add_argument(
+        "--path",
+        default=None,
+        help=(
+            "sync: the KV path the ExternalSecret reads, inside the "
+            f"application's own prefix ({APP_PATH_SEGMENT}/<app>/<purpose>)."
+        ),
+    )
+    p.add_argument(
+        "--name",
+        default=None,
+        help="sync: the ExternalSecret's name.",
+    )
+    p.add_argument(
+        "--target-name",
+        default=None,
+        help=(
+            "sync: the Kubernetes Secret ESO creates, which is the name the "
+            "consumer already uses. Defaults to --name."
+        ),
+    )
+    p.add_argument(
+        "--refresh-interval",
+        default=DEFAULT_REFRESH_INTERVAL,
+        help=f"sync: how often ESO re-reads the path. Defaults to {DEFAULT_REFRESH_INTERVAL}.",
     )
 
 
@@ -216,6 +297,10 @@ def build_plan(args: argparse.Namespace, config: DeploymentConfig | None = None)
         return _build_team_onboarding_plan(args, config)
     if args.phase == "app-onboarding":
         return app_onboarding_plan(build_app_identity(args, config))
+    if args.phase == "sync":
+        # Sync writes one cluster document and nothing in OpenBao: the identity
+        # it reads through was written by app-onboarding.
+        return Plan()
     raise ConfigError(f"unknown phase {args.phase!r}")  # pragma: no cover - argparse guards
 
 
@@ -322,18 +407,80 @@ def resolve_namespace(
     return derive.team_namespace(config, team)
 
 
-def _build(args: argparse.Namespace) -> tuple[Plan, list[dict]]:
-    """The plan, and the cluster documents for the phases that have them.
+def _build(args: argparse.Namespace) -> tuple[Plan, DocumentRenderer | None]:
+    """The plan, and how to render the cluster documents for phases that have them.
 
     One place loads the config and builds the application identity, so both
-    halves of an onboarding are rendered from exactly the same values.
+    halves of an onboarding are rendered from exactly the same values. The
+    documents come back as a renderer rather than a list because they carry the
+    ESO custom-resource version the target cluster stores, and that is not known
+    until the cluster is probed.
     """
     config = _load_config(args)
+    if args.phase == "sync":
+        document = build_sync_document(args)
+        return Plan(), lambda api_version: [_at_api_version(document, api_version)]
     if args.phase != "app-onboarding":
-        return build_plan(args, config), []
+        return build_plan(args, config), None
     identity = build_app_identity(args, config)
-    documents = app_cluster_documents(identity, server=_resolve_server(args))
-    return app_onboarding_plan(identity), documents
+    server = _resolve_server(args)
+
+    def render(api_version: str) -> list[dict]:
+        return app_cluster_documents(identity, server=server, api_version=api_version)
+
+    return app_onboarding_plan(identity), render
+
+
+def build_sync_document(args: argparse.Namespace) -> dict:
+    """The one ``ExternalSecret`` the sync phase renders.
+
+    The store is named from the team and the application through the same
+    function that named it at onboarding, so a typo cannot produce a document
+    that points at a store nothing created.
+    """
+    missing = [
+        flag
+        for flag, value in (
+            ("--team", args.team),
+            ("--app", args.app),
+            ("--path", args.path),
+            ("--k8s-namespace", args.k8s_namespace),
+            ("--name", args.name),
+        )
+        if not value
+    ]
+    if missing:
+        raise ConfigError(f"sync requires {' and '.join(missing)}")
+    return external_secret(
+        name=args.name,
+        namespace=args.k8s_namespace,
+        store_name=app_store_name(team=args.team, app=args.app),
+        kv_path=_checked_app_path(args.app, args.path),
+        secret_name=args.target_name or args.name,
+        refresh_interval=args.refresh_interval,
+    )
+
+
+def _checked_app_path(app: str, path: str) -> str:
+    """Refuse a path outside the application's own prefix.
+
+    The application's policy grants read on ``apps/<app>`` and nothing else, so
+    a path outside it renders a document that looks right and is refused at
+    refresh time, in ESO's logs, later.
+    """
+    prefix = f"{APP_PATH_SEGMENT}/{app}"
+    if path != prefix and not path.startswith(f"{prefix}/"):
+        raise ConfigError(
+            f"sync: --path {path!r} is outside the application's own prefix "
+            f"{prefix!r}, which is the only prefix its identity can read"
+        )
+    return path
+
+
+def _at_api_version(document: dict, api_version: str) -> dict:
+    """The same document, addressed at the cluster's ESO resource version."""
+    group = document["apiVersion"].rpartition("/")[0]
+    return {**document, "apiVersion": f"{group}/{api_version}"}
 
 
 def _resolve_server(args: argparse.Namespace) -> str:
@@ -370,25 +517,101 @@ def _print_documents(documents: list[dict], out, *, note: str) -> None:
 
 
 def _run_plan(args: argparse.Namespace, out) -> int:
-    plan, documents = _build(args)
+    plan, render = _build(args)
     print(plan.render(), file=out)
-    if documents:
-        _print_documents(documents, out, note="rendered, not applied")
+    if render is not None:
+        # Offline by rule: the documents carry the current ESO resource version
+        # rather than one probed from a cluster `plan` is not allowed to dial.
+        # `apply` renders them again at whatever the target cluster stores.
+        _print_documents(render(DEFAULT_API_VERSION), out, note="rendered, not applied")
     return 0
 
 
 def _run_apply(args: argparse.Namespace, out) -> int:
-    # Both halves are rendered before connecting: they describe one onboarding,
-    # so if the cluster half cannot be rendered nothing should be written.
-    plan, documents = _build(args)
+    # Both halves are rendered before anything is written: they describe one
+    # operation, so if the cluster half cannot be rendered nothing is written.
+    # The operator probe is part of that (D18a): a store applied to a cluster
+    # with no operator is a document nothing reads, and by the time that showed,
+    # the OpenBao half would already be written.
+    plan, render = _build(args)
+    documents = render(_require_eso()) if render is not None else []
 
-    # Both modes connect: a dry-run reads live state so the diff is against what
-    # is really there. Only --apply writes. Use `plan` for an offline render.
-    # The connection is not scoped: each op carries the namespace it runs in.
-    conn = BaoConnection.from_env()
-    client = connect(conn, TokenAuth.from_env())
-    result = apply_plan(plan, client=client, apply=args.apply)
+    result = None
+    if plan.ops:
+        # Both modes connect: a dry-run reads live state so the diff is against
+        # what is really there. Only --apply writes. Use `plan` for an offline
+        # render. The connection is not scoped: each op carries its namespace.
+        conn = BaoConnection.from_env()
+        client = connect(conn, TokenAuth.from_env())
+        result = apply_plan(plan, client=client, apply=args.apply)
+        _print_openbao_result(result, args, out)
 
+    if result is not None and result.blocked:
+        # Nothing was written to OpenBao, so nothing goes to the cluster either:
+        # a store applied against a role that does not exist fails at refresh
+        # time, somewhere else, later.
+        if documents:
+            print("\nNothing was applied to the cluster: the OpenBao half did not land.", file=out)
+        print(
+            f"\n{len(result.blocked)} operation(s) blocked. Resolve them in OpenBao, then re-run.",
+            file=out,
+        )
+        return 2
+
+    if documents:
+        report = converge_documents(documents, dry_run=not args.apply)
+        _print_cluster_report(report, out)
+        if report.blocked:
+            print(
+                f"\n{len(report.blocked)} cluster document(s) blocked. Resolve them on the "
+                "cluster, then re-run.",
+                file=out,
+            )
+            return 2
+
+    if not args.apply:
+        print(f"\nRe-run with --apply to write to {_targets(plan, documents)}.", file=out)
+    return 0
+
+
+def _run_install_eso(args: argparse.Namespace, out) -> int:
+    """Install the External Secrets Operator, or reuse the one already there."""
+    result = install_eso(ESORelease(namespace=args.namespace), apply=args.apply)
+    print(result.summary, file=out)
+    if result.api_version:
+        print(
+            f"The cluster stores the External Secrets resources at {result.api_version}.",
+            file=out,
+        )
+    if not args.apply and not result.reused:
+        print("\nRe-run with --apply to install.", file=out)
+    return 0
+
+
+def _require_eso() -> str:
+    """The ESO resource version this cluster stores, or a refusal.
+
+    ESO is what reads the store Ladon renders, so onboarding an application onto
+    a cluster with no operator produces documents nothing acts on. The version
+    is probed rather than assumed, because a resource rendered at a version the
+    cluster does not store is rejected on apply.
+    """
+    if detect_eso() is None:
+        raise ConfigError(
+            "no external-secrets operator is running on this cluster, so nothing "
+            "would read the store this renders: install one first with "
+            "`scripts/ladon install-eso --apply`"
+        )
+    return eso_api_version()
+
+
+def _targets(plan: Plan, documents: list[dict]) -> str:
+    """What a dry-run would have written to, named in the re-run line."""
+    named = [name for name, used in (("OpenBao", plan.ops), ("the cluster", documents)) if used]
+    return " and ".join(named)
+
+
+def _print_openbao_result(result, args: argparse.Namespace, out) -> None:
     if not args.apply:
         print("DRY RUN: diff against live OpenBao:", file=out)
     elif result.blocked:
@@ -399,37 +622,29 @@ def _run_apply(args: argparse.Namespace, out) -> int:
         print("Applied the following operations:", file=out)
     else:
         print("Nothing to apply: every object is already current.", file=out)
-
     _print_diffs(result, out)
-
-    if documents:
-        # The cluster half is applied by the install layer, not here. Printing
-        # it keeps one command the whole description of an onboarding. If the
-        # OpenBao half did not land, say so on the documents themselves: a store
-        # applied against a role that does not exist fails at refresh time,
-        # somewhere else, later.
-        note = (
-            "DO NOT APPLY: the OpenBao half was not applied"
-            if result.blocked
-            else "rendered, not applied: the cluster layer applies these"
-        )
-        _print_documents(documents, out, note=note)
-
-    if result.blocked:
-        print(
-            f"\n{len(result.blocked)} operation(s) blocked. Resolve them in OpenBao, then re-run.",
-            file=out,
-        )
-        return 2
-    if not args.apply:
-        print("\nRe-run with --apply to write to OpenBao.", file=out)
-    return 0
 
 
 def _print_diffs(result, out) -> None:
     """One line per op: what it did (or would do) and which fields differ."""
     for diff in result.diffs:
         print(f"  {diff.render()}", file=out)
+
+
+def _print_cluster_report(report: ApplyReport, out) -> None:
+    """One line per document: what it did (or would do) to the cluster."""
+    if report.dry_run:
+        header = "Cluster documents (server dry run):"
+    elif any(r.action != CLUSTER_ALREADY_CURRENT for r in report.results):
+        header = "Cluster documents (applied):"
+    else:
+        header = "Cluster documents: every document is already current."
+    print(f"\n{header}", file=out)
+    for result in report.results:
+        line = f"  [cluster] {result.action} {result.target}"
+        if result.reason:
+            line += f" ({result.reason})"
+        print(line, file=out)
 
 
 def main(argv: Sequence[str] | None = None, *, out=None) -> int:
@@ -442,7 +657,9 @@ def main(argv: Sequence[str] | None = None, *, out=None) -> int:
             return _run_plan(args, out)
         if args.command == "apply":
             return _run_apply(args, out)
-    except (ConfigError, ApplyError, BaoConnectionError) as exc:
+        if args.command == "install-eso":
+            return _run_install_eso(args, out)
+    except (ConfigError, ApplyError, BaoConnectionError, K8sError, HelmError) as exc:
         # Expected, value-free failures: report and exit non-zero without a
         # traceback. The messages never include a secret.
         print(f"error: {exc}", file=sys.stderr)

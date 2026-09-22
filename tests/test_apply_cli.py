@@ -1,19 +1,24 @@
-"""Tests for the apply CLI entrypoint (D3b).
+"""Tests for the apply CLI entrypoint (D3b, D18).
 
 The ``plan`` path is pure (no connection). The ``apply`` path connects in both
 modes (a dry-run reads live state to diff against it), so its connect and
 execute calls are monkeypatched, or pointed at the recording fake, and nothing
-touches a live OpenBao.
+touches a live OpenBao. The cluster half is pointed at the fake cluster the
+same way, so both halves of an onboarding are exercised end to end offline.
 """
 
 import io
 
 import pytest
+import yaml
 
+from fake_cluster import FakeCluster
 from fake_openbao import FakeOpenBao
 from ladon.apply import cli
 from ladon.apply.executor import ApplyResult, OpDiff
 from ladon.config.teams import ConfigError
+from ladon.install.eso import ESOInstallResult
+from ladon.install.k8s import ESOInstall, K8sError, converge_documents
 
 ISSUER = "https://issuer.example/.well-known/openid-configuration"
 
@@ -530,24 +535,11 @@ def test_an_address_carrying_credentials_is_refused(tmp_path, monkeypatch):
     assert "pw" not in text
 
 
-def test_apply_app_onboarding_applies_the_openbao_half_only(tmp_path, monkeypatch):
-    client = FakeOpenBao()
-    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
-    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
-    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
-
-    code, text = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
-    assert code == 0
-    assert "eso-sample-readonly" in client.state("team-a").policies
-    assert "kind: ClusterSecretStore" in text
-    # Applying the cluster half is a later step; the documents are printed.
-    assert "not applied" in text
-
-
-def test_a_blocked_apply_marks_the_documents_as_not_to_be_applied(tmp_path, monkeypatch):
+def test_a_blocked_openbao_half_keeps_the_cluster_half_from_being_applied(tmp_path, monkeypatch):
     # A store applied against a role that was never written fails at refresh
     # time, somewhere else, later.
     blocked = OpDiff(summary="write-auth-role auth/jwt-cluster-a/role/x", action="blocked")
+    cluster = FakeCluster()
     monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
     monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
     monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: "C")
@@ -556,8 +548,298 @@ def test_a_blocked_apply_marks_the_documents_as_not_to_be_applied(tmp_path, monk
         "apply_plan",
         lambda plan, **k: ApplyResult(applied=(), dry_run=False, diffs=(blocked,)),
     )
+    use_cluster(monkeypatch, cluster)
 
     code, text = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
     assert code == 2
-    assert "DO NOT APPLY" in text
-    assert "the OpenBao half was not applied" in text
+    assert "the OpenBao half did not land" in text
+    assert cluster.calls == []
+
+
+# The cluster half -------------------------------------------------------------
+
+# An operator already running on the cluster, which is what Ladon reuses (D18a).
+ESO_RUNNING = ESOInstall(
+    namespace="external-secrets", service_account="external-secrets", version="v0.19.2"
+)
+
+# The store the app-onboarding phase renders and the sync phase points at.
+APP_STORE = "ladon-team-a-sample-a84085"
+
+
+def use_cluster(monkeypatch, cluster, *, api_version="v1"):
+    """Point the CLI's cluster half at a fake cluster with an operator on it."""
+    monkeypatch.setattr(cli, "detect_eso", lambda: ESO_RUNNING)
+    monkeypatch.setattr(cli, "eso_api_version", lambda: api_version)
+    monkeypatch.setattr(
+        cli,
+        "converge_documents",
+        lambda docs, **kwargs: converge_documents(docs, run=cluster, **kwargs),
+    )
+
+
+def cluster_lines(text):
+    return [line.strip() for line in text.splitlines() if line.strip().startswith("[cluster]")]
+
+
+def with_bao(monkeypatch):
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+
+
+def test_apply_app_onboarding_applies_both_halves_and_converges(tmp_path, monkeypatch):
+    client = FakeOpenBao()
+    cluster = FakeCluster()
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster)
+
+    argv = ["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"]
+    code, first = run(argv)
+    assert code == 0
+    assert "eso-sample-readonly" in client.state("team-a").policies
+    assert cluster_lines(first) == [
+        f"[cluster] create ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] create ClusterSecretStore/{APP_STORE}",
+    ]
+
+    writes = len(cluster.applies)
+    code, second = run(argv)
+    assert code == 0
+    assert cluster_lines(second) == [
+        f"[cluster] already current ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] already current ClusterSecretStore/{APP_STORE}",
+    ]
+    # A second run writes nothing, to OpenBao or to the cluster.
+    assert len(cluster.applies) == writes
+    assert "Nothing to apply" in second
+
+
+def test_app_onboarding_dry_run_diffs_both_halves_and_writes_nothing(tmp_path, monkeypatch):
+    client = FakeOpenBao()
+    cluster = FakeCluster()
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster)
+
+    code, text = run(["apply", *app_argv(write_app_config(tmp_path))[1:]])
+    assert code == 0
+    assert "DRY RUN" in text
+    assert cluster_lines(text) == [
+        f"[cluster] create ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] create ClusterSecretStore/{APP_STORE}",
+    ]
+    assert "--dry-run=server" in cluster.applies[0]
+    assert cluster.objects == {}
+    assert client.calls == []
+    assert "Re-run with --apply" in text
+
+
+def test_app_onboarding_refuses_a_cluster_with_no_operator(tmp_path, monkeypatch):
+    # Before any write: a store applied to a cluster with no operator is a
+    # document nothing reads, and the OpenBao half would already be written.
+    client = FakeOpenBao()
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    monkeypatch.setattr(cli, "detect_eso", lambda: None)
+
+    code, _ = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
+    assert code == 2
+    assert client.calls == []
+
+
+def test_the_store_is_rendered_at_the_api_version_the_cluster_stores(tmp_path, monkeypatch):
+    client = FakeOpenBao()
+    cluster = FakeCluster()
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster, api_version="v1beta1")
+
+    code, _ = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
+    assert code == 0
+    applied = list(yaml.safe_load_all(cluster.streams[-1]))
+    assert applied[-1]["apiVersion"] == "external-secrets.io/v1beta1"
+
+
+def test_plan_stays_offline_and_renders_the_default_api_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setattr(cli, "detect_eso", refuse_to_connect)
+    code, text = run(app_argv(write_app_config(tmp_path)))
+    assert code == 0
+    assert "apiVersion: external-secrets.io/v1" in text
+
+
+def test_a_blocked_cluster_document_exits_non_zero(tmp_path, monkeypatch):
+    client = FakeOpenBao()
+    cluster = FakeCluster(blocked=[APP_STORE])
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster)
+
+    code, text = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
+    assert code == 2
+    assert f"[cluster] blocked ClusterSecretStore/{APP_STORE}" in text
+    assert "conflict" in text
+
+
+def test_a_cluster_that_did_not_store_what_was_applied_is_an_error(tmp_path, monkeypatch):
+    client = FakeOpenBao()
+    cluster = FakeCluster(mutate=lambda doc: {**doc, "spec": {}} if "spec" in doc else doc)
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster)
+
+    code, _ = run(["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"])
+    assert code == 2
+
+
+# The sync phase ---------------------------------------------------------------
+
+
+def sync_argv(*extra):
+    return [
+        "--phase",
+        "sync",
+        "--team",
+        "team-a",
+        "--app",
+        "sample",
+        "--path",
+        "apps/sample/demo",
+        "--k8s-namespace",
+        "ladon-sample",
+        "--name",
+        "sample-demo",
+        *extra,
+    ]
+
+
+def test_plan_sync_renders_an_external_secret_pointing_at_the_app_store():
+    code, text = run(["plan", *sync_argv()])
+    assert code == 0
+    assert "kind: ExternalSecret" in text
+    assert f"name: {APP_STORE}" in text
+    assert "key: apps/sample/demo" in text
+    assert "namespace: ladon-sample" in text
+
+
+def test_apply_sync_converges_the_external_secret(monkeypatch):
+    cluster = FakeCluster()
+    # The sync phase has no OpenBao half, so it needs no address and no token.
+    monkeypatch.delenv("BAO_ADDR", raising=False)
+    monkeypatch.delenv("BAO_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "connect", refuse_to_connect)
+    use_cluster(monkeypatch, cluster)
+
+    code, first = run(["apply", *sync_argv(), "--apply"])
+    assert code == 0
+    assert cluster_lines(first) == ["[cluster] create ExternalSecret/ladon-sample/sample-demo"]
+
+    code, second = run(["apply", *sync_argv(), "--apply"])
+    assert code == 0
+    assert cluster_lines(second) == [
+        "[cluster] already current ExternalSecret/ladon-sample/sample-demo"
+    ]
+    assert len(cluster.applies) == 1
+
+
+def test_sync_targets_the_secret_name_the_consumer_already_uses(monkeypatch):
+    cluster = FakeCluster()
+    use_cluster(monkeypatch, cluster)
+    code, text = run(["plan", *sync_argv("--target-name", "sample-credentials")])
+    assert code == 0
+    assert "name: sample-credentials" in text
+
+
+def test_sync_refuses_a_path_outside_the_application_prefix(monkeypatch):
+    # The application's policy grants read on its own prefix and nothing else,
+    # so ESO would be refused at refresh time, somewhere else, later.
+    cluster = FakeCluster()
+    use_cluster(monkeypatch, cluster)
+    code, _ = run(["apply", *sync_argv()[:6], "--path", "apps/other/demo", *sync_argv()[8:]])
+    assert code == 2
+
+
+def test_sync_requires_the_parts_of_the_name_it_cannot_guess():
+    code, _ = run(["plan", "--phase", "sync", "--team", "team-a", "--app", "sample"])
+    assert code == 2
+
+
+# install-eso ------------------------------------------------------------------
+
+
+def fake_installer(seen, **result_fields):
+    def install(release, *, apply):
+        seen["namespace"] = release.namespace
+        seen["apply"] = apply
+        return ESOInstallResult(**result_fields)
+
+    return install
+
+
+def test_install_eso_reports_an_operator_it_reused(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        cli,
+        "install_eso",
+        fake_installer(
+            seen,
+            summary="reusing external-secrets v0.19.2 in namespace external-secrets",
+            reused=True,
+            existing=ESO_RUNNING,
+            api_version="v1",
+        ),
+    )
+    code, text = run(["install-eso"])
+    assert code == 0
+    assert "reusing external-secrets v0.19.2" in text
+    assert "v1" in text
+    assert seen["apply"] is False
+
+
+def test_install_eso_is_a_dry_run_unless_applied(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        cli,
+        "install_eso",
+        fake_installer(seen, summary="dry run: would install external-secrets", reused=False),
+    )
+    code, text = run(["install-eso"])
+    assert code == 0
+    assert "Re-run with --apply" in text
+
+
+def test_install_eso_installs_into_the_namespace_it_is_given(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        cli,
+        "install_eso",
+        fake_installer(seen, summary="installed external-secrets", reused=False),
+    )
+    code, text = run(["install-eso", "--namespace", "ns-a", "--apply"])
+    assert code == 0
+    assert seen == {"namespace": "ns-a", "apply": True}
+    assert "Re-run with --apply" not in text
+
+
+def test_install_eso_reports_a_cluster_failure_without_a_traceback(monkeypatch):
+    def boom(release, *, apply):
+        raise K8sError("kubectl 'not found on PATH'")
+
+    monkeypatch.setattr(cli, "install_eso", boom)
+    code, _ = run(["install-eso"])
+    assert code == 2
+
+
+def test_a_converged_cluster_half_says_so_rather_than_claiming_a_write(tmp_path, monkeypatch):
+    client = FakeOpenBao()
+    cluster = FakeCluster()
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster)
+
+    argv = ["apply", *app_argv(write_app_config(tmp_path))[1:], "--apply"]
+    run(argv)
+    _, second = run(argv)
+    assert "Cluster documents: every document is already current." in second
+    assert "(applied)" not in second
