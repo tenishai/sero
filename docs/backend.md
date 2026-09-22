@@ -493,7 +493,10 @@ The body is the flags the matching CLI command takes, with one deliberate
 exception: there is no `config`. The deployment config is the one this process
 was started with, and a request that could name another could plan against
 teams, namespaces and mounts nobody deployed. An unknown field is refused with
-`422` rather than ignored.
+`422`, and a field belonging to another phase with `400` naming it, rather than
+either being ignored: it was sent to do something, and dropping it quietly is
+how a caller ends up believing a run was narrowed or pointed somewhere it was
+not.
 
 | Phase | Body |
 | --- | --- |
@@ -508,7 +511,13 @@ report is the diff against live state. Nothing is written until a caller says
 
 A body that cannot produce a plan (a missing input, a team the config does not
 define) is a `400` while the caller is still listening, rather than a job that
-fails a second later for a reason nobody is watching for.
+fails a second later for a reason nobody is watching for. So is a `server` that
+carries credentials in the URL: an address is a location, and the refusal does
+not repeat what it found.
+
+`eso-install` reports `would install` on a dry run and `install` only when it
+installed. An operator already on the cluster is `already current`, whichever
+mode asked.
 
 ### One job per kind
 
@@ -579,15 +588,25 @@ team, which creates its namespace, the deployment's KV mount inside it, and the
 policies its access level grants. Nothing at the root is touched, so approving
 one team's request cannot rewrite the deployment's auth methods.
 
-The request row carries `job_id`, and a run that does not land leaves its
-message in `error` while the request stays `approved`: the decision stands, and
-what failed is the run. A team the deployment config does not define is refused
-with `400` before anything is decided, because the namespace, the mount and the
-policies all come from that entry.
+The decision is recorded and committed before the run is started, so it does
+not depend on one. The request row then carries `job_id`, and a run that does
+not land, or one that could not start at all because a `root-config` job was
+already in flight, leaves its message in `error` while the request stays
+`approved`: the decision stands, and what failed is the run.
 
-Jobs are threads inside the one process, and they do not survive a restart. A
-phase that was interrupted is re-run: applying converges, so running it again
-is how it finishes.
+A team the deployment config does not define is refused with `400` before
+anything is decided, because the namespace, the mount and the policies all come
+from that entry. A request that has already been approved or rejected is
+refused with `400` too: a request is decided once, and a second decision would
+silently replace the first in the record.
+
+Jobs are threads inside the one process, and they do not survive a restart. The
+rows do, so at startup every job still saying `queued` or `running` is ended as
+`failed` with the error `interrupted by a restart`, and the count is logged
+once. Without that, a kind would stay claimed by a thread that no longer exists
+and every later job of that kind would answer `409`. A phase that was
+interrupted is re-run: applying converges, so running it again is how it
+finishes.
 
 ## Migrations
 
@@ -607,7 +626,7 @@ Every failure is one JSON object with an `error` string:
 
 | Status | When |
 | --- | --- |
-| 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name), the request named another environment, or an apply body could not produce a plan. |
+| 400 | A write was refused (a placeholder value, a key named in both `values` and `remove_keys`, a merge that would empty a path, an update that changes nothing, a reserved path name), the request named another environment, an apply body could not produce a plan or named another phase's fields or an address carrying credentials, or a namespace request had already been decided. |
 | 401 | No identity: no header, an assertion that did not verify, or the deciding header sent twice. On `/api/service/*`, no token, or one that is not the configured caller's. |
 | 403 | Not on the allow list, not a member of the namespace, not an admin, reveal is not enabled, or a machine caller is not pinned to the namespace. |
 | 404 | No such namespace request, job, apply phase, revealed key, or path, including any unmatched `/api` path. Only a route that means it answers this; anything else that goes wrong is a 500. |
@@ -644,7 +663,10 @@ it. A tool call refused before it starts, or one that fails halfway, leaves a
 `denied` or `error` row there exactly as it does here.
 
 Starting an apply is audited too, as `apply_<phase>`, with the job id and the
-inputs it was given.
+inputs it was given. Those are recorded field by field from a named list, so a
+field added to the body later is not audited by accident, and the reference to
+the OIDC client secret is not recorded at all: it is a way to find a secret,
+and it is not needed to know what was asked for.
 
 ## Reveal
 

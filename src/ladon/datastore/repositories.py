@@ -21,7 +21,8 @@ Covers the five datastore domains:
 * step-up reveal flows and grants (``start_reveal_flow``, ``consume_reveal_flow``,
   ``grant_reveal``, ``active_reveal_grant``, ``revoke_reveal_grant``);
 * background apply jobs (``create_job``, ``mark_job_running``, ``mark_job_done``,
-  ``mark_job_failed``, ``get_job``, ``active_job``, ``list_jobs``).
+  ``mark_job_failed``, ``get_job``, ``active_job``, ``list_jobs``,
+  ``fail_unfinished_jobs``).
 """
 
 from __future__ import annotations
@@ -494,6 +495,29 @@ def active_job(session: Session, *, kind: str) -> Job | None:
         .limit(1)
     )
     return session.scalars(stmt).first()
+
+
+def fail_unfinished_jobs(session: Session, *, error: str) -> int:
+    """End every job that has not finished, and say how many there were.
+
+    A job is a thread inside one process, so a restart takes any that were in
+    flight with it. The rows they left behind say ``running``, which is both
+    untrue and, because one job of a kind runs at a time, enough to refuse
+    every later job of that kind. Flushed, not committed: the caller owns the
+    transaction.
+    """
+    result = session.execute(
+        update(Job)
+        .where(Job.state.in_(ACTIVE_JOB_STATES))
+        .values(state="failed", error=redact_text(error), finished_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
+    # A bulk update goes round any object the session is already holding, so
+    # everything is expired and read again rather than left saying what it said
+    # before. This runs once at startup, where there is nothing to lose.
+    session.expire_all()
+    return int(result.rowcount or 0)
 
 
 def list_jobs(session: Session, *, kind: str | None = None, limit: int = 50) -> Sequence[Job]:

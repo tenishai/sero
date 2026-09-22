@@ -22,6 +22,8 @@ Three rules the runner enforces, and why:
 
 The threads are daemons: a job is not a promise that survives the process, and
 an operator who restarts Ladon mid-apply re-runs the phase, which converges.
+What a restart leaves behind is rows, so ``recover_interrupted`` ends them at
+startup rather than leaving a kind claimed by a thread that no longer exists.
 """
 
 from __future__ import annotations
@@ -42,6 +44,11 @@ log = logging.getLogger(__name__)
 # The report lives under one key, so the column can hold what a later phase
 # wants to record alongside it without the shape of a report changing.
 OPERATIONS = "operations"
+
+# What a job the process did not outlive is recorded as. A restart is not a
+# result, but it is an ending, and a row that keeps saying "running" holds its
+# kind against every job that comes after it.
+INTERRUPTED = "interrupted by a restart"
 
 
 @dataclass(frozen=True)
@@ -66,9 +73,9 @@ class JobConflict(Exception):
         self.job_id = job_id
 
 
-# What a job does, and what runs once it has finished, inside the worker's own
-# session and before it commits (so an approval can record the run's error on
-# the request it belongs to).
+# What a job does, and what runs once it has finished and its ending is
+# recorded, in a session of its own (so an approval can record the run's error
+# on the request it belongs to without being able to undo the ending).
 Work = Callable[[], JobOutcome]
 OnFinish = Callable[[Session, Job], None]
 
@@ -84,6 +91,20 @@ class JobRunner:
     # would need the claim in the database.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _threads: dict[int, threading.Thread] = field(default_factory=dict, repr=False)
+
+    def recover_interrupted(self) -> int:
+        """End the jobs a previous process was still running, and say how many.
+
+        Run once at startup, after the datastore is at head. The threads died
+        with that process, so the rows are the only thing left of them, and one
+        that still says ``running`` would refuse every later job of its kind.
+        """
+        with self.session_factory() as session:
+            swept = repo.fail_unfinished_jobs(session, error=INTERRUPTED)
+            session.commit()
+        if swept:
+            log.warning("ended %s job(s) left unfinished by a previous process", swept)
+        return swept
 
     def submit(
         self,
@@ -129,23 +150,43 @@ class JobRunner:
         self._finish(job_id, outcome, on_finish)
 
     def _finish(self, job_id: int, outcome: JobOutcome, on_finish: OnFinish | None) -> None:
+        """Record how the job ended, then let the hook do its own bookkeeping.
+
+        The two are separate transactions on purpose. The hook belongs to
+        whoever submitted the job and can fail on its own terms; sharing a
+        transaction with the state write would mean a broken hook rolling the
+        job back to ``running``, where it would stay for the life of the
+        process and refuse every job of its kind.
+        """
         report = {OPERATIONS: list(outcome.report)}
         try:
             with self.session_factory() as session:
                 if outcome.error:
-                    row = repo.mark_job_failed(
-                        session, job_id=job_id, error=outcome.error, report=report
-                    )
+                    repo.mark_job_failed(session, job_id=job_id, error=outcome.error, report=report)
                 else:
-                    row = repo.mark_job_done(session, job_id=job_id, report=report)
-                if on_finish is not None:
-                    on_finish(session, row)
+                    repo.mark_job_done(session, job_id=job_id, report=report)
                 session.commit()
         except Exception:
             # Nothing above this catches: the request that started the job is
             # long gone. A job stuck in "running" is visible in the listing,
             # which is better than a thread dying silently.
             log.exception("could not record the end of job %s", job_id)
+        else:
+            self._notify(job_id, on_finish)
         finally:
             with self._lock:
                 self._threads.pop(job_id, None)
+
+    def _notify(self, job_id: int, on_finish: OnFinish | None) -> None:
+        """Run the submitter's hook over the finished job, in its own session."""
+        if on_finish is None:
+            return
+        try:
+            with self.session_factory() as session:
+                row = repo.get_job(session, job_id)
+                if row is None:  # pragma: no cover - the row was just written
+                    return
+                on_finish(session, row)
+                session.commit()
+        except Exception:
+            log.exception("the finish hook for job %s failed", job_id)

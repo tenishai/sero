@@ -85,6 +85,12 @@ def create_app(
         )
 
     sessions = session_factory if session_factory is not None else datastore.session_factory()
+    jobs = JobRunner(sessions) if sessions is not None else None
+    if jobs is not None:
+        # This process is the only thing that was running them, so whatever the
+        # last one left behind ended when it did. Said here, at startup, before
+        # a stale row can refuse the first job of its kind.
+        jobs.recover_interrupted()
 
     app = FastAPI(title="Ladon", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = Services(
@@ -98,7 +104,7 @@ def create_app(
         reveal_gate=reveal_gate or (AllowGate() if settings.reveal_enabled else DenyGate()),
         session_factory=sessions,
         secrets=secrets,
-        jobs=JobRunner(sessions) if sessions is not None else None,
+        jobs=jobs,
     )
     # The machine lane's own state (D16): a verifier and a call budget per
     # configured caller. With none configured the lane refuses everything,

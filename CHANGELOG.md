@@ -147,6 +147,19 @@ point of view, not a list of commit subjects.
   carried. The ordering that makes an onboarding safe (both halves rendered
   before anything is written, OpenBao first, no cluster half after a blocked
   OpenBao half) is now one function the CLI and the endpoints share.
+- Review fixes on the apply jobs: a restart now ends the jobs it interrupted
+  (`failed`, `interrupted by a restart`) instead of leaving rows that claim a
+  kind forever; the finish hook runs after the job's ending is recorded and in
+  its own transaction, so a broken hook cannot roll a job back to `running`; an
+  apply body naming another phase's fields, or a `server` carrying credentials
+  in the URL, is a `400` rather than a job that fails later; a request that has
+  already been decided cannot be decided again; approval records the decision
+  before it starts the run, so the decision stands even when the run cannot
+  start; the audit row is built from a named list of inputs and never records
+  the OIDC client-secret reference; a dry-run operator install reports `would
+  install` rather than claiming it installed; and credentials embedded in a URL
+  are now stripped out of every string on its way into the audit trail, not
+  only out of error messages.
 - Approving a namespace request now applies that one team's namespace, as a
   `root-config` run narrowed to it (its namespace, the deployment's KV mount
   inside it, and the policies its access level grants; nothing at the root). The

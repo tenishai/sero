@@ -27,6 +27,7 @@ from ladon.config.apps import DEFAULT_APP_AUDIENCE, DEFAULT_SA_NAMESPACE
 from ladon.config.teams import ConfigError
 from ladon.datastore import repositories as repo
 from ladon.datastore.models import Job, NamespaceRequest
+from ladon.hygiene import has_url_userinfo
 from ladon.install.eso import DEFAULT_NAMESPACE as ESO_NAMESPACE
 from ladon.install.k8s import ALREADY_CURRENT
 from ladon.mcp.server import _audit
@@ -47,6 +48,61 @@ TEAM_ONBOARDING = "team-onboarding"
 APP_ONBOARDING = "app-onboarding"
 ESO_INSTALL = "eso-install"
 APPLY_PHASES = (ROOT_CONFIG, TEAM_ONBOARDING, APP_ONBOARDING, ESO_INSTALL)
+
+# What each phase takes, besides `apply`, which all of them take. A field that
+# belongs to another phase is refused rather than ignored: it was sent to do
+# something, and silently dropping it is how a caller ends up believing a run
+# was narrowed, scoped or pointed somewhere it was not.
+PHASE_FIELDS = {
+    ROOT_CONFIG: frozenset(
+        {
+            "namespace",
+            "teams",
+            "jwt_discovery_url",
+            "oidc_discovery_url",
+            "oidc_client_id",
+            "oidc_client_secret_ref",
+        }
+    ),
+    TEAM_ONBOARDING: frozenset({"namespace", "team", "cluster", "oidc_discovery_url"}),
+    APP_ONBOARDING: frozenset(
+        {
+            "namespace",
+            "team",
+            "app",
+            "cluster",
+            "k8s_namespace",
+            "sa_namespace",
+            "audience",
+            "server",
+        }
+    ),
+    ESO_INSTALL: frozenset({"namespace"}),
+}
+
+# The inputs an audit row records: what was asked for, named field by field.
+# Deliberately not `oidc_client_secret_ref`, which is a way to find a secret
+# and is not needed to know what was asked for, and not `apply`, which the row
+# already carries on its own.
+AUDITED_FIELDS = (
+    "teams",
+    "team",
+    "cluster",
+    "app",
+    "namespace",
+    "k8s_namespace",
+    "sa_namespace",
+    "audience",
+    "server",
+    "jwt_discovery_url",
+    "oidc_discovery_url",
+    "oidc_client_id",
+)
+
+# What the operator install did, in the same vocabulary the rest of a report
+# uses. A dry run says what it would do; only an apply claims to have done it.
+INSTALL = "install"
+WOULD_INSTALL = "would install"
 
 # How many jobs a listing returns when the caller does not say.
 DEFAULT_JOB_LIMIT = 50
@@ -114,6 +170,7 @@ def approve_namespace_request(
     email: AdminEmail,
     session: DbSession,
     jobs: Jobs,
+    audit: Auditor,
 ) -> dict[str, Any]:
     """Approve a request and apply that one team's namespace.
 
@@ -128,34 +185,46 @@ def approve_namespace_request(
     because the namespace, the mount and the policies all come from that entry.
     """
     settings = services(request).settings
-    row = _decide(session, request_id, lambda: repo.get_namespace_request(session, request_id))
+    row = _pending(session, request_id)
     body = ApplyBody(teams=[row.team_name], apply=True)
-    args = _phase_args(ROOT_CONFIG, body, settings)
-    try:
-        build_plan(args, settings.deployment)
-    except ConfigError as exc:
-        raise ApiError(400, str(exc)) from exc
+    args = _preflight(ROOT_CONFIG, body, settings)
 
-    # The job is claimed before the decision is written, so this request holds
-    # no write open while the runner takes one of its own: they are different
-    # connections to the same datastore, and each waits for the other's lock.
-    job_id = _submit(
-        jobs,
-        phase=ROOT_CONFIG,
-        email=email,
-        work=_work(ROOT_CONFIG, args, body, settings),
-        on_finish=_record_on_request(request_id),
-    )
+    # The decision is recorded and committed first. It is the admin's, it does
+    # not depend on the run, and holding it open while the runner takes a write
+    # of its own would have two connections to one datastore waiting on each
+    # other. What the run then does is reported back onto this row.
     row = repo.mark_request_approved(session, request_id=request_id)
-    repo.record_request_job(session, request_id=request_id, job_id=job_id)
     _audit(
         session,
         user_email=email,
         tool_name="approve_namespace_request",
         status="ok",
-        args={"request_id": request_id, "team_name": row.team_name, "job_id": job_id},
+        args={"request_id": request_id, "team_name": row.team_name},
     )
     session.commit()
+
+    try:
+        job_id = _submit(
+            jobs,
+            phase=ROOT_CONFIG,
+            email=email,
+            work=_work(ROOT_CONFIG, args, body, settings),
+            on_finish=_record_on_request(request_id),
+        )
+    except ApiError as exc:
+        # The approval stands; what could not start is the run. The row says
+        # so, where the admin who just approved it is already looking.
+        repo.record_request_error(session, request_id=request_id, error=exc.message)
+        session.commit()
+        raise
+    repo.record_request_job(session, request_id=request_id, job_id=job_id)
+    session.commit()
+    audit.record(
+        user_email=email,
+        tool_name=f"apply_{ROOT_CONFIG}",
+        status="ok",
+        args={"kind": ROOT_CONFIG, "job_id": job_id, "apply": True, "args": _audited(body)},
+    )
     return namespace_request_row(row)
 
 
@@ -181,11 +250,8 @@ def reject_namespace_request(
     email: AdminEmail,
     session: DbSession,
 ) -> dict[str, Any]:
-    row = _decide(
-        session,
-        request_id,
-        lambda: repo.mark_request_rejected(session, request_id=request_id, reason=body.reason),
-    )
+    _pending(session, request_id)
+    row = repo.mark_request_rejected(session, request_id=request_id, reason=body.reason)
     _audit(
         session,
         user_email=email,
@@ -256,6 +322,19 @@ def _decide(
         raise ApiError(404, f"namespace request {request_id} not found") from exc
 
 
+def _pending(session: Session, request_id: int) -> NamespaceRequest:
+    """The request, if it is still waiting on a decision.
+
+    A request is decided once. Deciding one twice would approve something an
+    admin already rejected, or start a second run for one already approved, and
+    the second decision would silently replace the first in the record.
+    """
+    row = _decide(session, request_id, lambda: repo.get_namespace_request(session, request_id))
+    if row.status != "pending":
+        raise ApiError(400, f"namespace request {request_id} is already {row.status}")
+    return row
+
+
 # ── The apply phases, as jobs ──────────────────────────────────────────
 
 
@@ -272,15 +351,7 @@ def start_apply(
     if phase not in APPLY_PHASES:
         raise ApiError(404, f"no apply phase named {phase!r}")
     settings = services(request).settings
-    args = _phase_args(phase, body, settings)
-    if phase != ESO_INSTALL:
-        # Planning is offline and pure, so a body that cannot produce a plan is
-        # refused here, while the caller is still listening, rather than
-        # becoming a job that fails a second later for a reason nobody reads.
-        try:
-            build_plan(args, settings.deployment)
-        except ConfigError as exc:
-            raise ApiError(400, str(exc)) from exc
+    args = _preflight(phase, body, settings)
     job_id = _submit(jobs, phase=phase, email=email, work=_work(phase, args, body, settings))
     audit.record(
         user_email=email,
@@ -327,6 +398,35 @@ def _submit(
         raise ApiError(409, str(exc), {"job_id": exc.job_id, "kind": exc.kind}) from exc
 
 
+def _preflight(phase: str, body: ApplyBody, settings: WebSettings) -> argparse.Namespace:
+    """Everything that can be refused while the caller is still listening.
+
+    A body that names another phase's fields, an address carrying credentials,
+    or inputs that cannot produce a plan are all answered now, rather than
+    becoming a job that fails a second later for a reason nobody is watching
+    for. Planning is offline and pure, so doing it twice costs nothing.
+    """
+    extra = sorted(body.model_fields_set - {"apply"} - PHASE_FIELDS[phase])
+    if extra:
+        raise ApiError(400, f"{phase} does not take {', '.join(extra)}")
+    if body.server and has_url_userinfo(body.server):
+        # Never repeat what it found: this value would go on to be written into
+        # a rendered store, an audit row, and this very message.
+        raise ApiError(
+            400,
+            "the OpenBao address carries embedded credentials; give a plain "
+            "address, and supply the credential through the environment",
+        )
+
+    args = _phase_args(phase, body, settings)
+    if phase != ESO_INSTALL:
+        try:
+            build_plan(args, settings.deployment)
+        except ConfigError as exc:
+            raise ApiError(400, str(exc)) from exc
+    return args
+
+
 def _phase_args(phase: str, body: ApplyBody, settings: WebSettings) -> argparse.Namespace:
     """The flags this phase runs with, as the apply layer reads them.
 
@@ -362,11 +462,14 @@ def _work(phase: str, args: argparse.Namespace, body: ApplyBody, settings: WebSe
 
         def install() -> JobOutcome:
             result = run_eso_install(namespace, apply=body.apply)
+            # Only an apply claims to have installed anything.
+            installing = INSTALL if body.apply else WOULD_INSTALL
+            action = ALREADY_CURRENT if result.reused else installing
             return JobOutcome(
                 report=(
                     {
                         "surface": "cluster",
-                        "action": ALREADY_CURRENT if result.reused else "install",
+                        "action": action,
                         "target": "external-secrets operator",
                         "reason": result.summary,
                     },
@@ -434,5 +537,12 @@ def _failure(run: PhaseRun) -> str | None:
 
 
 def _audited(body: ApplyBody) -> dict[str, Any]:
-    """The inputs, for the audit row: the ones that were given, by name."""
-    return {key: value for key, value in body.model_dump(exclude={"apply"}).items() if value}
+    """The inputs, for the audit row: the ones that were given, by name.
+
+    Built from a named list rather than from the whole body, so a field added
+    to the body later is not audited by accident. What lands in the table is
+    redacted again on the way in.
+    """
+    given = body.model_fields_set
+    values = ((name, getattr(body, name)) for name in AUDITED_FIELDS if name in given)
+    return {name: value for name, value in values if value}
