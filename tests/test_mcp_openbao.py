@@ -8,6 +8,9 @@ import pytest
 
 from ladon.mcp.openbao import OpenBaoSecrets
 
+# What the store says about when the current version was written.
+WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
+
 
 class InvalidPath(Exception):
     """Named like hvac's: an empty KV listing is a 404 from OpenBao."""
@@ -17,6 +20,7 @@ class FakeKvV2:
     def __init__(self, store):
         self._store = store  # {path: {key: value}}
         self.listed: list[str] = []
+        self.destroyed: list[str] = []
 
     def list_secrets(self, *, path, mount_point):
         # The way KV v2 answers: the distinct next segment under the prefix,
@@ -38,16 +42,28 @@ class FakeKvV2:
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
         if path not in self._store:
             raise KeyError("not found")
-        return {"data": {"data": dict(self._store[path]), "metadata": {"version": 3}}}
+        return {
+            "data": {
+                "data": dict(self._store[path]),
+                "metadata": {"version": 3, "created_time": WRITTEN_AT},
+            }
+        }
 
     def create_or_update_secret(self, *, path, secret, mount_point):
         self._store[path] = dict(secret)
         return {"data": {"version": 1}}
 
+    def delete_metadata_and_all_versions(self, *, path, mount_point):
+        # The real call removes the metadata and every version with it, which
+        # is what makes the path gone rather than soft-deleted.
+        self.destroyed.append(path)
+        self._store.pop(path, None)
+
 
 class FakeClient:
     def __init__(self, store):
-        self.secrets = type("S", (), {"kv": type("K", (), {"v2": FakeKvV2(store)})()})()
+        self.kv = FakeKvV2(store)
+        self.secrets = type("S", (), {"kv": type("K", (), {"v2": self.kv})()})()
 
 
 def make_secrets(store, namespaces=("team-a",)):
@@ -56,6 +72,15 @@ def make_secrets(store, namespaces=("team-a",)):
         client_for=lambda ns: client,
         namespaces_for=lambda email: list(namespaces),
     )
+
+
+def make_secrets_and_client(store, namespaces=("team-a",)):
+    client = FakeClient(store)
+    secrets = OpenBaoSecrets(
+        client_for=lambda ns: client,
+        namespaces_for=lambda email: list(namespaces),
+    )
+    return secrets, client
 
 
 def test_list_namespaces_uses_resolver():
@@ -184,3 +209,42 @@ def test_reveal_value_unknown_key_is_a_key_error():
     obs = make_secrets(store)
     with pytest.raises(KeyError):
         obs.reveal_value("op@example.com", "team-a", "app", "dev", "ABSENT")
+
+
+def test_get_secret_reports_when_the_current_version_was_written():
+    obs = make_secrets({"app": {"API_KEY": "supersecretvalue"}})
+    detail = obs.get_secret("op@example.com", "team-a", "app", "dev")
+    assert detail.updated_at == WRITTEN_AT
+
+
+def test_get_secret_reports_no_timestamp_when_the_store_gives_none():
+    class NoTimes(FakeKvV2):
+        def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
+            return {"data": {"data": {"API_KEY": "v"}, "metadata": {"version": 1}}}
+
+    client = FakeClient({})
+    client.secrets.kv.v2 = NoTimes({})
+    obs = OpenBaoSecrets(client_for=lambda ns: client, namespaces_for=lambda email: ["team-a"])
+    assert obs.get_secret("op@example.com", "team-a", "app", "dev").updated_at is None
+
+
+def test_delete_secret_removes_the_metadata_and_every_version():
+    store = {"app": {"API_KEY": "supersecretvalue"}}
+    obs, client = make_secrets_and_client(store)
+    assert obs.delete_secret("op@example.com", "team-a", "app") is True
+    # The metadata call, not a soft delete: a soft-deleted path still exists.
+    assert client.kv.destroyed == ["app"]
+    assert store == {}
+
+
+def test_deleting_a_path_that_is_not_there_is_false_and_touches_nothing():
+    obs, client = make_secrets_and_client({"app": {"API_KEY": "v"}})
+    assert obs.delete_secret("op@example.com", "team-a", "nope") is False
+    assert client.kv.destroyed == []
+
+
+def test_deleting_twice_is_not_an_error():
+    obs, client = make_secrets_and_client({"app": {"API_KEY": "v"}})
+    assert obs.delete_secret("op@example.com", "team-a", "app") is True
+    assert obs.delete_secret("op@example.com", "team-a", "app") is False
+    assert client.kv.destroyed == ["app"]

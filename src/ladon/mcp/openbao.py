@@ -130,7 +130,11 @@ class OpenBaoSecrets:
             return SecretDetail(namespace=namespace, path=path, env=env, exists=False)
         data = resp.get("data", {})
         raw = data.get("data") or {}
-        version = (data.get("metadata") or {}).get("version")
+        metadata = data.get("metadata") or {}
+        version = metadata.get("version")
+        # When the current version was written. A time, not a value: it says a
+        # path changed, never what it changed to.
+        created = metadata.get("created_time")
         # Mask at the boundary: only masked previews leave this module.
         masked = {k: mask(str(v)) for k, v in raw.items()}
         return SecretDetail(
@@ -139,6 +143,7 @@ class OpenBaoSecrets:
             env=env,
             exists=True,
             version=version,
+            updated_at=str(created) if created else None,
             masked_keys=masked,
         )
 
@@ -192,6 +197,25 @@ class OpenBaoSecrets:
             written_keys=list(values),
             removed_keys=[k for k in remove_keys if k in current],
         )
+
+    # ── SecretEraser ─────────────────────────────────────────────────────
+
+    def delete_secret(self, user_email: str, namespace: str, path: str) -> bool:
+        """Remove a path and every version of it. True when one was there.
+
+        Metadata and all versions, not the soft delete KV v2 does by default: a
+        soft-deleted path still exists, still lists, and can be undeleted, which
+        is not what a caller asking for the path to be gone means. The versions
+        hold the values, so leaving them is leaving the secret.
+
+        Read first, so the answer distinguishes a path that was removed from one
+        that was already absent. Asking twice is not an error either way.
+        """
+        client = self._client_for(namespace)
+        if not self._read(client, namespace, path, env="").exists:
+            return False
+        client.secrets.kv.v2.delete_metadata_and_all_versions(path=path, mount_point=self._mount)
+        return True
 
     # ── Reveal (the one plaintext exit, gated above this layer) ──────────
 

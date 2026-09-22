@@ -37,6 +37,10 @@ class SecretDetail:
     ``ladon.hygiene.mask``); it never contains a plaintext value. ``exists`` is
     false when the path is absent in that environment, in which case the other
     fields are empty.
+
+    ``updated_at`` is when the current version was written, as the store
+    reports it, or None when it does not. It is a timestamp, so it says when a
+    path last changed without saying anything about what it holds.
     """
 
     namespace: str
@@ -44,6 +48,7 @@ class SecretDetail:
     env: str
     exists: bool
     version: int | None = None
+    updated_at: str | None = None
     masked_keys: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -142,4 +147,25 @@ class SecretWriter(Protocol):
         remove_keys: list[str],
     ) -> WriteResult:
         """Merge ``values`` into an existing path and delete ``remove_keys``."""
+        ...
+
+
+class SecretEraser(Protocol):
+    """Removing a whole secret path, which no other port does.
+
+    Its own protocol rather than a third method on ``SecretWriter`` because the
+    two are not the same permission. A writer merges keys into a path and is
+    forbidden from emptying one (:func:`require_non_empty_merge`); this removes
+    the path and every version of it, which is the operation that rule points
+    at. A surface that may write is not automatically a surface that may erase,
+    and keeping them apart is what lets a deployment wire only one of them.
+    """
+
+    def delete_secret(self, user_email: str, namespace: str, path: str) -> bool:
+        """Remove a path and all of its versions. True when one was there.
+
+        Idempotent: a path that is already gone is False, not an error. No
+        ``env``, because a deployment serves one and a delete has nothing to
+        label. Returns no key names; the caller read those before it asked.
+        """
         ...
