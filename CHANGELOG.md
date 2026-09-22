@@ -151,6 +151,40 @@ point of view, not a list of commit subjects.
 - Team onboarding takes the External Secrets Operator's service account name as
   a parameter, so a deployment that renames it can keep the role's bound subject
   and the store pointing at the same identity.
+- Rendered Kubernetes documents can be applied to the cluster Ladon runs on
+  (`ladon.install.k8s`, D18). They go as one stream through `kubectl apply
+  --server-side --field-manager=ladon`, defaulting to a server dry-run, and the
+  report names every document as configured or blocked (server-side apply
+  reports one verb for create and update); the read-back is what proves the
+  state. Ladon never passes `--force-conflicts`: a field another manager owns is
+  reported as a blocked document, with the rest of the stream still applied and
+  reported, so taking that field away stays an operator's decision. A failure is
+  classified per error line, so a denial that shares the output with a conflict,
+  or an exit with no error line Ladon recognises, is an error rather than a
+  quietly blocked document. The same read-back-and-verify rule the OpenBao apply
+  layer follows applies here, and the comparison covers only the fields the
+  document sets, so server defaults and controller status do not read as drift.
+  A mismatch names the kind, the object and the field path, never a value. The
+  "already current" signal the OpenBao half reports for a no-op is still owed
+  for cluster documents; it comes with the CLI half, from the dry-run and the
+  read-back rather than from kubectl's own verb.
+- An External Secrets Operator already running on the cluster is detected,
+  reported and reused, and no helm command runs (D18a). The operator is
+  cluster-scoped and singular, so installing a second one would leave two
+  controllers fighting over one set of custom resource definitions. The install
+  result reads `reusing external-secrets <version> in namespace <namespace>`;
+  the version comes from the deployment's `app.kubernetes.io/version` label,
+  falling back to its image tag. The pinned-chart install is unchanged for a
+  cluster that has no operator and no leftover custom resource definitions;
+  definitions without an operator are a refusal, since installing over them
+  would adopt somebody else's. A failed lookup, and more than one operator
+  found, are both errors rather than a "nothing found", because treating either
+  as absence is how a second operator gets installed.
+- The ESO custom resource API version can be probed from the cluster
+  (`eso_api_version`), so resources are rendered at the version the cluster
+  actually stores (`v1` or `v1beta1`) rather than at a version assumed from the
+  chart. This is the API mismatch deployment-order.md warns about, now
+  answerable at runtime. An absent CRD is an error, not an older version.
 
 ### Fixed
 
