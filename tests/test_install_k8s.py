@@ -11,7 +11,8 @@ import subprocess
 import pytest
 import yaml
 
-from fake_cluster import FakeCluster
+import fake_cluster
+from fake_cluster import FakeCluster, eso_status_entry, managed_field_entry
 from ladon.install import k8s
 from ladon.install.k8s import (
     ESOInstall,
@@ -878,13 +879,27 @@ def test_a_read_back_that_fails_after_the_write_also_carries_the_report():
 # delete_documents ------------------------------------------------------------
 
 
-def managed(doc, *managers):
-    """A live object the API server has recorded field managers on."""
-    doc["metadata"]["managedFields"] = [{"manager": m, "operation": "Apply"} for m in managers]
+def managed(doc, *managers, terminating=False):
+    """A live object with realistic managedFields entries for each manager."""
+    doc["metadata"]["managedFields"] = [
+        managed_field_entry(m, api_version=doc.get("apiVersion", "v1")) for m in managers
+    ]
+    if terminating:
+        doc["metadata"]["deletionTimestamp"] = "2026-09-22T10:05:00Z"
     return doc
 
 
-def test_delete_argv_names_the_namespace_and_never_fails_on_absence():
+def external_secret_doc():
+    """The kind the lane removes, and the one ESO stamps a status entry on."""
+    return {
+        "apiVersion": "external-secrets.io/v1",
+        "kind": "ExternalSecret",
+        "metadata": {"name": "sample-demo", "namespace": "sample"},
+        "spec": {"dataFrom": [{"extract": {"key": "apps/sample/demo"}}]},
+    }
+
+
+def test_delete_argv_ignores_absence_and_does_not_wait():
     argv = k8s.delete_argv(service_account_doc())
     assert argv == [
         "kubectl",
@@ -893,6 +908,7 @@ def test_delete_argv_names_the_namespace_and_never_fails_on_absence():
         "-n",
         "ladon",
         "--ignore-not-found",
+        "--wait=false",
     ]
 
 
@@ -903,12 +919,28 @@ def test_delete_argv_omits_the_namespace_for_a_cluster_scoped_document():
 
 
 def test_field_managers_reports_each_manager_once_in_order():
-    live = managed(service_account_doc(), "ladon", "kubectl", "ladon")
-    assert k8s.field_managers(live) == ("ladon", "kubectl")
+    live = managed(service_account_doc(), "ladon", "kubectl-client-side-apply", "ladon")
+    assert k8s.field_managers(live) == ("ladon", "kubectl-client-side-apply")
 
 
 def test_field_managers_of_an_object_nobody_has_claimed_is_empty():
     assert k8s.field_managers(service_account_doc()) == ()
+
+
+def test_a_status_writer_is_not_an_owner():
+    # ESO stamps every ExternalSecret it reconciles, including Ladon's own.
+    # Reading that as ownership would make ESO the owner of the whole cluster.
+    live = external_secret_doc()
+    live["metadata"]["managedFields"] = [eso_status_entry()]
+    assert k8s.field_managers(live) == ()
+
+
+def test_ladons_object_is_still_ladons_once_eso_has_written_its_status():
+    live = managed(external_secret_doc(), "ladon")
+    live["metadata"]["managedFields"].append(eso_status_entry())
+    cluster = FakeCluster(live=[live])
+    report = k8s.delete_documents([external_secret_doc()], run=cluster, dry_run=False)
+    assert [r.action for r in report.results] == ["delete"]
 
 
 def test_delete_removes_an_object_ladon_applied():
@@ -943,13 +975,33 @@ def test_delete_of_an_object_that_was_never_there_is_absent():
 def test_delete_refuses_an_object_another_manager_owns():
     # The mirror of never passing --force-conflicts: taking a field from
     # another manager needs an operator, and so does deleting its object.
-    cluster = FakeCluster(live=[managed(service_account_doc(), "other-operator")])
+    cluster = FakeCluster(live=[managed(service_account_doc(), "external-secrets")])
     with pytest.raises(k8s.ForeignObjectError) as excinfo:
         k8s.delete_documents([service_account_doc()], run=cluster, dry_run=False)
-    assert "other-operator" in str(excinfo.value)
+    assert "external-secrets" in str(excinfo.value)
     assert "ServiceAccount/eso-ns-a-sample" in str(excinfo.value)
     assert cluster.deletes == []
     assert cluster.stored(service_account_doc()) is not None
+
+
+def test_delete_refuses_an_object_a_client_side_apply_has_taken_over():
+    # `kubectl apply` without --server-side replaces the server-side entry with
+    # its own, so the object Ladon created is no longer recorded as Ladon's.
+    # Deleting it anyway would remove whatever that operator now maintains.
+    live = external_secret_doc()
+    live["metadata"]["managedFields"] = [
+        managed_field_entry(
+            "kubectl-client-side-apply",
+            operation="Update",
+            fields={"f:metadata": {"f:annotations": {}}, "f:spec": {}},
+        ),
+        eso_status_entry(),
+    ]
+    cluster = FakeCluster(live=[live])
+    with pytest.raises(k8s.ForeignObjectError) as excinfo:
+        k8s.delete_documents([external_secret_doc()], run=cluster, dry_run=False)
+    assert "kubectl-client-side-apply" in str(excinfo.value)
+    assert cluster.deletes == []
 
 
 def test_delete_refuses_an_object_with_no_recorded_manager():
@@ -960,23 +1012,46 @@ def test_delete_refuses_an_object_with_no_recorded_manager():
 
 
 def test_an_object_ladon_shares_with_another_manager_is_still_deletable():
-    cluster = FakeCluster(live=[managed(service_account_doc(), "kubectl", "ladon")])
+    cluster = FakeCluster(
+        live=[managed(service_account_doc(), "kubectl-client-side-apply", "ladon")]
+    )
     report = k8s.delete_documents([service_account_doc()], run=cluster, dry_run=False)
     assert [r.action for r in report.results] == ["delete"]
 
 
-def test_one_foreign_object_refuses_the_whole_request():
-    # Half a destroy is worse than none: the refusal happens before anything is
-    # deleted, including the document that would have gone first.
+def test_a_foreign_object_stops_the_documents_after_it():
+    # The check happens immediately before each delete rather than in a pass of
+    # its own, so a refusal partway through leaves what came before it deleted.
+    # One document is what every caller here sends; with several, the refusal
+    # still stops the rest.
     cluster = FakeCluster(
         live=[
             managed(service_account_doc(), "ladon"),
-            managed(store_doc(), "other-operator"),
+            managed(store_doc(), "external-secrets"),
         ]
     )
     with pytest.raises(k8s.ForeignObjectError):
         k8s.delete_documents(both_docs(), run=cluster, dry_run=False)
-    assert cluster.deletes == []
+    assert [call[2] for call in cluster.deletes] == ["serviceaccount/eso-ns-a-sample"]
+    assert cluster.stored(store_doc()) is not None
+
+
+def test_each_delete_reads_checks_deletes_and_reads_again():
+    # Read, check, delete, read back, with nothing in between: the check must
+    # be on state this call just read, and the outcome on state read after.
+    gone = fake_cluster.NOT_FOUND.format(resource="serviceaccount", name="eso-ns-a-sample")
+    order = []
+
+    def handler(argv, stdin):
+        order.append(argv[1])
+        if argv[1] == "delete":
+            return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
+        if "delete" in order:
+            return _Result(argv, returncode=1, stderr=gone + "\n")
+        return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "ladon")))
+
+    k8s.delete_documents([service_account_doc()], run=FakeRunner(handler=handler), dry_run=False)
+    assert order == ["get", "delete", "get"]
 
 
 def test_a_dry_run_delete_checks_ownership_and_deletes_nothing():
@@ -991,9 +1066,40 @@ def test_a_dry_run_delete_checks_ownership_and_deletes_nothing():
 
 
 def test_a_dry_run_delete_still_refuses_a_foreign_object():
-    cluster = FakeCluster(live=[managed(service_account_doc(), "other-operator")])
+    cluster = FakeCluster(live=[managed(service_account_doc(), "external-secrets")])
     with pytest.raises(k8s.ForeignObjectError):
         k8s.delete_documents([service_account_doc()], run=cluster, dry_run=True)
+
+
+def test_an_object_still_present_after_the_delete_raises():
+    # kubectl accepting a delete is not the cluster having done it. An object
+    # that reads back unchanged, with no deletion timestamp, is a failure.
+    def handler(argv, stdin):
+        if argv[1] == "get":
+            return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "ladon")))
+        return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
+
+    with pytest.raises(K8sError, match="still on the cluster"):
+        k8s.delete_documents(
+            [service_account_doc()], run=FakeRunner(handler=handler), dry_run=False
+        )
+
+
+def test_an_object_held_by_a_finalizer_counts_as_deleted():
+    # --wait=false means the read-back can still see an object the API server
+    # has accepted the delete for. A deletionTimestamp says so.
+    def handler(argv, stdin):
+        if argv[1] == "get":
+            return _Result(
+                argv,
+                stdout=json.dumps(managed(service_account_doc(), "ladon", terminating=True)),
+            )
+        return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
+
+    report = k8s.delete_documents(
+        [service_account_doc()], run=FakeRunner(handler=handler), dry_run=False
+    )
+    assert [r.action for r in report.results] == ["delete"]
 
 
 def test_delete_raises_with_only_the_first_stderr_line_when_kubectl_fails():

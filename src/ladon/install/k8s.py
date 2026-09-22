@@ -407,29 +407,64 @@ def delete_argv(doc: dict) -> list[str]:
     Always ``--ignore-not-found``: the object is read before this runs, and
     between the read and the delete somebody else may have removed it. That
     is the outcome asked for, not a failure.
+
+    Always ``--wait=false`` too. kubectl's default is to poll until the object
+    is gone, which turns one finalizer that is not making progress into a
+    request held open for the whole timeout. The read-back this module does
+    afterwards is what proves the outcome, so there is nothing for kubectl's
+    wait to add except the blocking.
     """
     _, namespace, name = _identify(doc)
     argv = ["kubectl", "delete", f"{_resource_token(doc)}/{name}"]
     if namespace:
         argv += ["-n", namespace]
-    return argv + ["--ignore-not-found"]
+    return argv + ["--ignore-not-found", "--wait=false"]
 
 
 def field_managers(live: dict) -> tuple[str, ...]:
-    """Every manager recorded on a live object, in the order it lists them.
+    """Every manager that owns part of a live object, once each, in order.
 
     Server-side apply writes one ``managedFields`` entry per manager and
     operation, so a manager can appear more than once; this reports each once.
     An object with no entries at all belongs to nobody Ladon can name, and the
     empty tuple is what says so.
+
+    Entries scoped to a subresource are left out. A controller writing an
+    object's ``status`` records itself there, and it does not thereby own the
+    object: ESO stamps every ExternalSecret Ladon applies, and reading that as
+    ownership would make ESO the owner of everything on the cluster. Ladon
+    writes no subresource, so nothing it owns is lost by this.
     """
     entries = (live.get("metadata") or {}).get("managedFields") or []
     seen: dict[str, None] = {}
     for entry in entries:
         manager = entry.get("manager")
-        if manager:
+        if manager and not entry.get("subresource"):
             seen.setdefault(str(manager), None)
     return tuple(seen)
+
+
+def _require_managed(doc: dict, live: dict, field_manager: str) -> None:
+    """Refuse an object Ladon is not recorded as a manager of."""
+    managers = field_managers(live)
+    if field_manager in managers:
+        return
+    kind, _, name = _identify(doc)
+    raise ForeignObjectError(
+        f"{kind}/{name} is managed by "
+        f"{', '.join(managers) if managers else 'no recorded manager'}, "
+        f"not by {field_manager!r}; Ladon does not delete what it did not apply"
+    )
+
+
+def _is_terminating(live: dict) -> bool:
+    """True when the API server has accepted a delete and is finishing it.
+
+    An object with a ``deletionTimestamp`` is on its way out and is only still
+    readable because a finalizer has not run yet. The delete did what it was
+    asked; waiting for the controller is not this call's job.
+    """
+    return bool((live.get("metadata") or {}).get("deletionTimestamp"))
 
 
 def delete_documents(
@@ -445,45 +480,51 @@ def delete_documents(
     spec is not read, so a caller removing an object it created earlier does not
     have to be able to render it again.
 
-    Every object is read first, which is what makes this both safe and
-    idempotent. An object that is not there is reported ``absent`` and no delete
-    runs. An object whose live ``managedFields`` do not record ``field_manager``
-    raises :class:`ForeignObjectError` and nothing at all is deleted, including
-    the documents that would have come after it: a caller pointed at the wrong
-    object should find the whole request refused rather than half done.
+    Each object is read, checked and deleted in that order, one document at a
+    time. The check does not get its own earlier pass on purpose: whether Ladon
+    manages an object is only true as of the moment it was read, and a pass
+    that cleared every document first would be deciding on state that another
+    manager could have taken over by the time the delete ran. Read, check,
+    delete, with nothing in between, is the narrowest that window gets.
+
+    The cost is that a refusal partway through a list leaves the documents
+    before it deleted. With one document, which is what every caller here
+    sends, there is no partway; with several, a ``ForeignObjectError`` still
+    stops the rest.
+
+    An object that is not there is reported ``absent`` and no delete runs, so
+    asking twice is not an error. After a delete the object is read again: the
+    result is ``delete`` when it is gone or is terminating with a
+    ``deletionTimestamp``, and a still-present object raises, because kubectl
+    accepting a delete is not the same as the cluster having done it.
 
     Defaults to a dry run, like every other write surface. A dry run does the
-    reads and the ownership check, so it answers the same refusals an apply
+    read and the ownership check, so it answers the same refusals an apply
     would, and runs no delete.
     """
     docs = [_checked(doc) for doc in docs]
-    live = [(doc, read_one(doc, missing_ok=True, run=run)) for doc in docs]
-
-    for doc, obj in live:
-        if obj is None:
-            continue
-        managers = field_managers(obj)
-        if field_manager not in managers:
-            kind, _, name = _identify(doc)
-            raise ForeignObjectError(
-                f"{kind}/{name} is managed by "
-                f"{', '.join(managers) if managers else 'no recorded manager'}, "
-                f"not by {field_manager!r}; Ladon does not delete what it did not apply"
-            )
-
     results: list[ApplyResult] = []
-    for doc, obj in live:
+    for doc in docs:
         kind, namespace, name = _identify(doc)
-        if obj is None:
+        live = read_one(doc, missing_ok=True, run=run)
+        if live is None:
             results.append(ApplyResult(kind, namespace, name, ABSENT))
             continue
-        if not dry_run:
-            outcome = run(delete_argv(doc))
-            if outcome.returncode != 0:
-                message = outcome.stderr or outcome.stdout
-                raise K8sError(
-                    f"deleting {kind}/{name} failed ({outcome.returncode}): {_first_line(message)}"
-                )
+        _require_managed(doc, live, field_manager)
+        if dry_run:
+            results.append(ApplyResult(kind, namespace, name, DELETE))
+            continue
+        outcome = run(delete_argv(doc))
+        if outcome.returncode != 0:
+            message = outcome.stderr or outcome.stdout
+            raise K8sError(
+                f"deleting {kind}/{name} failed ({outcome.returncode}): {_first_line(message)}"
+            )
+        after = read_one(doc, missing_ok=True, run=run)
+        if after is not None and not _is_terminating(after):
+            raise K8sError(
+                f"{kind}/{name} is still on the cluster after kubectl accepted the delete"
+            )
         results.append(ApplyResult(kind, namespace, name, DELETE))
     return ApplyReport(results=tuple(results), dry_run=dry_run)
 

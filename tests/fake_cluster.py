@@ -160,6 +160,54 @@ def _manager(argv: list[str]) -> str:
     return next((a[len(flag) :] for a in argv if a.startswith(flag)), "kubectl")
 
 
+# When the fake's managed-fields entries say they were written. A fixed instant,
+# so a stored object is comparable across a test run.
+STAMPED_AT = "2026-09-22T10:00:00Z"
+
+
+def managed_field_entry(
+    manager: str,
+    *,
+    operation: str = "Apply",
+    api_version: str = "external-secrets.io/v1",
+    fields: dict | None = None,
+    subresource: str | None = None,
+) -> dict:
+    """One ``managedFields`` entry, shaped the way the API server writes them.
+
+    The real entry carries the API version it was written at, a timestamp, and
+    the owned field set under ``fieldsV1`` with ``fieldsType: FieldsV1``. The
+    ownership check only reads ``manager`` and ``subresource``, and that is the
+    point of carrying the rest: a fixture holding only the two fields the code
+    happens to read cannot show that it still finds them in a real entry.
+    """
+    entry = {
+        "manager": manager,
+        "operation": operation,
+        "apiVersion": api_version,
+        "time": STAMPED_AT,
+        "fieldsType": "FieldsV1",
+        "fieldsV1": fields if fields is not None else {"f:spec": {}},
+    }
+    if subresource:
+        entry["subresource"] = subresource
+    return entry
+
+
+def eso_status_entry() -> dict:
+    """ESO's own entry on every ExternalSecret it reconciles.
+
+    It writes the status subresource and owns nothing of the object itself,
+    which is exactly the entry that must not read as ownership.
+    """
+    return managed_field_entry(
+        "external-secrets",
+        operation="Update",
+        fields={"f:status": {"f:conditions": {}}},
+        subresource="status",
+    )
+
+
 def _managed_by(doc: dict, manager: str) -> dict:
     """Stamp a stored object the way server-side apply records its owner.
 
@@ -170,5 +218,5 @@ def _managed_by(doc: dict, manager: str) -> dict:
     metadata = doc.setdefault("metadata", {})
     entries = metadata.setdefault("managedFields", [])
     if not any(entry.get("manager") == manager for entry in entries):
-        entries.append({"manager": manager, "operation": "Apply"})
+        entries.append(managed_field_entry(manager, api_version=doc.get("apiVersion", "v1")))
     return doc
