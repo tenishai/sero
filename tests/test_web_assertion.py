@@ -330,6 +330,24 @@ def test_keys_do_not_survive_an_outage_forever():
         subject.email(token())
 
 
+def test_a_shorter_grace_window_expires_the_keys_sooner():
+    # The machine lane asks for one: logging a person out of a UI during a key
+    # outage costs more than making a machine retry its provisioning call.
+    keys = FlakyKeys()
+    clock = [1000.0]
+    subject = AssertionVerifier(
+        SETTINGS, fetch=keys, ttl_seconds=900, stale_max_seconds=600, now=lambda: clock[0]
+    )
+    subject.email(token())
+
+    keys.up = False
+    # The same 901 seconds that the default hour-long grace rides out, just
+    # below, is past this one: the first failed refresh empties the cache.
+    clock[0] += 901
+    with pytest.raises(AssertionInvalid, match="could not read"):
+        subject.email(token())
+
+
 def test_a_recovered_endpoint_is_used_again():
     keys = FlakyKeys()
     clock = [1000.0]

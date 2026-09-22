@@ -28,8 +28,10 @@ from ladon.datastore.models import Base, ToolCallLog
 from ladon.install.k8s import converge_documents
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.web.app import create_app
+from ladon.web.assertion import STALE_KEYS_MAX_SECONDS
 from ladon.web.service_lane import (
     MAX_SERVICE_TOKEN_AGE_SECONDS,
+    SERVICE_STALE_KEYS_MAX_SECONDS,
     ClusterSync,
     build_service_lane,
 )
@@ -411,6 +413,15 @@ def test_a_token_issued_in_the_future_is_refused(client):
 def test_a_token_that_is_not_yet_valid_is_refused(client):
     later = service_token(claims={"nbf": int(now_epoch()) + 600})
     assert put(client, token_value=later).status_code == 401
+
+
+def test_the_lane_keeps_signing_keys_for_a_shorter_grace_than_the_human_lane():
+    # That a shorter grace expires keys sooner is proven in test_web_assertion;
+    # this is the wiring, which is the part that could silently not happen.
+    assert SERVICE_STALE_KEYS_MAX_SECONDS < STALE_KEYS_MAX_SECONDS
+    lane = build_service_lane(callers(), fetch=lambda url: jwks((KEY, KID)))
+    ((_, verifier),) = lane.verifiers.values()
+    assert verifier._jwks._stale_max == SERVICE_STALE_KEYS_MAX_SECONDS
 
 
 def test_a_token_matching_two_callers_is_refused(sessions, store, cluster):

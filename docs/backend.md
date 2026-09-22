@@ -314,7 +314,9 @@ Two things are stricter here than on the human lane:
   future, past the leeway, is refused for the mirror reason.
 - **A ten-minute stale-key grace**, not the human lane's hour. Keeping a UI
   usable through a key-endpoint outage is worth an hour of risk; letting a
-  machine retry its provisioning call ten minutes later is not.
+  machine retry its provisioning call later is not. In practice this means the
+  first refresh that fails after the cache's fifteen-minute lifetime empties it,
+  rather than the keys riding out an hour of outage.
 
 Anything else is `401 {"error": "no service identity"}`: an absent token, a
 token for the human lane, another audience, another issuer, another subject, an
