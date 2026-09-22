@@ -39,6 +39,8 @@ from ladon.web.errors import ApiError
 from ladon.web.groups import ConfigGroupSource, GroupSource
 from ladon.web.identity import IdentityReader, resolve_dev_identity
 from ladon.web.reveal import AllowGate, DenyGate, RevealDeniedError, RevealGate
+from ladon.web.service_lane import ServiceLane, build_service_lane
+from ladon.web.service_lane import router as service_router
 from ladon.web.settings import WebSettings, load_web_settings
 
 API_PREFIX = "/api"
@@ -54,6 +56,7 @@ def create_app(
     groups: GroupSource | None = None,
     reveal_gate: RevealGate | None = None,
     assertion_verifier: AssertionVerifier | None = None,
+    service_lane: ServiceLane | None = None,
     env: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """Build the application.
@@ -95,6 +98,10 @@ def create_app(
         ),
         secrets=secrets,
     )
+    # The machine lane's own state (D16): a verifier and a call budget per
+    # configured caller. With none configured the lane refuses everything,
+    # which is what an unconfigured deployment should answer a machine.
+    app.state.service_lane = service_lane or build_service_lane(settings.service_callers)
 
     _register_error_handlers(app)
 
@@ -105,6 +112,7 @@ def create_app(
 
     app.include_router(routes_secrets.router, prefix=API_PREFIX)
     app.include_router(routes_admin.router, prefix=API_PREFIX)
+    app.include_router(service_router, prefix=API_PREFIX)
     _register_ui(app, settings.ui_dist)
     return app
 

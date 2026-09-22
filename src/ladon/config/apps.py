@@ -130,6 +130,50 @@ def app_store_name(*, team: str, app: str) -> str:
     return _store_name(_label(team, "team"), _label(app, "app"))
 
 
+def checked_apps_path(path: str, *, field: str = "path") -> str:
+    """Refuse a KV path that is not an application's.
+
+    ``apps/`` is the only prefix any application identity can read, so a path
+    outside it produces a document that looks right and is refused at refresh
+    time, in the operator's logs, later. The machine lane uses this on its own:
+    it provisions application secrets and nothing else.
+
+    A relative segment is refused before the prefix is tested: ``.`` and ``..``
+    read as inside the prefix while naming something else, and whether a reader
+    resolves them at all differs between the policy engine and the store.
+    """
+    segments = path.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        raise ConfigError(
+            f"{field} {path!r} has an empty or relative segment; give the "
+            "path as it is stored, with no '.' or '..'"
+        )
+    if len(segments) < 2 or segments[0] != APP_PATH_SEGMENT:
+        raise ConfigError(
+            f"{field} {path!r} is outside {APP_PATH_SEGMENT + '/'!r}, which is "
+            "where every application's secrets live"
+        )
+    return path
+
+
+def checked_app_path(app: str, path: str, *, field: str = "path") -> str:
+    """Refuse a path outside one application's own prefix.
+
+    The application's policy grants read on ``apps/<app>`` and nothing else, so
+    naming another application's prefix renders a document its identity cannot
+    read. Shared by the CLI's sync phase and the machine lane, so both refuse
+    the same paths for the same reason.
+    """
+    checked_apps_path(path, field=field)
+    prefix = f"{APP_PATH_SEGMENT}/{app}"
+    if path != prefix and not path.startswith(f"{prefix}/"):
+        raise ConfigError(
+            f"{field} {path!r} is outside the application's own prefix "
+            f"{prefix!r}, which is the only prefix its identity can read"
+        )
+    return path
+
+
 @dataclass(frozen=True)
 class AppIdentity:
     """The resolved names for one application's ESO identity.

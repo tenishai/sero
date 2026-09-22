@@ -79,6 +79,7 @@ from ladon.config.apps import (
     app_cluster_documents,
     app_identity,
     app_store_name,
+    checked_app_path,
 )
 from ladon.config.auth import jwt_auth, oidc_auth
 from ladon.config.eso import DEFAULT_API_VERSION, external_secret
@@ -497,36 +498,10 @@ def build_sync_document(args: argparse.Namespace) -> dict:
         # namespaces a store admits is the store's to say.
         namespace=args.k8s_namespace or args.app,
         store_name=app_store_name(team=args.team, app=args.app),
-        kv_path=_checked_app_path(args.app, args.path),
+        kv_path=checked_app_path(args.app, args.path, field="sync: --path"),
         secret_name=args.target_name or args.name,
         refresh_interval=args.refresh_interval,
     )
-
-
-def _checked_app_path(app: str, path: str) -> str:
-    """Refuse a path outside the application's own prefix.
-
-    The application's policy grants read on ``apps/<app>`` and nothing else, so
-    a path outside it renders a document that looks right and is refused at
-    refresh time, in ESO's logs, later.
-
-    A relative segment is refused before the prefix is tested: ``.`` and ``..``
-    read as inside the prefix while naming something else, and whether a reader
-    resolves them at all differs between the policy engine and the store.
-    """
-    segments = path.split("/")
-    if any(segment in ("", ".", "..") for segment in segments):
-        raise ConfigError(
-            f"sync: --path {path!r} has an empty or relative segment; give the "
-            "path as it is stored, with no '.' or '..'"
-        )
-    prefix = f"{APP_PATH_SEGMENT}/{app}"
-    if path != prefix and not path.startswith(f"{prefix}/"):
-        raise ConfigError(
-            f"sync: --path {path!r} is outside the application's own prefix "
-            f"{prefix!r}, which is the only prefix its identity can read"
-        )
-    return path
 
 
 def _at_api_version(document: dict, api_version: str) -> dict:

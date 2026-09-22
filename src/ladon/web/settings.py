@@ -29,6 +29,15 @@ from ladon.web.assertion import (
     AssertionSettings,
 )
 
+# What a machine caller's token must carry (D16). The human lane's three, plus
+# ``iat`` (so a token's age is knowable) and ``sub`` (the lane authorizes on it).
+SERVICE_REQUIRED_CLAIMS = ("exp", "iat", "iss", "aud", "sub")
+
+# Calls per minute one machine caller may make across the whole lane, unless a
+# deployment says otherwise. Generous for provisioning a handful of secrets,
+# small enough that a stuck loop stops rather than filling the vault.
+DEFAULT_SERVICE_RATE_LIMIT = 60
+
 # The proxy in front of the platform authenticates people and passes the result
 # in this header. Configurable, because the header name is proxy-specific.
 DEFAULT_IDENTITY_HEADER = "x-goog-authenticated-user-email"
@@ -76,6 +85,32 @@ class AccessSettings:
 
 
 @dataclass(frozen=True)
+class ServiceCaller:
+    """One machine permitted to write on a person's behalf (D16).
+
+    Everything that decides what this caller can do is pinned here and nowhere
+    else: the token must come from ``assertion``'s issuer, carry its audience,
+    and name ``subject``; the write must land in one of ``namespaces``. The
+    acting email the call carries is attribution, never authorization, so no
+    field here depends on it.
+    """
+
+    name: str
+    subject: str
+    namespaces: tuple[str, ...]
+    assertion: AssertionSettings
+    rate_limit_per_minute: int = DEFAULT_SERVICE_RATE_LIMIT
+
+    @property
+    def issuer(self) -> str:
+        return self.assertion.issuer
+
+    @property
+    def audience(self) -> str:
+        return self.assertion.audience
+
+
+@dataclass(frozen=True)
 class WebSettings:
     """Everything the backend needs to start, with no secret in it."""
 
@@ -91,6 +126,10 @@ class WebSettings:
     # Whether this deployment permits revealing a plaintext value at all. Off
     # unless a deployment says otherwise; see ladon.web.reveal.
     reveal_enabled: bool
+    # The machines permitted to write on a person's behalf (D16). Empty by
+    # default, which closes the machine lane: a deployment opts in by naming
+    # callers, never by forgetting to.
+    service_callers: tuple[ServiceCaller, ...] = ()
 
 
 def parse_identity(data: object) -> IdentitySettings:
@@ -152,6 +191,111 @@ def parse_access(data: object) -> AccessSettings:
     )
 
 
+def parse_service_callers(data: object, *, human_audience: str | None) -> tuple[ServiceCaller, ...]:
+    """Parse the ``service_callers:`` list, or an empty tuple when there is none.
+
+    Every field is required, because every one of them is a boundary: drop the
+    issuer or the audience and the lane accepts a token minted for somewhere
+    else; drop the subject and any workload that issuer trusts becomes this
+    caller; drop the namespaces and one machine reaches the whole vault.
+
+    ``human_audience`` is the audience the human assertion carries. A caller
+    claiming the same one is refused outright: the two lanes would then accept
+    each other's tokens, and a person's browser credential would be a machine
+    credential.
+    """
+    if not data:
+        return ()
+    if not isinstance(data, list):
+        raise ConfigError("'service_callers' must be a list")
+    callers = [_service_caller(item, index, human_audience) for index, item in enumerate(data)]
+    _reject_ambiguous_callers(callers)
+    return tuple(callers)
+
+
+def _service_caller(data: object, index: int, human_audience: str | None) -> ServiceCaller:
+    where = f"service_callers[{index}]"
+    if not isinstance(data, dict):
+        raise ConfigError(f"'{where}' must be a mapping")
+    missing = [
+        field_name
+        for field_name in ("name", "issuer", "jwks_url", "audience", "subject", "namespaces")
+        if not data.get(field_name)
+    ]
+    if missing:
+        raise ConfigError(f"'{where}' needs {', '.join(missing)}")
+
+    jwks_url = str(data["jwks_url"])
+    if not jwks_url.lower().startswith("https://"):
+        # These keys decide which machine is which. Over plain HTTP anyone on
+        # the path chooses the signer, which makes verifying the token theatre.
+        raise ConfigError(f"'{where}.jwks_url' must be an https URL")
+
+    audience = str(data["audience"])
+    if human_audience and audience == human_audience:
+        # Separate lanes are the point of D16. One shared audience and a
+        # person's proxy assertion is replayable as a machine credential.
+        raise ConfigError(
+            f"'{where}.audience' is the same audience the human assertion "
+            "carries; give the machine lane an audience of its own"
+        )
+
+    if not data.get("acting_email_required", True):
+        # The lane exists to write on a person's behalf, and the row that says
+        # whose behalf is the only trace a machine write leaves of a human.
+        raise ConfigError(
+            f"'{where}.acting_email_required' cannot be false: the machine lane "
+            "always records the person it acts for"
+        )
+
+    namespaces = _names(data["namespaces"], f"{where}.namespaces")
+    if not namespaces:
+        raise ConfigError(f"'{where}.namespaces' must name at least one namespace")
+
+    return ServiceCaller(
+        name=str(data["name"]).strip().lower(),
+        subject=str(data["subject"]),
+        namespaces=tuple(namespaces),
+        assertion=AssertionSettings(
+            jwks_url=jwks_url,
+            audience=audience,
+            issuer=str(data["issuer"]),
+            required_claims=SERVICE_REQUIRED_CLAIMS,
+        ),
+        rate_limit_per_minute=_rate_limit(data.get("rate_limit_per_minute"), where),
+    )
+
+
+def _rate_limit(value: object, where: str) -> int:
+    if value is None:
+        return DEFAULT_SERVICE_RATE_LIMIT
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ConfigError(f"'{where}.rate_limit_per_minute' must be a positive whole number")
+    return value
+
+
+def _reject_ambiguous_callers(callers: list[ServiceCaller]) -> None:
+    """Refuse two callers a token could not be told apart by.
+
+    A token names an issuer and an audience, and the lane picks the caller from
+    that pair. Two callers sharing the pair would make the choice of whose
+    subject and namespaces apply an accident of ordering.
+    """
+    seen_names: set[str] = set()
+    seen_pairs: set[tuple[str, str]] = set()
+    for caller in callers:
+        if caller.name in seen_names:
+            raise ConfigError(f"'service_callers' names {caller.name!r} twice")
+        seen_names.add(caller.name)
+        pair = (caller.issuer, caller.audience)
+        if pair in seen_pairs:
+            raise ConfigError(
+                f"'service_callers' has two callers with the same issuer and "
+                f"audience ({caller.name!r} repeats one); a token could match either"
+            )
+        seen_pairs.add(pair)
+
+
 def parse_web_settings(config: DeploymentConfig, *, env: Mapping[str, str]) -> WebSettings:
     """Build the backend's settings from a parsed config and the environment."""
     deployment = config.settings
@@ -172,14 +316,19 @@ def parse_web_settings(config: DeploymentConfig, *, env: Mapping[str, str]) -> W
     address = openbao.get("address") or _first(env, ADDRESS_ENV_VARS)
 
     environment = deployment.get("environment")
+    identity = parse_identity(config.identity)
     return WebSettings(
-        identity=parse_identity(config.identity),
+        identity=identity,
         access=parse_access(config.access),
         environment=str(environment) if environment else None,
         openbao_address=address or None,
         kv_mount=deployment.get("kv_mount") or DEFAULT_KV_MOUNT,
         ui_dist=Path(ui_dist) if ui_dist else None,
         reveal_enabled=bool(reveal.get("enabled", False)),
+        service_callers=parse_service_callers(
+            config.service_callers,
+            human_audience=identity.assertion.audience if identity.assertion else None,
+        ),
     )
 
 

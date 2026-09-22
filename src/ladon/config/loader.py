@@ -33,6 +33,9 @@ class DeploymentConfig:
     # settings module owns their schema; see ladon.web.settings.
     identity: dict = field(default_factory=dict)
     access: dict = field(default_factory=dict)
+    # The machines permitted to write on a person's behalf (D16). A list, not a
+    # mapping: order does not matter, and each entry carries its own name.
+    service_callers: list = field(default_factory=list)
 
 
 def parse_deployment_config(data: object) -> DeploymentConfig:
@@ -58,12 +61,17 @@ def parse_deployment_config(data: object) -> DeploymentConfig:
     if not isinstance(access, dict):
         raise ConfigError("'access' must be a mapping")
 
+    service_callers = data.get("service_callers") or []
+    if not isinstance(service_callers, list):
+        raise ConfigError("'service_callers' must be a list")
+
     return DeploymentConfig(
         teams=parse_teams(data.get("teams")),
         settings=settings,
         sync_targets=sync_targets,
         identity=identity,
         access=access,
+        service_callers=service_callers,
     )
 
 
