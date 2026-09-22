@@ -19,7 +19,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
-from ladon.web.audit import DENIED, AuditRecorder
+from ladon.web.audit import DENIED, UNIDENTIFIED, AuditRecorder
 from ladon.web.errors import ApiError
 from ladon.web.groups import GroupSource
 from ladon.web.identity import IdentityReader, NoIdentityError
@@ -39,11 +39,6 @@ class Services:
     # The OpenBaoSecrets the tool functions take, or None when this deployment
     # has no vault address yet. Typed loosely so tests can pass a stand-in.
     secrets: Any | None
-
-
-# What an unauthenticated request is attributed to. Not an address, and not
-# empty, so these rows group together and cannot collide with a real caller.
-UNIDENTIFIED = "unidentified"
 
 
 def services(request: Request) -> Services:
