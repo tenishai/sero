@@ -67,6 +67,7 @@ from ladon.install.k8s import (
     delete_documents,
     eso_api_version,
     read_one,
+    require_managed,
 )
 from ladon.mcp.server import (
     AccessDeniedError,
@@ -722,6 +723,20 @@ def sync_secret(
     unpinned Kubernetes namespace here would let one caller create or replace an
     ExternalSecret anywhere on the cluster. The default is the application's own
     namespace and anywhere else must be pinned to the caller in config.
+
+    An object that is already there has to be this application's before it is
+    converged, exactly as the ``DELETE`` requires before removing one. Every
+    field that names it comes from the body, and a server-side apply under
+    Ladon's own field manager takes the fields it sets from Ladon's own earlier
+    apply without a word: it is the manager doing its job, as far as the API
+    server can tell. So a caller pinned to one namespace could otherwise write
+    over another team's live ExternalSecret, repoint it at a store it does
+    control, and then pass the delete gate on the object it had just made its
+    own. Checking here is what makes the delete gate mean anything.
+
+    A ``409`` rather than a ``403`` when the object is real and this
+    application's but another manager owns it; the apply would have taken its
+    fields.
     """
     k8s_namespace = body.k8s_namespace or body.app
     target = body.target_name or body.name
@@ -753,6 +768,20 @@ def sync_secret(
             # cluster does not store is rejected on apply.
             api_version=_cluster_call(cluster.api_version),
         )
+        # An object that is not there yet is this caller's to create, and the
+        # rules above are the whole check. One that is already there belongs to
+        # somebody, and this is where it is established that the somebody is
+        # this application.
+        existing = _cluster_call(cluster.read, document, missing_ok=True)
+        if existing is not None:
+            _require_ours(
+                existing,
+                document,
+                store=store,
+                app=body.app,
+                name=body.name,
+                k8s_namespace=k8s_namespace,
+            )
         report = _cluster_call(cluster.converge, [document], dry_run=not body.apply)
         _audit(
             session,
@@ -859,8 +888,13 @@ def unsync_secret(
         live = _cluster_call(cluster.read, document, missing_ok=True)
         cascades = False
         if live is not None:
-            _require_the_applications_own(
-                live, store=store, app=body.app, name=body.name, k8s_namespace=k8s_namespace
+            _require_ours(
+                live,
+                document,
+                store=store,
+                app=body.app,
+                name=body.name,
+                k8s_namespace=k8s_namespace,
             )
             cascades = _owns_its_target(live)
         report = _cluster_call(cluster.remove, [document], dry_run=not body.apply)
@@ -964,31 +998,41 @@ def _require_the_applications_own(
     """Refuse an ExternalSecret that is not this application's, in this namespace.
 
     The ownership check says Ladon manages the object. It does not say which of
-    Ladon's tenants it belongs to, and everything that names the object here is
-    a field in the request body: a caller pinned to one OpenBao namespace could
-    otherwise name another team's application and remove a live workload's
-    ExternalSecret, taking the Secret it owns with it.
+    Ladon's tenants it belongs to, and everything that names the object on
+    either route is a field in the request body: without this, a caller pinned
+    to one OpenBao namespace could name another team's application and have its
+    live ExternalSecret rewritten or removed, taking the Secret it owns with
+    it.
 
-    Two properties of the live object answer that, and both come from how
-    onboarding builds one. It reads through that application's own store, whose
-    name is derived from the namespace this caller is pinned to, so a store
-    name that does not match means the object is somebody else's. And it pulls
-    a path inside ``apps/<app>/``, which is the only prefix that application's
-    identity can read; an object with no ``dataFrom`` extract at all is not one
-    Ladon rendered.
+    Three properties of the live object answer that, and all three come from
+    how onboarding builds one.
 
-    The refusals name store names and the prefix, which are configuration. They
-    never quote the live object's own key: which path another team's
-    ExternalSecret reads is that team's business, and a refusal is not a reason
-    to hand it to the caller that asked for something it may not have.
+    It reads through a ``ClusterSecretStore``, which is the only kind Ladon
+    renders. ``secretStoreRef.kind`` defaults to the namespaced ``SecretStore``
+    when a document omits it, so a name that matches in a ref of the other kind
+    is a different object entirely and must not read as a match.
+
+    That store is the application's own, whose name is derived from the
+    namespace this caller is pinned to, so a store that is not it means the
+    object is somebody else's.
+
+    And it pulls a path inside ``apps/<app>/``, the only prefix that
+    application's identity can read; an object with no ``dataFrom`` extract at
+    all is not one Ladon rendered.
+
+    Every refusal names the store this caller's own application would use and
+    the prefix it would read, both of which are derived from the request. None
+    of them says a word about what the live object holds: its store name
+    carries another tenant's team and application, and a caller that may not
+    touch an object may not learn about it either.
     """
     spec = live.get("spec") or {}
-    reference = (spec.get("secretStoreRef") or {}).get("name")
-    if reference != store:
+    reference = spec.get("secretStoreRef") or {}
+    if reference.get("kind") != CLUSTER_STORE_KIND or reference.get("name") != store:
         raise AccessDeniedError(
-            f"the ExternalSecret {name!r} in Kubernetes namespace {k8s_namespace!r} reads "
-            f"through store {reference!r}, not {store!r}; it does not belong to application "
-            f"{app!r} in this caller's namespace"
+            f"the ExternalSecret {name!r} in Kubernetes namespace {k8s_namespace!r} does not "
+            f"read through the {CLUSTER_STORE_KIND} {store!r}; it does not belong to "
+            f"application {app!r} in this caller's namespace"
         )
     prefix = f"apps/{app}/"
     keys = [(entry.get("extract") or {}).get("key") for entry in spec.get("dataFrom") or []]
@@ -998,6 +1042,32 @@ def _require_the_applications_own(
             f"read a path under {prefix!r}; it does not belong to application {app!r}"
         )
 
+
+def _require_ours(
+    live: dict[str, Any],
+    document: dict[str, Any],
+    *,
+    store: str,
+    app: str,
+    name: str,
+    k8s_namespace: str,
+) -> None:
+    """Both questions about a live object, in the order that leaks least.
+
+    Whose object it is first, because that refusal describes only the request.
+    Who manages it second, because that one names the managers on the object,
+    which is something to tell a caller about its own application and not about
+    a stranger's.
+    """
+    _require_the_applications_own(
+        live, store=store, app=app, name=name, k8s_namespace=k8s_namespace
+    )
+    require_managed(document, live)
+
+
+# The only store kind Ladon renders. ESO's own default for a ref that names no
+# kind is the namespaced ``SecretStore``, so this is never assumed.
+CLUSTER_STORE_KIND = "ClusterSecretStore"
 
 # ESO's default when a document names none, and what Ladon always renders: the
 # Secret carries an owner reference to the ExternalSecret, so removing the one

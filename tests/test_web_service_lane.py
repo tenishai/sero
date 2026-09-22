@@ -803,6 +803,110 @@ def test_sync_needs_an_acting_email(client):
     assert sync(client, body).status_code == 422
 
 
+# ── Whose ExternalSecret a sync may write over ─────────────────────────
+
+
+def test_sync_refuses_to_write_over_another_applications_object(sessions, store):
+    # The two-call takeover this gate exists for. Step one would be a POST
+    # naming another team's application: the object is real, Ladon manages it,
+    # and a server-side apply under Ladon's own field manager takes the fields
+    # from Ladon's own earlier apply without a conflict, because as far as the
+    # API server can tell it is the manager doing its job. Repointing it at a
+    # store this caller does control would then make step two, the DELETE, pass
+    # a gate the caller had just satisfied itself.
+    victims_store = app_store_name(team="payments", app="payments")
+    theirs = live_external_secret(
+        store=victims_store,
+        key="apps/payments/payments-db",
+        k8s_namespace="payments",
+        name="payments-db",
+    )
+    client, cluster = lane_over(sessions, store, [theirs])
+
+    hijack = sync_body(
+        app="payments",
+        k8s_namespace="payments",
+        name="payments-db",
+        path="apps/payments/payments-db",
+        apply=True,
+    )
+    assert sync(client, hijack).status_code == 403
+    # Nothing was sent, and the live object still points where it did.
+    assert cluster.applies == []
+    assert cluster.stored(theirs)["spec"]["secretStoreRef"]["name"] == victims_store
+
+    # And the second half of the takeover still finds somebody else's object.
+    assert (
+        unsync(
+            client,
+            unsync_body(app="payments", k8s_namespace="payments", name="payments-db", apply=True),
+        ).status_code
+        == 403
+    )
+    assert cluster.deletes == []
+    assert len(cluster.objects) == 1
+
+
+def test_sync_creates_an_object_that_is_not_there_without_asking_whose_it_is(client, cluster):
+    # The gate is about objects that already belong to somebody. A name nobody
+    # has used is this caller's to create, under the rules above it.
+    assert sync(client, sync_body(apply=True)).status_code == 200
+    assert len(cluster.objects) == 1
+
+
+def test_sync_converges_its_own_object_a_second_time(client, cluster):
+    assert sync(client, sync_body(apply=True)).status_code == 200
+    again = sync(client, sync_body(apply=True))
+    assert again.status_code == 200
+    assert again.json()["report"] == ["ExternalSecret/sample/sample-demo: already current"]
+
+
+def test_sync_refuses_an_object_a_client_side_apply_has_taken_over(sessions, store):
+    # This application's own object, but another manager holds its fields now.
+    # The apply would take them back silently; a 409 says who has them.
+    taken = live_external_secret(managers=("kubectl-client-side-apply",))
+    client, cluster = lane_over(sessions, store, [taken])
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 409
+    assert "kubectl-client-side-apply" in response.json()["error"]
+    assert cluster.applies == []
+
+
+def test_sync_refuses_an_object_that_reads_through_a_namespaced_store(sessions, store):
+    # secretStoreRef.kind defaults to the namespaced SecretStore, so a ref of
+    # that kind with a matching name is a different object entirely.
+    theirs = live_external_secret()
+    theirs["spec"]["secretStoreRef"]["kind"] = "SecretStore"
+    client, cluster = lane_over(sessions, store, [theirs])
+    assert sync(client, sync_body(apply=True)).status_code == 403
+    assert cluster.applies == []
+
+
+def test_sync_refuses_an_object_with_no_extract_at_all(sessions, store):
+    bare = live_external_secret()
+    del bare["spec"]["dataFrom"]
+    client, cluster = lane_over(sessions, store, [bare])
+    assert sync(client, sync_body(apply=True)).status_code == 403
+    assert cluster.applies == []
+
+
+def test_a_dry_run_sync_answers_the_same_refusal(sessions, store):
+    theirs = live_external_secret(store=app_store_name(team="payments", app="sample"))
+    client, cluster = lane_over(sessions, store, [theirs])
+    assert sync(client, sync_body()).status_code == 403
+    assert cluster.applies == []
+
+
+def test_a_refused_sync_is_audited_as_a_denial(sessions, store):
+    theirs = live_external_secret(store=app_store_name(team="payments", app="sample"))
+    client, _ = lane_over(sessions, store, [theirs])
+    sync(client, sync_body(apply=True))
+    (row,) = rows(sessions, "service.sync_secret")
+    assert row.status == "denied"
+    assert row.redacted_args["via"] == CALLER
+    assert row.redacted_args["store"] == app_store_name(team=NAMESPACE, app=APP)
+
+
 # ── Where an ExternalSecret may land ────────────────────────────────────
 
 
@@ -1337,9 +1441,10 @@ def test_unsync_refuses_another_applications_object_in_this_callers_reach(sessio
     assert len(cluster.objects) == 1
 
 
-def test_the_refusal_names_the_stores_and_not_the_path_it_reads(sessions, store):
+def test_the_refusal_describes_the_request_and_not_the_live_object(sessions, store):
+    victims_store = app_store_name(team="payments", app="payments")
     theirs = live_external_secret(
-        store=app_store_name(team="payments", app="payments"),
+        store=victims_store,
         key="apps/payments/payments-db",
         k8s_namespace="payments",
         name="payments-db",
@@ -1348,11 +1453,13 @@ def test_the_refusal_names_the_stores_and_not_the_path_it_reads(sessions, store)
     error = unsync(
         client, unsync_body(app="payments", k8s_namespace="payments", name="payments-db")
     ).json()["error"]
-    # The store names are configuration and say what is wrong. Which path
-    # somebody else's object reads is not this caller's business.
-    assert app_store_name(team="payments", app="payments") in error
+    # What the caller asked for: the store its own application would use, and
+    # the object it named. Both are derived from the request.
     assert app_store_name(team=NAMESPACE, app="payments") in error
     assert "payments-db" in error
+    # Nothing about the object it may not touch. The live store name carries
+    # another tenant's team and application, and the key is their path.
+    assert victims_store not in error
     assert "apps/payments/payments-db" not in error
 
 

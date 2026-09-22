@@ -444,8 +444,15 @@ def field_managers(live: dict) -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _require_managed(doc: dict, live: dict, field_manager: str) -> None:
-    """Refuse an object Ladon is not recorded as a manager of."""
+def require_managed(doc: dict, live: dict, field_manager: str = DEFAULT_FIELD_MANAGER) -> None:
+    """Refuse an object Ladon is not recorded as a manager of.
+
+    Public because both directions need it. A delete reads it immediately
+    before removing the object; an apply that would take fields from whoever
+    holds them needs the same answer, and server-side apply cannot give it,
+    since an apply by the same manager name is indistinguishable from the
+    manager doing its job.
+    """
     managers = field_managers(live)
     if field_manager in managers:
         return
@@ -510,7 +517,7 @@ def delete_documents(
         if live is None:
             results.append(ApplyResult(kind, namespace, name, ABSENT))
             continue
-        _require_managed(doc, live, field_manager)
+        require_managed(doc, live, field_manager)
         if dry_run:
             results.append(ApplyResult(kind, namespace, name, DELETE))
             continue
