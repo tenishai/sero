@@ -30,7 +30,7 @@ def session():
         yield s
 
 
-def test_all_five_tables_are_registered():
+def test_every_table_is_registered():
     assert set(Base.metadata.tables) == {
         "tool_call_log",
         "mcp_refresh_tokens",
@@ -38,6 +38,7 @@ def test_all_five_tables_are_registered():
         "namespace_requests",
         "reveal_flows",
         "reveal_grants",
+        "jobs",
     }
 
 
@@ -125,18 +126,12 @@ def test_reveal_flow_and_grant(session):
 
 
 def test_migration_head_matches_models():
-    # The committed initial migration must define exactly the models' tables, so
-    # a fresh DB migrated to head equals Base.metadata. Import the revision and
-    # confirm it targets the same table set (guards against a model added without
-    # a migration).
-    import importlib.util
+    # The committed migrations must between them create every model's table, so
+    # a fresh DB migrated to head equals Base.metadata. Guards against a model
+    # added without a migration.
     from pathlib import Path
 
     versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
-    initial = next(versions.glob("*_initial_datastore_schema.py"))
-    spec = importlib.util.spec_from_file_location("initial_mig", initial)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    src = initial.read_text()
+    src = "\n".join(p.read_text() for p in sorted(versions.glob("*.py")))
     for table in Base.metadata.tables:
         assert f"create_table('{table}'" in src, f"migration missing create_table for {table}"

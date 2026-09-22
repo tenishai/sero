@@ -16,6 +16,9 @@ Brand-neutral and secret-free by construction:
 * ``reveal_grants`` / ``reveal_flows`` - step-up "reveal" grants: a record that
   access was granted (by identity, time, and identity-provider assertion id),
   not the secret that was revealed.
+* ``jobs`` - background apply runs started from the backend: their kind, state,
+  requester, and the op-by-op report (``create``/``update``/``already current``),
+  which names namespaces, mounts, paths and fields but never a value.
 
 Timestamps are timezone-aware and default to ``now()`` in the database. Identity
 is an email string (the identity-provider subject), matching how auth is modeled
@@ -111,6 +114,31 @@ class NamespaceRequest(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     ticket_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Job(Base):
+    """One background apply run started from the backend (D14).
+
+    An apply phase outlives a load balancer's timeout, so the backend runs it in
+    the background and the caller polls this row. ``report_json`` holds the
+    op-by-op result the apply layer produces (names and verdicts, never a value).
+    """
+
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(_BigIntPK, primary_key=True, autoincrement=True)
+    # The apply phase: "root-config", "team-onboarding", "app-onboarding", ...
+    kind: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    # "queued" | "running" | "done" | "failed"
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued", index=True)
+    requested_by: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    report_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

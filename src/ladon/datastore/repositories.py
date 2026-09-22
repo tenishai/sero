@@ -17,7 +17,9 @@ Covers the five datastore domains:
 * the namespace-request workflow (``create_namespace_request``,
   ``mark_request_submitted``, ``mark_request_failed``, ``list_namespace_requests``);
 * step-up reveal flows and grants (``start_reveal_flow``, ``consume_reveal_flow``,
-  ``grant_reveal``, ``active_reveal_grant``, ``revoke_reveal_grant``).
+  ``grant_reveal``, ``active_reveal_grant``, ``revoke_reveal_grant``);
+* background apply jobs (``create_job``, ``mark_job_running``, ``mark_job_done``,
+  ``mark_job_failed``, ``get_job``).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ladon.datastore.models import (
+    Job,
     McpAllowListEntry,
     McpRefreshToken,
     NamespaceRequest,
@@ -354,6 +357,58 @@ def list_namespace_requests(
     if status is not None:
         stmt = stmt.where(NamespaceRequest.status == status)
     return session.scalars(stmt).all()
+
+
+# ── Background apply jobs ───────────────────────────────────────────────
+
+
+def create_job(session: Session, *, kind: str, requested_by: str) -> Job:
+    """Open a job in the ``queued`` state. Flushed, not committed."""
+    row = Job(kind=kind, state="queued", requested_by=requested_by)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def mark_job_running(session: Session, *, job_id: int) -> Job:
+    """Move a job to ``running`` and stamp its start time."""
+    row = _require_job(session, job_id)
+    row.state = "running"
+    row.started_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def mark_job_done(session: Session, *, job_id: int, report: dict[str, Any] | None = None) -> Job:
+    """Move a job to ``done``, recording the op-by-op report. Never a value."""
+    row = _require_job(session, job_id)
+    row.state = "done"
+    row.report_json = report
+    row.finished_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def mark_job_failed(session: Session, *, job_id: int, error: str) -> Job:
+    """Move a job to ``failed`` and record the error. Errors name fields, not values."""
+    row = _require_job(session, job_id)
+    row.state = "failed"
+    row.error = error
+    row.finished_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def get_job(session: Session, job_id: int) -> Job | None:
+    """One job by id, or None when there is no such job."""
+    return session.get(Job, job_id)
+
+
+def _require_job(session: Session, job_id: int) -> Job:
+    row = session.get(Job, job_id)
+    if row is None:
+        raise KeyError(f"job {job_id} not found")
+    return row
 
 
 # ── Step-up reveal flows and grants ─────────────────────────────────────
