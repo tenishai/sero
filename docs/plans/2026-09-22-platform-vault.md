@@ -92,13 +92,17 @@ Not a code task. Using the deployed backend: onboard a throwaway app through the
 ### Task 9: The machine lane and the first consumer
 
 - [x] Done (ladon machine lane): PR #66
-- [ ] Kobo consumer: in progress (separate repository)
+- [x] Consumer client (separate repository): its pull request is open for that repository's
+  owner to merge; the lane itself was proven live with the consumer's real workload identity
+  (one secret written, synced to a Kubernetes namespace pinned to that caller, re-run a no-op).
 
 **Files (ladon):** `src/ladon/web/service_lane.py` (`POST /api/service/secrets`: OIDC ID token verified against `service_callers[].issuer` and `audience`, subject allow-listed, `acting_email` required, namespace pinned per subject; same merge semantics; audit row), config, tests with a locally signed token and a JWKS fixture.
 **Files (assembly room, separate repo, its own PR):** a `LadonClient` (`put_secret(namespace, path, data)` + `ensure_external_secret(k8s_namespace, name, path)`) used by the colleague-secret and Slack-secret delivery paths when `ladon_url` is configured, else the existing direct Secret write; the config-token store is NOT moved. Flag off by default.
 - Live proof: from the room's pod identity, one app's `-cabal` secret written through the lane; the pod's Secret is the ESO-managed one with the same name; the pod starts.
 
 ### Task 10: Docs to truth
+
+- [x] Done: PR #69
 
 README status section rewritten to what is proven live; ROADMAP checkboxes ticked only for proven items; `docs/deployment-order.md` gains the platform-cluster path; CHANGELOG consolidated.
 
