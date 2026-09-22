@@ -1,6 +1,7 @@
 """Alembic migration environment for the Ladon datastore (D11).
 
-The database URL comes from the ``LADON_DATABASE_URL`` environment variable, not
+The database URL comes from the ``LADON_DATABASE_URL`` environment variable (or
+from a Config the caller built, which is how the backend migrates at boot), not
 from alembic.ini, so no connection string or credential is ever committed. The
 target metadata is ``ladon.datastore.models.Base.metadata``, so migrations
 autogenerate from the models.
@@ -27,7 +28,10 @@ DB_URL_ENV = "LADON_DATABASE_URL"
 
 
 def _database_url() -> str:
-    url = os.environ.get(DB_URL_ENV)
+    # A caller that builds the Config itself (the backend's boot path) sets the
+    # url there; the CLI sets the environment variable. Neither has to know
+    # about the other.
+    url = config.get_main_option("sqlalchemy.url", None) or os.environ.get(DB_URL_ENV)
     if not url:
         raise RuntimeError(
             f"{DB_URL_ENV} is not set; point it at the target PostgreSQL, e.g. "
