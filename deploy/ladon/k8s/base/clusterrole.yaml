@@ -13,10 +13,18 @@
 #      Deployments across namespaces and reading the CRDs to probe which API
 #      version they serve.
 #
-# There is no `delete` anywhere, and no access to Secrets outside Ladon's own
-# namespace: a cluster-wide Secret read would make this role a way to exfiltrate
-# every synced value on the cluster, which is exactly what the platform exists
-# to prevent.
+# `delete` is granted on `ExternalSecret` and nowhere else. The machine lane
+# removes the object it created when an application is taken down, and leaving
+# it behind means an operator reconciling a KV path that is gone on purpose. It
+# is not granted on `ClusterSecretStore`: a store is an application's identity
+# on the cluster, removing one is off-boarding rather than a per-secret call,
+# and a cluster-scoped delete is a blast radius worth not having. Ladon refuses
+# to delete an object whose field manager is not its own, but that guard is in
+# the code, and this is what bounds it if it fails.
+#
+# There is no access to Secrets outside Ladon's own namespace: a cluster-wide
+# Secret read would make this role a way to exfiltrate every synced value on
+# the cluster, which is exactly what the platform exists to prevent.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -29,6 +37,10 @@ rules:
       - clustersecretstores
       - externalsecrets
     verbs: ["get", "list", "create", "patch", "update"]
+  # The one delete, on the one kind the lane takes back down.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["delete"]
   # Confirm a target namespace exists before applying into it.
   - apiGroups: [""]
     resources: ["namespaces"]

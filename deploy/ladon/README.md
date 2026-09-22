@@ -275,10 +275,17 @@ The `ClusterRole` grants only what cannot be namespaced:
 `customresourcedefinitions` reads for the API-version probe, and `deployments`
 reads to detect an operator already installed.
 
-Neither role can delete anything, and neither can read a Secret outside the
-`ladon` namespace. A cluster-wide Secret read would turn this service account
-into a way to collect every synced value on the cluster, which is the opposite
-of the point.
+The one `delete` is on `ExternalSecret`, and it exists because the machine lane
+removes the object it created when an application is taken down; leaving it
+behind means an operator reconciling a KV path that is gone on purpose. It is
+not granted on `ClusterSecretStore`: a store is an application's identity on
+the cluster, and removing one is off-boarding rather than a per-secret call.
+Ladon also refuses to delete an object whose field manager is not its own, but
+that guard is in the code, and this role is what bounds it if it fails.
+
+Neither role can read a Secret outside the `ladon` namespace. A cluster-wide
+Secret read would turn this service account into a way to collect every synced
+value on the cluster, which is the opposite of the point.
 
 ## Applying it
 

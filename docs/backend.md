@@ -457,6 +457,13 @@ step that fails when it is run twice is a destroy step nobody can retry. The key
 names are read before the delete and go into the audit row as `key_names`, so
 the record still says what was destroyed once the path is gone.
 
+Two grants this route needs that the write routes do not. The backend's OpenBao
+token needs `delete` on `kv/metadata/<path>`, which is the capability that
+removes the versions rather than soft-deleting one; without it the call reaches
+OpenBao and fails there. And the backend's ServiceAccount needs `delete` on
+`externalsecrets` for the route below, which `deploy/ladon/k8s/base/clusterrole.yaml`
+grants on that kind and no other.
+
 **`POST /api/service/sync`** makes sure the Kubernetes Secret exists. Writing
 the value into OpenBao is half the job; until an `ExternalSecret` reads the path,
 the workload's Secret is not there and the pod does not start. One document,
