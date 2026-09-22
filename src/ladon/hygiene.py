@@ -34,8 +34,24 @@ _PLACEHOLDERS = frozenset(
 )
 
 
+# Credentials embedded in a URL ("https://user:pass@host/..."). No URL Ladon
+# handles should carry them: an address is a location, not a credential, and one
+# that carries a password must never be printed, rendered, or stored.
+URL_USERINFO = re.compile(r"//[^/@\s]*:[^/@\s]*@")
+
+
 class PlaceholderSecretError(ValueError):
     """Raised when a supplied secret value looks like a placeholder."""
+
+
+def has_url_userinfo(value: str) -> bool:
+    """Return True if a URL carries embedded credentials."""
+    return bool(URL_USERINFO.search(value))
+
+
+def strip_url_userinfo(value: str) -> str:
+    """Remove embedded credentials from a URL, leaving the rest intact."""
+    return URL_USERINFO.sub("//", value)
 
 
 def is_placeholder(value: str) -> bool:

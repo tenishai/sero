@@ -3,7 +3,9 @@
 One app gets one path prefix, one policy scoped to it, one JWT role pinned to a
 dedicated service account, and one store restricted to one Kubernetes namespace.
 The policy body is asserted character for character: it is the grant, and a
-widened path here is the whole isolation model gone.
+widened path here is the whole isolation model gone. The identity names are
+asserted literally for the same reason: they are what the cluster-wide objects
+are keyed by, so two different applications must never render the same one.
 """
 
 import pytest
@@ -22,6 +24,12 @@ from ladon.config.eso import K8S_NAMESPACE_NAME_LABEL
 from ladon.config.teams import ConfigError
 
 SERVER = "https://bao.example:8200"
+
+# The first six hex of sha256("team-a\x00sample"), which is what disambiguates
+# the identity names below. Written out rather than recomputed, so a change to
+# how it is derived shows up here as the rename it would really be.
+SAMPLE_DIGEST = "a84085"
+SAMPLE_NAME = f"eso-team-a-sample-{SAMPLE_DIGEST}"
 
 # Exactly what an app's ESO identity may do: its own prefix, and the token-self
 # paths every token needs once the "default" policy is dropped from the role.
@@ -70,19 +78,48 @@ def test_names_are_team_qualified_where_they_are_cluster_wide():
     # role, service account and store are reachable from outside it, so each is
     # qualified by the team to stop one team's identity naming another's.
     assert ident.policy_name == "eso-sample-readonly"
-    assert ident.name == "eso-team-a-sample"
-    assert ident.store_name == "ladon-team-a-sample"
+    assert ident.name == SAMPLE_NAME
+    assert ident.store_name == f"ladon-team-a-sample-{SAMPLE_DIGEST}"
     assert ident.auth_mount == "jwt-cluster-a"
 
 
+def test_two_different_applications_never_share_a_name():
+    # Both parts may contain hyphens, so "<team>-<app>" alone is ambiguous:
+    # team "a-b" app "c" and team "a" app "b-c" both read as "a-b-c". They live
+    # in different OpenBao namespaces but share one cluster, so an ambiguous
+    # name would give them the same service account, store and bound subject.
+    first = app_identity(team="a-b", app="c", cluster="cluster-a")
+    second = app_identity(team="a", app="b-c", cluster="cluster-a")
+
+    assert first.name != second.name
+    assert first.store_name != second.store_name
+    assert first.bound_subject != second.bound_subject
+
+
+def test_the_name_is_stable_for_the_same_application():
+    # It is an identity, not a version: onboarding twice must not rename it.
+    assert identity().name == identity().name
+    assert identity(k8s_namespace="elsewhere", audience="other").name == identity().name
+
+
+def test_a_different_application_in_the_same_team_gets_a_different_name():
+    assert identity(app="other").name != identity().name
+
+
 def test_bound_subject_names_the_service_account_in_ladons_own_namespace():
-    assert identity().bound_subject == "system:serviceaccount:ladon:eso-team-a-sample"
+    assert identity().bound_subject == f"system:serviceaccount:ladon:{SAMPLE_NAME}"
     assert DEFAULT_SA_NAMESPACE == "ladon"
 
 
 def test_openbao_namespace_defaults_to_the_team_and_is_overridable():
     assert identity().namespace == "team-a"
     assert identity(namespace="ns-a").namespace == "ns-a"
+
+
+def test_a_nested_openbao_namespace_is_accepted():
+    # Namespaces are a path, so a team under a parent namespace is legitimate;
+    # every segment is still a label.
+    assert identity(namespace="platform/team-a").namespace == "platform/team-a"
 
 
 def test_kubernetes_namespace_defaults_to_the_app_and_is_overridable():
@@ -116,11 +153,11 @@ def test_policy_grants_nothing_on_another_app():
 
 def test_role_is_pinned_to_the_service_account_the_policy_and_no_default():
     role = eso_app_role(identity())
-    assert role.name == "eso-team-a-sample"
+    assert role.name == SAMPLE_NAME
     assert role.data["role_type"] == "jwt"
     assert role.data["user_claim"] == "sub"
     assert role.data["bound_audiences"] == [DEFAULT_APP_AUDIENCE]
-    assert role.data["bound_subject"] == "system:serviceaccount:ladon:eso-team-a-sample"
+    assert role.data["bound_subject"] == f"system:serviceaccount:ladon:{SAMPLE_NAME}"
     assert role.data["token_policies"] == ["eso-sample-readonly"]
     assert role.data["token_no_default_policy"] is True
     assert role.data["token_ttl"]
@@ -143,6 +180,12 @@ def test_audience_is_a_parameter_and_both_halves_follow_it():
     assert token["kubernetesServiceAccountToken"]["audiences"] == ["ladon"]
 
 
+def test_an_empty_audience_is_refused():
+    # An unbound audience is a role any token can present for.
+    with pytest.raises(ConfigError, match="audience"):
+        identity(audience="")
+
+
 # Cluster documents -----------------------------------------------------------
 
 
@@ -153,7 +196,7 @@ def test_service_account_does_not_automount_its_token():
     assert sa == {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
-        "metadata": {"name": "eso-team-a-sample", "namespace": "ladon"},
+        "metadata": {"name": SAMPLE_NAME, "namespace": "ladon"},
         "automountServiceAccountToken": False,
     }
 
@@ -166,12 +209,12 @@ def test_service_account_follows_the_service_account_namespace():
 def test_store_reads_the_team_namespace_through_the_clusters_jwt_mount():
     store = eso_app_store(identity(namespace="ns-a"), server=SERVER)
     vault = store.manifest["spec"]["provider"]["vault"]
-    assert store.name == "ladon-team-a-sample"
+    assert store.name == f"ladon-team-a-sample-{SAMPLE_DIGEST}"
     assert vault["server"] == SERVER
     assert vault["namespace"] == "ns-a"
     assert vault["path"] == "kv"
     assert vault["auth"]["jwt"]["path"] == "jwt-cluster-a"
-    assert vault["auth"]["jwt"]["role"] == "eso-team-a-sample"
+    assert vault["auth"]["jwt"]["role"] == SAMPLE_NAME
 
 
 def test_store_authenticates_as_the_apps_own_service_account():
@@ -179,7 +222,7 @@ def test_store_authenticates_as_the_apps_own_service_account():
     ref = store.manifest["spec"]["provider"]["vault"]["auth"]["jwt"][
         "kubernetesServiceAccountToken"
     ]["serviceAccountRef"]
-    assert ref == {"name": "eso-team-a-sample", "namespace": "ladon"}
+    assert ref == {"name": SAMPLE_NAME, "namespace": "ladon"}
 
 
 def test_store_admits_only_the_apps_kubernetes_namespace():
@@ -221,6 +264,12 @@ def test_namespaces_must_be_dns_labels():
         identity(sa_namespace="Ladon")
     with pytest.raises(ConfigError, match="namespace"):
         identity(namespace="Team_A")
+
+
+@pytest.mark.parametrize("namespace", ["platform/Team-A", "platform//team-a", "/team-a"])
+def test_every_segment_of_a_nested_namespace_is_validated(namespace):
+    with pytest.raises(ConfigError, match="namespace"):
+        identity(namespace=namespace)
 
 
 def test_cluster_is_required():

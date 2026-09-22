@@ -35,12 +35,7 @@ from dataclasses import dataclass, field
 from ladon.config.apps import AppIdentity, eso_app_policy, eso_app_role
 from ladon.config.auth import AuthMethod, jwt_auth, jwt_role
 from ladon.config.eso import DEFAULT_ESO_NAMESPACE, DEFAULT_ESO_SA
-from ladon.config.policies import (
-    DEFAULT_KV_MOUNT,
-    Policy,
-    baseline_team_policies,
-    external_secrets_read,
-)
+from ladon.config.policies import DEFAULT_KV_MOUNT, Policy, external_secrets_read
 from ladon.config.teams import ConfigError, Team
 
 # KV version 2 is the baseline (docs/baseline.md); the mount is enabled with the
@@ -160,9 +155,20 @@ def ensure_namespace_op(name: str) -> WriteOp:
     from the root is ``sys/namespaces/team-a``, so the op is unscoped and it is
     the *contents* of the namespace that carry it. A namespace is only ever
     created, never deleted or renamed: everything a team holds lives inside it.
+
+    ``name`` is one segment. A path would ask OpenBao to create a nested
+    namespace from the root, which this op does not do: a nested namespace is
+    created by running this same op inside its parent, which is the ``namespace``
+    field's job. Silently posting the path would create a namespace literally
+    named with a slash on some versions and fail on others.
     """
     if not name:
         raise ConfigError("ensure-namespace requires a non-empty name")
+    if "/" in name:
+        raise ConfigError(
+            f"ensure-namespace name {name!r} must be a single segment; create a "
+            "nested namespace by running this operation inside its parent"
+        )
     return WriteOp(kind="ensure-namespace", path=f"sys/namespaces/{name}")
 
 
@@ -192,16 +198,16 @@ def auth_method_ops(method: AuthMethod) -> list[WriteOp]:
 def team_namespace_ops(team: Team, kv_mount: str = DEFAULT_KV_MOUNT) -> list[WriteOp]:
     """Create one team's namespace and the baseline it starts with.
 
-    Inside the namespace: the KV v2 mount the deployment names, and the three
-    per-team policy templates. All three are written for every team, including
-    the read-only ones: a policy is a grant that exists, not a grant that is
-    held, and which of them a team's identities actually carry is decided by the
-    roles bound to them.
+    Inside the namespace: the KV v2 mount the deployment names, and the policies
+    the team's configured access level grants, plus the per-team ESO read
+    policy, which every team needs to sync secrets and which grants no write. A
+    team configured ``readonly`` therefore never gets a write policy written at
+    all, rather than getting one nothing is supposed to bind to.
     """
     ops = [ensure_namespace_op(team.namespace)]
     inside = [
         *kv_mount_ops(kv_mount),
-        *policy_ops([*baseline_team_policies(kv_mount), external_secrets_read(kv_mount)]),
+        *policy_ops([*team.policies(kv_mount), external_secrets_read(kv_mount)]),
     ]
     return ops + [op.scoped_to(team.namespace) for op in inside]
 

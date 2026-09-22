@@ -475,10 +475,35 @@ def test_the_same_mount_in_two_namespaces_is_two_objects():
 def test_a_namespaced_policy_drift_is_repaired_in_its_own_namespace():
     client = FakeOpenBao()
     apply_plan(team_plan(), client=client, apply=True)
-    client.state("team-b").policies["team-readonly"] = 'path "kv/data/*" {\n}\n'
+    client.state("team-b").policies["team-readwrite"] = 'path "kv/data/*" {\n}\n'
 
     result = apply_plan(team_plan(), client=client, apply=True)
-    assert result.applied == ("[team-b] write-policy sys/policies/acl/team-readonly",)
+    assert result.applied == ("[team-b] write-policy sys/policies/acl/team-readwrite",)
+
+
+def test_a_team_never_reads_or_writes_the_roots_objects():
+    # The root already has a KV mount at the same path and the same policy
+    # names, with different bodies. Every read, write and read-back of a team's
+    # op must happen inside the team's namespace: an unscoped read would report
+    # the team's mount already current and its policies as drift against the
+    # root's, and an unscoped read-back would fail on bodies that never match.
+    root_body = 'path "kv/data/*" {\n  capabilities = ["read"]\n}\n'
+    client = FakeOpenBao(
+        mounts={"kv/": {"type": "kv", "options": {"version": "2"}}},
+        policies={"team-readwrite": root_body, "external-secrets-read": root_body},
+    )
+
+    result = apply_plan(team_plan(), client=client, apply=True)
+
+    assert [d.action for d in result.diffs if d.summary.startswith("[")] == ["create"] * 6
+    for namespace in ("team-a", "team-b"):
+        state = client.state(namespace)
+        assert "kv/" in state.mounts
+        assert sorted(state.policies) == ["external-secrets-read", "team-readwrite"]
+        assert state.policies["team-readwrite"] != root_body
+    # The root keeps exactly what it was seeded with.
+    assert client.policies == {"team-readwrite": root_body, "external-secrets-read": root_body}
+    assert list(client.mounts) == ["kv/"]
 
 
 def test_a_client_that_cannot_scope_a_namespace_is_refused():

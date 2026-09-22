@@ -159,7 +159,7 @@ def test_empty_plan_renders_explanation():
 def teams():
     return [
         Team(name="team-a", namespace="team-a", environments=("dev",)),
-        Team(name="team-b", namespace="ns-b", environments=("dev",)),
+        Team(name="team-b", namespace="ns-b", environments=("dev",), access="readonly"),
     ]
 
 
@@ -170,6 +170,13 @@ def test_ensure_namespace_op_targets_the_namespaces_own_path():
     # Created from the parent it lives under, so the op itself is unscoped.
     assert op.namespace is None
     assert op.summary() == "ensure-namespace sys/namespaces/team-a"
+
+
+def test_ensure_namespace_refuses_a_path():
+    # A nested namespace is created by running this op inside its parent, not by
+    # posting a path from the root.
+    with pytest.raises(ConfigError, match="single segment"):
+        ensure_namespace_op("platform/team-a")
 
 
 def test_a_namespaced_op_shows_its_namespace_in_the_summary():
@@ -184,14 +191,24 @@ def test_root_config_creates_each_team_namespace_and_its_contents():
         "ensure-namespace sys/namespaces/team-a",
         "[team-a] enable-secrets-engine sys/mounts/kv",
         "[team-a] write-policy sys/policies/acl/team-readwrite",
-        "[team-a] write-policy sys/policies/acl/team-readonly",
         "[team-a] write-policy sys/policies/acl/external-secrets-read",
         "ensure-namespace sys/namespaces/ns-b",
         "[ns-b] enable-secrets-engine sys/mounts/kv",
-        "[ns-b] write-policy sys/policies/acl/team-readwrite",
         "[ns-b] write-policy sys/policies/acl/team-readonly",
         "[ns-b] write-policy sys/policies/acl/external-secrets-read",
     ]
+
+
+def test_a_team_gets_only_the_policies_its_access_level_grants():
+    # A read-only team has no business holding a write policy, even an unbound
+    # one: a policy that exists is a policy a role can be pointed at later.
+    plan = root_config_plan(policies=[], auth_methods=[], teams=teams())
+    written = {op.namespace: [] for op in plan.ops if op.namespace}
+    for op in plan.ops:
+        if op.kind == "write-policy" and op.namespace:
+            written[op.namespace].append(op.path.rsplit("/", 1)[-1])
+    assert written["team-a"] == ["team-readwrite", "external-secrets-read"]
+    assert written["ns-b"] == ["team-readonly", "external-secrets-read"]
 
 
 def test_the_namespace_is_created_before_anything_is_mounted_in_it():
@@ -221,8 +238,8 @@ def test_the_same_policy_name_in_two_namespaces_is_not_a_duplicate():
     # Duplicates collide only within one namespace; team-readwrite exists once
     # per team by design.
     plan = root_config_plan(policies=[team_readwrite()], auth_methods=[], teams=teams())
-    # The root mount and its one policy, then five ops for each of two teams.
-    assert len(plan) == 2 + 2 * 5
+    # The root mount and its one policy, then four ops for each of two teams.
+    assert len(plan) == 2 + 2 * 4
 
 
 def test_a_policy_name_repeated_in_one_namespace_is_still_rejected():

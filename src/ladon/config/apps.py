@@ -12,19 +12,22 @@ Four pieces make that identity, and every one of them must agree or the login
 fails closed:
 
 * the policy, named ``eso-<app>-readonly``, inside the team's OpenBao namespace;
-* the JWT role ``eso-<team>-<app>`` on the cluster's ``jwt-<cluster>`` mount,
-  bound to the audience the store requests and to the service account's subject;
-* the ``ServiceAccount eso-<team>-<app>``, in Ladon's own namespace (D18a)
-  rather than the operator's, so onboarding never writes into a namespace
-  another team owns;
-* the ``ClusterSecretStore ladon-<team>-<app>``, which names the team's OpenBao
-  namespace, the JWT mount, the role, and the service account to mint a token
-  for.
+* the JWT role ``eso-<team>-<app>-<digest>`` on the cluster's ``jwt-<cluster>``
+  mount, bound to the audience the store requests and to the service account's
+  subject;
+* the ``ServiceAccount eso-<team>-<app>-<digest>``, in Ladon's own namespace
+  (D18a) rather than the operator's, so onboarding never writes into a
+  namespace another team owns;
+* the ``ClusterSecretStore ladon-<team>-<app>-<digest>``, which names the team's
+  OpenBao namespace, the JWT mount, the role, and the service account to mint a
+  token for.
 
 The names are team-qualified wherever they are visible outside the team's
 namespace (role, service account, store), because those live in one flat,
 cluster-wide space: without the team in the name, one team's application could
-claim the identity of another team's application of the same name.
+claim the identity of another team's application of the same name. They also
+carry a short digest of the pair, because joining two hyphenated labels with a
+hyphen is ambiguous on its own (see :func:`_identity_digest`).
 
 Rendering is pure: it returns a :class:`~ladon.config.policies.Policy`, an
 :class:`~ladon.config.auth.AuthRole`, and plain manifest dicts. Nothing here
@@ -34,6 +37,7 @@ the cluster at runtime.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 
@@ -62,6 +66,11 @@ APP_PATH_SEGMENT = "apps"
 _LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 _LABEL_MAX = 63
 
+# How much of the digest goes into a name. Six hex is 24 bits: enough that two
+# names a deployment actually holds do not collide, short enough to read and to
+# type. It disambiguates; it is not a security boundary.
+_DIGEST_LENGTH = 6
+
 
 def _label(value: object, field: str) -> str:
     """Require a DNS-1123 label and return it, else raise ConfigError."""
@@ -76,6 +85,33 @@ def _label(value: object, field: str) -> str:
             "(a-z, 0-9, and hyphens, starting and ending alphanumeric)"
         )
     return value
+
+
+def _namespace_path(value: object, field: str) -> str:
+    """Require a namespace path: one or more labels joined by ``/``.
+
+    OpenBao namespaces nest, so a team under a parent namespace is a legitimate
+    path rather than a name. Every segment is still validated, so a path cannot
+    smuggle an empty or malformed segment past the label rule.
+    """
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"app onboarding: {field} {value!r} must be a non-empty namespace path")
+    for segment in value.split("/"):
+        _label(segment, field)
+    return value
+
+
+def _identity_digest(team: str, app: str) -> str:
+    """A short digest of the (team, application) pair, to disambiguate names.
+
+    ``eso-<team>-<app>`` is ambiguous on its own, because both parts may contain
+    hyphens: team ``a-b`` with app ``c`` and team ``a`` with app ``b-c`` both
+    read as ``a-b-c``. Those two live in different OpenBao namespaces but share
+    one cluster, so the collision would give them the same service account, the
+    same store, and the same bound subject. The null byte between the parts is
+    what makes the digest unambiguous: it cannot occur in either label.
+    """
+    return hashlib.sha256(f"{team}\x00{app}".encode()).hexdigest()[:_DIGEST_LENGTH]
 
 
 @dataclass(frozen=True)
@@ -97,9 +133,19 @@ class AppIdentity:
     kv_mount: str = DEFAULT_KV_MOUNT
 
     @property
+    def digest(self) -> str:
+        """The suffix that makes every cluster-wide name unambiguous.
+
+        Derived from the team and the application and from nothing else, so the
+        role, the service account and the store all carry the same one, and
+        onboarding the same application twice never renames it.
+        """
+        return _identity_digest(self.team, self.app)
+
+    @property
     def name(self) -> str:
-        """The role and service account name, qualified by team."""
-        return f"eso-{self.team}-{self.app}"
+        """The role and service account name, qualified by team and disambiguated."""
+        return f"eso-{self.team}-{self.app}-{self.digest}"
 
     @property
     def policy_name(self) -> str:
@@ -108,7 +154,7 @@ class AppIdentity:
 
     @property
     def store_name(self) -> str:
-        return f"ladon-{self.team}-{self.app}"
+        return f"ladon-{self.team}-{self.app}-{self.digest}"
 
     @property
     def auth_mount(self) -> str:
@@ -139,16 +185,17 @@ def app_identity(
     """Resolve and validate the names for one application's identity.
 
     ``namespace`` is the team's OpenBao namespace, defaulting to the team name
-    (the baseline convention, and what ``teams:`` defaults to). ``k8s_namespace``
-    is the one Kubernetes namespace allowed to use the store, defaulting to the
-    application's own name.
+    (the baseline convention, and what ``teams:`` defaults to) and allowed to be
+    a nested path. ``k8s_namespace`` is the one Kubernetes namespace allowed to
+    use the store, defaulting to the application's own name.
     """
     require(cluster, "cluster", context="app onboarding")
+    require(audience, "audience", context="app onboarding")
     return AppIdentity(
         team=_label(team, "team"),
         app=_label(app, "app"),
         cluster=cluster,
-        namespace=_label(namespace or team, "namespace"),
+        namespace=_namespace_path(namespace or team, "namespace"),
         k8s_namespace=_label(k8s_namespace or app, "k8s_namespace"),
         sa_namespace=_label(sa_namespace, "sa_namespace"),
         audience=audience,

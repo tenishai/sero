@@ -38,12 +38,20 @@ The baseline namespaces are deliberately minimal:
 
 Creating the team namespaces is part of the root config step: for every team in
 the config, Ladon ensures `sys/namespaces/<namespace>` exists and then, inside
-it, enables the KV v2 mount and writes `team-readwrite`, `team-readonly`, and
-`external-secrets-read`. A namespace is only ever created, never deleted or
+it, enables the KV v2 mount and writes the policies the team's configured
+access level grants (`team-readwrite`, or `team-readonly` for a team configured
+read-only) plus `external-secrets-read`, which every team needs to sync secrets
+and which grants no write. A namespace is only ever created, never deleted or
 renamed, because everything the team holds lives inside it. Each operation
 carries the namespace it runs in, so one connection configures the root and
 every team, and the same mount name in two namespaces stays two separate
 objects.
+
+Because root config now creates namespaces and writes inside them, the token it
+runs with needs more than root-level configuration rights: it must be able to
+create namespaces (`sys/namespaces/*`) and to mount engines and write policies
+within each one. On a fresh install that is the initial root token; afterwards
+it is whatever policy an operator is given for this step.
 
 That is the whole baseline: a platform root plus config-driven team namespaces.
 No operations/backend/frontend grouping, no team-specific names in the repo.
@@ -112,24 +120,37 @@ Each application gets one path prefix inside its team's KV mount,
 `kv/apps/<app>/<purpose>`, and four objects that all name each other:
 
 - a policy `eso-<app>-readonly` in the team's namespace, granting read on
-  `kv/data/apps/<app>` and everything under it, read and list on the matching
-  metadata, and the four self paths a token needs to look itself up, renew
-  itself, revoke itself, and answer a capability check. Nothing else;
-- a JWT role `eso-<team>-<app>` on the cluster's `jwt-<cluster>` mount, carrying
-  only that policy, refusing the namespace's `default` policy, bound to the
-  audience the store asks for, and bound by subject to one service account;
-- a `ServiceAccount eso-<team>-<app>` in Ladon's own Kubernetes namespace (not
-  the secrets operator's, which is shared), with token automounting off;
-- a `ClusterSecretStore ladon-<team>-<app>` naming the team's OpenBao namespace,
-  the JWT mount, the role, and that service account, and admitted into exactly
-  one Kubernetes namespace by the API-server-set `kubernetes.io/metadata.name`
-  label, which a namespace owner cannot forge.
+  everything under the application's data prefix (`kv/data/apps/<app>/*`), read
+  on the bare data path itself (`kv/data/apps/<app>`, which the glob does not
+  match), read and list on its metadata prefix (`kv/metadata/apps/<app>/*`), and
+  the four self paths a token needs to look itself up, renew itself, revoke
+  itself, and answer a capability check. Nothing else;
+- a JWT role `eso-<team>-<app>-<digest>` on the cluster's `jwt-<cluster>` mount,
+  carrying only that policy, refusing the namespace's `default` policy, bound to
+  the audience the store asks for, and bound by subject to one service account;
+- a `ServiceAccount eso-<team>-<app>-<digest>` in Ladon's own Kubernetes
+  namespace (not the secrets operator's, which is shared), with token
+  automounting off;
+- a `ClusterSecretStore ladon-<team>-<app>-<digest>` naming the team's OpenBao
+  namespace, the JWT mount, the role, and that service account, and admitted
+  into exactly one Kubernetes namespace by the API-server-set
+  `kubernetes.io/metadata.name` label, which a namespace owner cannot forge.
 
 Every name that is visible outside the team's namespace carries the team, so
 one team's application cannot claim the identity of another team's application
-of the same name. Applications are onboarded by command, one at a time; they are
-not listed in the deployment config, because an application is a thing a team
-adds, not a fact about the platform.
+of the same name. It also carries `<digest>`, the first six hex characters of a
+SHA-256 of the team and application names: both parts may contain hyphens, so
+joining them with one is ambiguous on its own (team `a-b` with application `c`
+and team `a` with application `b-c` both read as `a-b-c`), and those two live in
+different OpenBao namespaces but share one cluster. The digest disambiguates the
+pair; it is not a security boundary. It is derived from the two names and
+nothing else, so onboarding the same application again never renames it.
+
+Applications are onboarded by command, one at a time; they are not listed in the
+deployment config, because an application is a thing a team adds, not a fact
+about the platform. The command does need the deployment config, because the
+team's OpenBao namespace and the KV mount are facts about the platform and
+guessing either renders an identity that grants access to a path nothing uses.
 
 ## Customization model
 

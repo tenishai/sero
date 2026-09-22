@@ -156,7 +156,7 @@ def test_app_onboarding_writes_the_policy_then_the_role_that_names_it():
     plan = app_onboarding_plan(app())
     assert [o.summary() for o in plan.ops] == [
         "[team-a] write-policy sys/policies/acl/eso-sample-readonly",
-        "[team-a] write-auth-role auth/jwt-cluster-a/role/eso-team-a-sample",
+        f"[team-a] write-auth-role auth/jwt-cluster-a/role/{app().name}",
     ]
 
 
@@ -164,7 +164,7 @@ def test_app_onboarding_ops_carry_the_rendered_policy_and_role():
     plan = app_onboarding_plan(app())
     assert plan.ops[0].data["policy"] == eso_app_policy(app()).hcl
     assert plan.ops[1].data["token_policies"] == ["eso-sample-readonly"]
-    assert plan.ops[1].data["bound_subject"] == "system:serviceaccount:ladon:eso-team-a-sample"
+    assert plan.ops[1].data["bound_subject"] == f"system:serviceaccount:ladon:{app().name}"
 
 
 def test_app_onboarding_runs_inside_the_teams_openbao_namespace():

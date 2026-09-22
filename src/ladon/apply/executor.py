@@ -50,6 +50,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from ladon.apply.plan import Plan, WriteOp
+from ladon.hygiene import strip_url_userinfo
 
 # This module does not import hvac: the caller constructs and authenticates the
 # ``hvac.Client`` and passes it in. That keeps the executor testable with a fake
@@ -381,10 +382,6 @@ _SHOWABLE_FIELDS = frozenset(
     }
 )
 
-# Credentials embedded in a URL ("https://user:pass@host/..."). A discovery URL
-# should never carry them, but one that does must not be echoed.
-_URL_USERINFO = re.compile(r"//[^/@\s]*:[^/@\s]*@")
-
 _MAX_SHOWN = 60
 
 
@@ -452,7 +449,9 @@ def _show(name: str, value) -> str | None:
         text = "[" + ", ".join(str(v) for v in value) + "]"
     else:
         text = str(value)
-    text = _URL_USERINFO.sub("//", text)
+    # A discovery URL should never carry credentials, but one that does must
+    # not be echoed into a diff.
+    text = strip_url_userinfo(text)
     if "\n" in text or len(text) > _MAX_SHOWN:
         return None
     return text

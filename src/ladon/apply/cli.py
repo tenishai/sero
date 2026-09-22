@@ -3,8 +3,10 @@
 This is the thin seam that makes the render -> plan -> execute -> connect layers
 runnable end to end. Two subcommands:
 
-* ``plan`` builds a plan from flags and renders it to stdout. It never connects
-  to OpenBao, so it is always safe to run.
+* ``plan`` builds a plan from flags and renders it to stdout. It makes no
+  connection, so it is always safe to run. It does read the OpenBao address for
+  app-onboarding, because the store document has to name the server it dials,
+  but it never contacts it.
 * ``apply`` builds the same plan, connects to OpenBao using the environment
   (address and token, or another credential), and diffs it against live state.
   It is a dry-run by default, per the secrets-hygiene rule that writes are
@@ -12,11 +14,12 @@ runnable end to end. Two subcommands:
   (read-only), because a diff is only useful against what is really there; use
   ``plan`` when there is nothing to connect to.
 
-Run as ``python -m ladon plan ...`` / ``python -m ladon apply ...``. Inputs are
-explicit flags per phase. A ``--config`` deployment file supplies the parts it
-already models (the KV mount, the teams whose namespaces root config creates,
-and a team's namespace via ``--team``); auth inputs stay explicit flags. Built on
-the standard library only (argparse), so the CLI adds no dependency.
+Run as ``scripts/ladon plan ...`` / ``scripts/ladon apply ...`` (the wrapper puts
+``src`` on the path; there is no installed console script). Inputs are explicit
+flags per phase. A ``--config`` deployment file supplies the parts it already
+models (the KV mount, the teams whose namespaces root config creates, and a
+team's namespace via ``--team``); auth inputs stay explicit flags. Built on the
+standard library only (argparse), so the CLI adds no dependency.
 
 The ``app-onboarding`` phase has two halves (D17): the OpenBao objects, which
 are a plan like any other, and the Kubernetes documents, which are printed as
@@ -60,6 +63,7 @@ from ladon.config.auth import jwt_auth, oidc_auth
 from ladon.config.loader import DeploymentConfig, load_deployment_config
 from ladon.config.policies import baseline_team_policies, external_secrets_read
 from ladon.config.teams import ConfigError
+from ladon.hygiene import has_url_userinfo
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -198,9 +202,14 @@ def _resolve_kv_mount(args: argparse.Namespace, config: DeploymentConfig | None)
     return DEFAULT_KV_MOUNT
 
 
-def build_plan(args: argparse.Namespace) -> Plan:
-    """Build the plan selected by ``--phase`` from the flags and optional config."""
-    config = _load_config(args)
+def build_plan(args: argparse.Namespace, config: DeploymentConfig | None = None) -> Plan:
+    """Build the plan selected by ``--phase`` from the flags and the config.
+
+    ``config`` is passed in by the run paths, which load it once and use it for
+    both halves of an onboarding; it is loaded here when a caller has none.
+    """
+    if config is None:
+        config = _load_config(args)
     if args.phase == "root-config":
         return _build_root_config_plan(args, config)
     if args.phase == "team-onboarding":
@@ -261,13 +270,24 @@ def _build_team_onboarding_plan(args: argparse.Namespace, config: DeploymentConf
 
 
 def build_app_identity(args: argparse.Namespace, config: DeploymentConfig | None) -> AppIdentity:
-    """Resolve one application's identity from the flags and optional config."""
+    """Resolve one application's identity from the flags and the deployment config.
+
+    The config is required, as it is for team onboarding. Everything this
+    renders is keyed to the team's OpenBao namespace and the deployment's KV
+    mount, and guessing either of them writes a policy and a role that look
+    right and grant access to a path nothing uses.
+    """
     if not args.team:
         raise ConfigError("app-onboarding requires --team")
     if not args.app:
         raise ConfigError("app-onboarding requires --app")
     if not args.cluster:
         raise ConfigError("app-onboarding requires --cluster")
+    if config is None:
+        raise ConfigError(
+            "app-onboarding requires --config: the team's namespace and the KV "
+            "mount come from the deployment config, not from a guess"
+        )
     return app_identity(
         team=args.team,
         app=args.app,
@@ -286,12 +306,9 @@ def resolve_namespace(
     """The OpenBao namespace this phase's operations run in.
 
     An explicit ``--namespace`` wins. Otherwise a ``--team`` resolves to the
-    team's namespace, from the config where there is one, so it comes from the
-    one place it is defined. For app-onboarding a config is optional: the
-    baseline convention is that a team's namespace is its name, so the team name
-    stands in. Team onboarding still requires the config, because it is the
-    phase that bootstraps a team and a typo there would silently onboard the
-    wrong namespace.
+    team's namespace through the config, so it comes from the one place it is
+    defined rather than from a guess that would silently configure the wrong
+    namespace.
     """
     explicit = getattr(args, "namespace", None)
     if explicit:
@@ -300,36 +317,48 @@ def resolve_namespace(
     if not team:
         return None
     config = config if config is not None else _load_config(args)
-    if config is not None:
-        return derive.team_namespace(config, team)
-    if args.phase == "app-onboarding":
-        return team
-    raise ConfigError("--team requires --config to resolve the namespace")
+    if config is None:
+        raise ConfigError("--team requires --config to resolve the namespace")
+    return derive.team_namespace(config, team)
 
 
-def _cluster_documents(args: argparse.Namespace) -> list[dict]:
-    """The Kubernetes half of app-onboarding, rendered from the same identity."""
+def _build(args: argparse.Namespace) -> tuple[Plan, list[dict]]:
+    """The plan, and the cluster documents for the phases that have them.
+
+    One place loads the config and builds the application identity, so both
+    halves of an onboarding are rendered from exactly the same values.
+    """
     config = _load_config(args)
+    if args.phase != "app-onboarding":
+        return build_plan(args, config), []
     identity = build_app_identity(args, config)
-    return app_cluster_documents(identity, server=_resolve_server(args))
+    documents = app_cluster_documents(identity, server=_resolve_server(args))
+    return app_onboarding_plan(identity), documents
 
 
 def _resolve_server(args: argparse.Namespace) -> str:
     """The OpenBao address the rendered store dials.
 
     It is a location, not a credential, so reading it from the environment the
-    apply already uses keeps one address in one place.
+    apply already uses keeps one address in one place. An address carrying
+    embedded credentials is refused rather than rendered: this value is written
+    verbatim into a document that gets printed, reviewed and applied, and the
+    error must not repeat what it found.
     """
-    if args.server:
-        return args.server
-    for name in ADDRESS_ENV_VARS:
-        value = os.environ.get(name)
-        if value:
-            return value
-    raise ConfigError(
-        "app-onboarding renders a store that must name the OpenBao address: "
-        f"pass --server or set {' or '.join(ADDRESS_ENV_VARS)}"
-    )
+    server = args.server
+    if not server:
+        server = next((os.environ[n] for n in ADDRESS_ENV_VARS if os.environ.get(n)), None)
+    if not server:
+        raise ConfigError(
+            "app-onboarding renders a store that must name the OpenBao address: "
+            f"pass --server or set {' or '.join(ADDRESS_ENV_VARS)}"
+        )
+    if has_url_userinfo(server):
+        raise ConfigError(
+            "the OpenBao address carries embedded credentials; give a plain "
+            "address, and supply the credential through the environment"
+        )
+    return server
 
 
 def _print_documents(documents: list[dict], out, *, note: str) -> None:
@@ -341,19 +370,17 @@ def _print_documents(documents: list[dict], out, *, note: str) -> None:
 
 
 def _run_plan(args: argparse.Namespace, out) -> int:
-    plan = build_plan(args)
+    plan, documents = _build(args)
     print(plan.render(), file=out)
-    if args.phase == "app-onboarding":
-        _print_documents(_cluster_documents(args), out, note="rendered, not applied")
+    if documents:
+        _print_documents(documents, out, note="rendered, not applied")
     return 0
 
 
 def _run_apply(args: argparse.Namespace, out) -> int:
-    plan = build_plan(args)
-
-    # Rendered before connecting: the two halves describe one onboarding, so if
-    # the cluster half cannot be rendered nothing should be written at all.
-    documents = _cluster_documents(args) if args.phase == "app-onboarding" else []
+    # Both halves are rendered before connecting: they describe one onboarding,
+    # so if the cluster half cannot be rendered nothing should be written.
+    plan, documents = _build(args)
 
     # Both modes connect: a dry-run reads live state so the diff is against what
     # is really there. Only --apply writes. Use `plan` for an offline render.
@@ -377,10 +404,16 @@ def _run_apply(args: argparse.Namespace, out) -> int:
 
     if documents:
         # The cluster half is applied by the install layer, not here. Printing
-        # it keeps one command the whole description of an onboarding.
-        _print_documents(
-            documents, out, note="rendered, not applied: the cluster layer applies these"
+        # it keeps one command the whole description of an onboarding. If the
+        # OpenBao half did not land, say so on the documents themselves: a store
+        # applied against a role that does not exist fails at refresh time,
+        # somewhere else, later.
+        note = (
+            "DO NOT APPLY: the OpenBao half was not applied"
+            if result.blocked
+            else "rendered, not applied: the cluster layer applies these"
         )
+        _print_documents(documents, out, note=note)
 
     if result.blocked:
         print(
