@@ -132,9 +132,12 @@ it, in three parts:
 
 1. `ladon-default-deny` denies all traffic, in and out, for every pod in the
    `ladon` namespace.
-2. `ladon-backend` admits ingress to the backend **only** from a namespace
-   labelled `ladon.dev/proxy=true`, and permits egress only to DNS, to
-   OpenBao, to outbound https, and to the Kubernetes API server.
+2. `ladon-backend` admits ingress to the backend from three named places and
+   nothing else: a namespace labelled `ladon.dev/proxy=true` (an in-cluster
+   proxy), the cloud load balancer's published address ranges (the front
+   door), and a namespace labelled `ladon.dev/caller=true` (a machine caller
+   on the service lane). It permits egress only to DNS, to OpenBao, to
+   outbound https, and to the Kubernetes API server.
 3. `ladon-openbao` re-admits the backend and the External Secrets Operator to
    OpenBao, and gives OpenBao the egress that part 1 also closed.
 
@@ -154,6 +157,36 @@ Labels rather than namespace names, because which namespace an ingress
 controller or the operator lives in differs per cluster, and labelling is a
 deliberate act by whoever owns that namespace rather than a name this
 repository has to guess.
+
+A third label is optional, and only for a deployment with a machine caller on
+the service lane (`POST /api/service/secrets`). That caller runs in a
+namespace of its own, which matches neither the proxy rule nor a
+same-namespace selector, so its namespace is admitted the same deliberate
+way:
+
+```
+kubectl label namespace <caller-namespace> ladon.dev/caller=true
+```
+
+The label opens the port. It grants no identity: the caller still
+authenticates on the service lane's own terms.
+
+### A cloud load balancer comes from no namespace
+
+Where the front door is the cloud provider's own external HTTPS load balancer
+rather than an in-cluster proxy, the `ladon.dev/proxy=true` rule admits
+nothing, and this is the way it is found out: the backend service sits
+permanently UNHEALTHY and the load balancer answers 502 with the pod running
+and healthy.
+
+The reason is that traffic and health checks alike arrive from the provider's
+own infrastructure, direct to the pod through a container-native network
+endpoint group, from fixed address ranges rather than from a namespace. On
+Google those are `130.211.0.0/22` and `35.191.0.0/16`, and `ladon-backend`
+carries an `ipBlock` rule for the pair. They are Google's published
+constants, not a deployment's addresses, so unlike the rules below there is
+nothing to replace. The front-door manifests are in
+[`standalone/front-door/`](standalone/front-door/).
 
 ### OpenBao needs egress, not just ingress
 

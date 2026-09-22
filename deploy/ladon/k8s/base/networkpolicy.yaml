@@ -27,6 +27,16 @@
 # Without the first, the backend is unreachable. Without the second, every
 # ExternalSecret on the cluster fails to read from OpenBao.
 #
+# A third label is optional and only needed where a machine caller uses the
+# service lane from a namespace of its own:
+#
+#   kubectl label namespace <caller-namespace> ladon.dev/caller=true
+#
+# And one rule needs no label at all: where the front door is the cloud
+# provider's external HTTPS load balancer, traffic arrives from that
+# provider's published address ranges rather than from any namespace, so the
+# backend policy carries an ipBlock rule for them. See the rule's own comment.
+#
 # ## Placeholders to replace, all marked REPLACE below
 #
 # A NetworkPolicy with a wrong address range is accepted by the API server and
@@ -80,8 +90,9 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # The proxy, and only the proxy. The Service is ClusterIP, so this is the
-    # whole of the backend's reachable surface.
+    # An in-cluster proxy. The Service is ClusterIP, so the rules in this
+    # block are the whole of the backend's reachable surface; each one is a
+    # named way in, and everything else is denied.
     #
     # Both ports, because the two deploy paths bind different ones: the
     # standalone Deployment takes the image's default 8000, and gojira.yaml
@@ -96,6 +107,45 @@ spec:
           port: 8000
         - protocol: TCP
           port: 8080
+    # The cloud load balancer, when the front door is the provider's own
+    # external HTTPS load balancer with its identity-aware proxy in front
+    # (deploy/ladon/standalone/front-door/). Google sends both real traffic
+    # and the backend service's health checks from two fixed ranges,
+    # 130.211.0.0/22 and 35.191.0.0/16, and they arrive at the pod directly
+    # through a container-native network endpoint group. They come from no
+    # namespace at all, so the `ladon.dev/proxy=true` rule above admits
+    # nothing for this proxy and this rule is what lets the front door
+    # reach the backend. Without it the backend service is permanently
+    # UNHEALTHY and the load balancer answers 502.
+    #
+    # These two ranges are Google's own published constants, not a
+    # deployment's addresses, so there is nothing to replace here. Delete
+    # the rule when the front door is an in-cluster proxy instead.
+    - from:
+        - ipBlock:
+            cidr: 130.211.0.0/22
+        - ipBlock:
+            cidr: 35.191.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8000
+    # A machine caller. The service lane (`POST /api/service/secrets`) is
+    # used by other platform services, which run in their own namespaces and
+    # therefore match neither the proxy rule nor a same-namespace selector.
+    # This is how one is admitted: whoever owns the calling namespace labels
+    # it, the same deliberate act as the proxy label.
+    #
+    #   kubectl label namespace <caller-namespace> ladon.dev/caller=true
+    #
+    # The label admits the namespace to the port; it grants no identity. A
+    # machine caller still authenticates on the service lane's own terms.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              ladon.dev/caller: "true"
+      ports:
+        - protocol: TCP
+          port: 8000
   egress:
     # Name resolution. Without this every other rule below fails on a lookup.
     - to:
