@@ -940,3 +940,25 @@ def test_a_wrong_environment_is_audited_as_refused(client, sessions):
     )
     (row,) = audit_rows(sessions, "create_secret")
     assert row.status == "refused"
+
+
+def test_a_missing_reveal_key_is_a_404_naming_the_key(sessions, store, allowed):
+    client = build_client(sessions, store, reveal_enabled=True)
+    resp = as_member(client, "GET", "/api/namespaces/team-a/secrets/app/reveal?env=dev&key=ABSENT")
+    assert resp.status_code == 404
+    assert "ABSENT" in resp.json()["error"]
+
+
+def test_an_internal_key_error_is_a_500_not_a_404(sessions, store, allowed):
+    # A KeyError from somewhere that did not mean "not found" used to be
+    # reported to the caller as a 404 carrying whatever the key happened to be.
+    class Exploding:
+        def list_namespaces(self, user_email):
+            raise KeyError("sentinel-internal-detail")
+
+    app = create_app(build_settings(), session_factory=sessions, secrets=Exploding())
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/api/namespaces", headers={HEADER: MEMBER})
+    assert resp.status_code == 500
+    assert resp.json() == {"error": "internal error"}
+    assert "sentinel-internal-detail" not in resp.text

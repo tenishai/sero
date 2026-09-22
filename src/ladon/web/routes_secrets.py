@@ -38,6 +38,7 @@ from ladon.web.deps import (
     Secrets,
     services,
 )
+from ladon.web.errors import ApiError
 from ladon.web.serializers import namespace_request_row
 
 router = APIRouter()
@@ -137,7 +138,13 @@ def reveal_secret_value(
         services(request).reveal_gate.require(email)
         _require_allowed(session, email)
         _require_namespace(secrets, email, namespace)
-        value = secrets.reveal_value(email, namespace, secret_path, env, key)
+        try:
+            value = secrets.reveal_value(email, namespace, secret_path, env, key)
+        except KeyError as exc:
+            # Only this one means "not found". A KeyError from anywhere else is
+            # a bug, and reporting it as a 404 would hand the caller whatever
+            # key happened to be missing.
+            raise ApiError(404, str(exc.args[0]) if exc.args else "no such key") from exc
     _audit(session, user_email=email, tool_name="reveal_value", status="ok", args=args)
     session.commit()
     return {"value": value}

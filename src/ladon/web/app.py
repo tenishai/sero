@@ -170,10 +170,6 @@ def _register_error_handlers(app: FastAPI) -> None:
         # Any other ValueError is a bug and falls to the handler below.
         return error(400, str(exc))
 
-    @app.exception_handler(KeyError)
-    def _absent(request: Request, exc: KeyError) -> JSONResponse:
-        return error(404, str(exc.args[0]) if exc.args else "not found")
-
     @app.exception_handler(BaoConnectionError)
     def _vault_unreachable(request: Request, exc: BaoConnectionError) -> JSONResponse:
         # This module's errors never carry the token or a credentialed URL.
