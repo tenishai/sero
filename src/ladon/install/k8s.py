@@ -19,8 +19,8 @@ already installed so Ladon can reuse it instead of fighting it for the CRDs.
 
 Secrets hygiene: these documents carry references (a service account, a JWT
 role, a KV path), never values. Error messages name the kind, the object and the
-field path, and carry at most the first line of kubectl's stderr, so a message
-that happens to echo an object body cannot reach a log.
+field path, and carry at most the first line of kubectl's stderr, truncated, so
+a message that happens to echo an object body cannot reach a log.
 """
 
 from __future__ import annotations
@@ -36,6 +36,29 @@ from typing import Any
 import yaml
 
 DEFAULT_FIELD_MANAGER = "ladon"
+
+# Every kubectl call here is a read or a single apply against one cluster; none
+# of them is a long-running watch, so a call still open after this has hung.
+DEFAULT_TIMEOUT_SECONDS = 120
+
+# At most this much of one error line reaches a message. kubectl can echo an
+# object body into an error, and a truncated field path is still diagnosable
+# while a full body is a hygiene problem.
+MAX_ERROR_CHARS = 200
+
+# Kinds Ladon applies that have no namespace. A document of any other kind that
+# sets none would land in whatever namespace the kubectl context happens to
+# point at, which is how an object ends up in the wrong place, so it is refused.
+CLUSTER_SCOPED_KINDS = frozenset(
+    {
+        "ClusterSecretStore",
+        "ClusterExternalSecret",
+        "Namespace",
+        "CustomResourceDefinition",
+        "ClusterRole",
+        "ClusterRoleBinding",
+    }
+)
 
 # The ESO API group, its ExternalSecret CRD, and the jsonpath that names the
 # version the cluster stores. Passed as argv, so the jsonpath carries no shell
@@ -67,15 +90,34 @@ _RESULT_LINE = re.compile(
 # so the report cannot tell those apart; the read-back is what proves the state.
 _VERB_ALIASES = {"serverside-applied": "configured", "patched": "configured"}
 
-# A non-zero exit carrying either of these is a field-manager conflict, which
-# blocks one document rather than failing the whole apply.
-_CONFLICT_MARKERS = ("conflict", "field manager")
+# The lines in kubectl's output that are errors. The tab matters on the third:
+# kubectl indents the items of an aggregated error with a tab, while the help
+# text it prints after a conflict uses bullets in column zero, and those are
+# prose, not failures.
+_ERROR_LINE_PREFIXES = ("error:", "Error from server")
+_ERROR_ITEM_PREFIX = "\t* "
+
+# What makes an error line a field-manager conflict rather than a refusal. Both
+# quote kubectl's own wording; a message that merely uses the word "conflicts"
+# (an admission webhook explaining a policy, say) matches neither.
+_CONFLICT_PATTERNS = (
+    re.compile(r"Apply failed with \d+ conflicts?"),
+    re.compile(r'conflict with "'),
+)
 
 _MISSING = object()
 
 
 class K8sError(RuntimeError):
     """A kubectl invocation failed, or kubectl is unavailable."""
+
+
+class ESONotInstalledError(K8sError):
+    """The External Secrets CRDs are not on the cluster.
+
+    Its own type because it is the one failure a caller may answer by
+    installing the chart; every other probe failure means stop.
+    """
 
 
 @dataclass(frozen=True)
@@ -137,7 +179,16 @@ def run(argv: Sequence[str], *, stdin: str | None = None) -> subprocess.Complete
     """
     if shutil.which(argv[0]) is None:
         raise K8sError(f"{argv[0]!r} not found on PATH")
-    return subprocess.run(argv, input=stdin, capture_output=True, text=True)  # noqa: S603
+    try:
+        return subprocess.run(  # noqa: S603
+            argv,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=DEFAULT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise K8sError(f"{' '.join(argv[:3])} timed out after {DEFAULT_TIMEOUT_SECONDS}s") from exc
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -171,8 +222,20 @@ def apply_documents(
     """Apply documents as one YAML stream and report what happened to each.
 
     Defaults to a server dry-run, matching the dry-run-first rule the rest of
-    the apply layer follows. A field-manager conflict blocks the document it
-    names and leaves the rest reported; any other failure is an error.
+    the apply layer follows.
+
+    A non-zero exit is classified per error line, not by scanning the whole
+    output: every error line must be a field-manager conflict for the failure to
+    become blocked documents. One refusal sharing the output with a conflict
+    (an RBAC denial, an admission webhook) makes the whole apply an error, and
+    so does an exit whose reason has no recognisable error line at all. The
+    apply did not do what it was asked, and a report of blocked documents would
+    say the wrong thing about why.
+
+    A document kubectl printed a result line for was applied; the ones with no
+    line are the ones that did not land, and they carry the conflict as their
+    reason. Result lines carry no namespace, so a verb answers for at most as
+    many documents of that kind and name as there were lines, in stream order.
     """
     docs = [_checked(d) for d in docs]
     if not docs:
@@ -184,29 +247,28 @@ def apply_documents(
     )
     reported = _parse_apply_output(result.stdout)
 
-    conflict_reason = ""
-    named_in_conflict: set[str] = set()
+    blocked_reason = ""
     if result.returncode != 0:
         message = result.stderr or result.stdout
-        if not _looks_like_conflict(message):
+        if not _is_only_conflicts(message):
             raise K8sError(f"kubectl apply failed ({result.returncode}): {_first_line(message)}")
-        conflict_reason = _first_line(message)
-        # kubectl names the object it could not apply in the conflict message.
-        # Whatever it names is blocked; when it names nothing, the documents it
-        # reported no result for are the ones that did not land.
-        named_in_conflict = {_identify(d)[2] for d in docs if _identify(d)[2] in message}
+        blocked_reason = _first_line(message)
 
     results = []
     for doc in docs:
         kind, namespace, name = _identify(doc)
-        verb = reported.get((_resource_token(doc), name)) or reported.get((None, name))
-        if verb is not None and name not in named_in_conflict:
-            results.append(ApplyResult(kind, namespace, name, verb))
-        elif conflict_reason:
-            results.append(ApplyResult(kind, namespace, name, "blocked", conflict_reason))
+        verbs = reported.get((_resource_token(doc), name))
+        if verbs:
+            results.append(ApplyResult(kind, namespace, name, verbs.pop(0)))
         else:
             results.append(
-                ApplyResult(kind, namespace, name, "blocked", "kubectl reported no result")
+                ApplyResult(
+                    kind,
+                    namespace,
+                    name,
+                    "blocked",
+                    blocked_reason or "kubectl reported no result",
+                )
             )
     return ApplyReport(results=tuple(results), dry_run=dry_run)
 
@@ -278,7 +340,7 @@ def eso_api_version(*, run: Runner = run) -> str:
             f"{_first_line(resources.stderr or resources.stdout)}"
         )
     if not resources.stdout.strip():
-        raise K8sError(
+        raise ESONotInstalledError(
             f"the External Secrets CRDs are not installed on this cluster "
             f"(the {ESO_API_GROUP} API group is empty)"
         )
@@ -301,7 +363,9 @@ def detect_eso(*, run: Runner = run) -> ESOInstall | None:
     CRDs. Returns what is installed so the caller can reuse it, or None when the
     cluster has none. A kubectl failure is an error, never a None: treating "I
     could not look" as "nothing is there" is how a second operator gets
-    installed.
+    installed. More than one match is an error too, for the same reason: the
+    cluster is already in the state this function exists to prevent, and
+    choosing one of them would hide it.
     """
     result = run(["kubectl", "get", "deploy", "-A", "-l", ESO_NAME_SELECTOR, "-o", "json"])
     if result.returncode != 0:
@@ -318,7 +382,12 @@ def detect_eso(*, run: Runner = run) -> ESOInstall | None:
     items = payload.get("items", [])
     if not items:
         return None
-    item = _operator_deployment(items)
+    if len(items) > 1:
+        raise K8sError(
+            f"found {len(items)} deployments labelled {ESO_NAME_SELECTOR} on this cluster; "
+            f"external-secrets is cluster-scoped and singular, so resolve by hand"
+        )
+    item = items[0]
     pod_spec = item.get("spec", {}).get("template", {}).get("spec", {})
     return ESOInstall(
         namespace=item.get("metadata", {}).get("namespace", ""),
@@ -331,10 +400,23 @@ def detect_eso(*, run: Runner = run) -> ESOInstall | None:
 
 
 def _checked(doc: dict) -> dict:
-    """Refuse a document that cannot be named; every report line needs a name."""
+    """Refuse a document Ladon cannot place exactly.
+
+    Every report line needs a kind and a name. A namespace is required too
+    unless the kind is one of the cluster-scoped ones: an implicit namespace is
+    whatever the kubectl context points at, and Ladon does not write objects
+    into a namespace it did not name.
+    """
     metadata = doc.get("metadata") or {}
-    if not doc.get("kind") or not metadata.get("name"):
+    kind = doc.get("kind")
+    name = metadata.get("name")
+    if not kind or not name:
         raise K8sError("every document must set kind and metadata.name")
+    if not metadata.get("namespace") and kind not in CLUSTER_SCOPED_KINDS:
+        raise K8sError(
+            f"{kind}/{name} sets no metadata.namespace and {kind} is not a cluster-scoped "
+            f"kind; name the namespace rather than inheriting the kubectl context's"
+        )
     return doc
 
 
@@ -350,29 +432,56 @@ def _resource_token(doc: dict) -> str:
     return f"{kind}.{group}" if group else kind
 
 
-def _parse_apply_output(stdout: str) -> dict[tuple[str | None, str], str]:
-    """Index kubectl's per-object lines by (resource token, name) and by name."""
-    reported: dict[tuple[str | None, str], str] = {}
+def _parse_apply_output(stdout: str) -> dict[tuple[str, str], list[str]]:
+    """Collect kubectl's per-object verbs, in order, per (resource token, name).
+
+    A list rather than one verb: the lines carry no namespace, so the count is
+    how many documents of that kind and name the output can answer for.
+    """
+    reported: dict[tuple[str, str], list[str]] = {}
     for line in stdout.splitlines():
         match = _RESULT_LINE.match(line.strip())
         if not match:
             continue
         verb = _VERB_ALIASES.get(match["verb"], match["verb"])
-        reported[(match["resource"], match["name"])] = verb
-        reported.setdefault((None, match["name"]), verb)
+        reported.setdefault((match["resource"], match["name"]), []).append(verb)
     return reported
 
 
-def _looks_like_conflict(message: str) -> bool:
-    lowered = message.lower()
-    return any(marker in lowered for marker in _CONFLICT_MARKERS)
+def _error_lines(message: str) -> list[str]:
+    """The lines of kubectl output that report a failure, not prose."""
+    return [
+        line.strip()
+        for line in message.splitlines()
+        if line.startswith(_ERROR_LINE_PREFIXES) or line.startswith(_ERROR_ITEM_PREFIX)
+    ]
+
+
+def _is_only_conflicts(message: str) -> bool:
+    """True when every error line is a field-manager conflict.
+
+    Fails closed: a failure with no recognisable error line is not a conflict,
+    and neither is one whose lines are a mix.
+    """
+    lines = _error_lines(message)
+    return bool(lines) and all(
+        any(pattern.search(line) for pattern in _CONFLICT_PATTERNS) for line in lines
+    )
 
 
 def _first_line(text: str) -> str:
-    """The first non-empty line, so a multi-line body cannot reach a log."""
+    """At most the first non-empty line, truncated.
+
+    A multi-line body cannot reach a log, and neither can a long one: kubectl
+    can echo an object into an error.
+    """
     for line in text.splitlines():
-        if line.strip():
-            return line.strip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if len(stripped) > MAX_ERROR_CHARS:
+            return f"{stripped[:MAX_ERROR_CHARS]} (truncated)"
+        return stripped
     return "no output"
 
 
@@ -404,14 +513,6 @@ def _entries(count: int) -> str:
     return f"{count} entry" if count == 1 else f"{count} entries"
 
 
-def _operator_deployment(items: list[dict]) -> dict:
-    """Prefer the controller deployment by name; fall back to the first match."""
-    for item in items:
-        if item.get("metadata", {}).get("name") == ESO_DEPLOYMENT_NAME:
-            return item
-    return items[0]
-
-
 def _operator_version(item: dict) -> str:
     """The version label if the chart set one, else the image tag, else unknown."""
     labelled = item.get("metadata", {}).get("labels", {}).get(ESO_VERSION_LABEL)
@@ -420,8 +521,10 @@ def _operator_version(item: dict) -> str:
     containers = item.get("spec", {}).get("template", {}).get("spec", {}).get("containers") or []
     if not containers:
         return UNKNOWN_VERSION
+    # The operator's own container, not a sidecar somebody added beside it.
+    operator = next((c for c in containers if c.get("name") == ESO_DEPLOYMENT_NAME), containers[0])
     # Drop a digest, then read the tag off the final path segment only, so a
     # registry host carrying a port is not mistaken for a tag.
-    reference = containers[0].get("image", "").split("@", 1)[0]
+    reference = operator.get("image", "").split("@", 1)[0]
     last_segment = reference.rsplit("/", 1)[-1]
     return last_segment.rsplit(":", 1)[1] if ":" in last_segment else UNKNOWN_VERSION

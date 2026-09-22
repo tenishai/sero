@@ -6,12 +6,15 @@ output. The documents are brand-neutral (`ns-a`, `sample`) and carry no values.
 """
 
 import json
+import subprocess
 
 import pytest
 import yaml
 
+from ladon.install import k8s
 from ladon.install.k8s import (
     ESOInstall,
+    ESONotInstalledError,
     K8sError,
     apply_documents,
     detect_eso,
@@ -175,14 +178,27 @@ def test_serverside_applied_is_reported_as_configured():
     assert report.results[0].action == "configured"
 
 
-def test_a_conflict_blocks_only_the_document_it_names():
-    stdout = "serviceaccount/eso-ns-a-sample unchanged\n"
-    stderr = (
-        "error: Apply failed with 1 conflict on clustersecretstore.external-secrets.io "
-        '"ladon-ns-a-sample": conflict with another field manager\n'
-        "Please review the fields above.\n"
+# The real shape of a server-side apply conflict: one error line, then help
+# text whose column-zero bullets are not errors.
+SSA_CONFLICT = (
+    'error: Apply failed with 1 conflict: conflict with "other-manager" using '
+    "external-secrets.io/v1: .spec.provider.vault.server\n"
+    "Please review the fields above--they currently have other managers. Here\n"
+    "are the ways you can resolve this warning:\n"
+    "* If you intend to manage all of these fields, please re-run the apply\n"
+    "  command with the `--force-conflicts` flag.\n"
+    "* If you do not intend to manage all of the fields, please edit your\n"
+    "  manifest to remove references to the fields that should keep their\n"
+    "  current managers.\n"
+)
+
+
+def test_a_pure_server_side_apply_conflict_blocks_the_unreported_document():
+    runner = FakeRunner(
+        stdout="serviceaccount/eso-ns-a-sample unchanged\n",
+        stderr=SSA_CONFLICT,
+        returncode=1,
     )
-    runner = FakeRunner(stdout=stdout, stderr=stderr, returncode=1)
     report = apply_documents(both_docs(), run=runner)
     assert report.results[0].action == "unchanged"
     assert report.results[1].action == "blocked"
@@ -192,14 +208,66 @@ def test_a_conflict_blocks_only_the_document_it_names():
     assert [r.name for r in report.blocked] == ["ladon-ns-a-sample"]
 
 
-def test_a_conflict_that_names_nothing_blocks_the_unreported_documents():
+def test_an_aggregated_list_of_conflicts_blocks():
     runner = FakeRunner(
         stdout="serviceaccount/eso-ns-a-sample unchanged\n",
-        stderr="error: Apply failed with 1 conflict with another field manager\n",
+        stderr=(
+            "error: Apply failed with 2 conflicts:\n"
+            '\t* conflict with "other-manager" using external-secrets.io/v1: .spec.provider\n'
+            '\t* conflict with "other-manager" using external-secrets.io/v1: .spec.conditions\n'
+        ),
         returncode=1,
     )
     report = apply_documents(both_docs(), run=runner)
     assert [r.action for r in report.results] == ["unchanged", "blocked"]
+
+
+def test_a_forbidden_error_alongside_a_conflict_raises():
+    # A denial sharing the output with a conflict must not be swallowed as a
+    # blocked document: the apply did not do what it was asked.
+    runner = FakeRunner(
+        stdout="serviceaccount/eso-ns-a-sample unchanged\n",
+        stderr=(
+            'error: Apply failed with 1 conflict: conflict with "other-manager"\n'
+            "Error from server (Forbidden): clustersecretstores.external-secrets.io "
+            "is forbidden: User cannot patch resource\n"
+        ),
+        returncode=1,
+    )
+    with pytest.raises(K8sError, match="Forbidden|conflict"):
+        apply_documents(both_docs(), run=runner)
+
+
+def test_a_webhook_denial_that_merely_says_conflicts_raises():
+    runner = FakeRunner(
+        stderr=(
+            "Error from server (InternalError): error when applying patch: admission webhook "
+            '"v.example.com" denied the request: the resource conflicts with an existing rule\n'
+        ),
+        returncode=1,
+    )
+    with pytest.raises(K8sError, match="kubectl apply failed"):
+        apply_documents(both_docs(), run=runner)
+
+
+def test_an_aggregated_list_with_one_non_conflict_item_raises():
+    runner = FakeRunner(
+        stderr=(
+            "error: Apply failed with 2 conflicts:\n"
+            '\t* conflict with "other-manager" using v1: .metadata.labels\n'
+            '\t* serviceaccounts "eso-ns-a-sample" is forbidden\n'
+        ),
+        returncode=1,
+    )
+    with pytest.raises(K8sError):
+        apply_documents(both_docs(), run=runner)
+
+
+def test_a_failure_with_no_recognisable_error_line_raises():
+    # Fail closed: an exit code we cannot explain is never a blocked document.
+    runner = FakeRunner(stderr="something went wrong\n", returncode=1)
+    with pytest.raises(K8sError):
+        apply_documents(both_docs(), run=runner)
 
 
 def test_any_other_failure_raises_with_only_the_first_stderr_line():
@@ -211,6 +279,57 @@ def test_any_other_failure_raises_with_only_the_first_stderr_line():
         apply_documents(both_docs(), run=runner)
     assert "could not find the requested resource" in str(excinfo.value)
     assert "sample-value" not in str(excinfo.value)
+
+
+def test_a_long_error_line_is_truncated():
+    runner = FakeRunner(stderr="error: " + "x" * 500 + "\n", returncode=1)
+    with pytest.raises(K8sError) as excinfo:
+        apply_documents(both_docs(), run=runner)
+    assert len(str(excinfo.value)) < 300
+
+
+def test_a_conflict_does_not_blame_a_document_whose_name_is_a_prefix():
+    # "sample" is a substring of "sample-two"; only the document kubectl printed
+    # no result line for is blocked.
+    first = service_account_doc()
+    first["metadata"]["name"] = "eso-sample"
+    second = service_account_doc()
+    second["metadata"]["name"] = "eso-sample-two"
+    runner = FakeRunner(
+        stdout="serviceaccount/eso-sample configured\n",
+        stderr=(
+            'error: Apply failed with 1 conflict on serviceaccount "eso-sample-two": '
+            'conflict with "other-manager"\n'
+        ),
+        returncode=1,
+    )
+    report = apply_documents([first, second], run=runner)
+    assert [r.action for r in report.results] == ["configured", "blocked"]
+
+
+def test_one_result_line_does_not_answer_for_two_namespaces():
+    # Result lines carry no namespace, so the same kind and name in two
+    # namespaces must not share one line.
+    first = service_account_doc()
+    second = service_account_doc()
+    second["metadata"]["namespace"] = "ns-a"
+    runner = FakeRunner(stdout="serviceaccount/eso-ns-a-sample configured\n")
+    report = apply_documents([first, second], run=runner)
+    assert [r.action for r in report.results] == ["configured", "blocked"]
+    assert report.results[1].namespace == "ns-a"
+
+
+def test_two_result_lines_answer_for_two_documents_in_order():
+    first = service_account_doc()
+    second = service_account_doc()
+    second["metadata"]["namespace"] = "ns-a"
+    runner = FakeRunner(
+        stdout=(
+            "serviceaccount/eso-ns-a-sample created\nserviceaccount/eso-ns-a-sample unchanged\n"
+        )
+    )
+    report = apply_documents([first, second], run=runner)
+    assert [r.action for r in report.results] == ["created", "unchanged"]
 
 
 def test_a_document_kubectl_did_not_report_is_blocked():
@@ -231,6 +350,19 @@ def test_a_document_without_a_name_is_refused():
     runner = FakeRunner()
     with pytest.raises(K8sError, match="kind and metadata.name"):
         apply_documents([{"apiVersion": "v1", "kind": "ServiceAccount"}], run=runner)
+
+
+def test_a_namespaced_kind_without_a_namespace_is_refused():
+    doc = service_account_doc()
+    del doc["metadata"]["namespace"]
+    with pytest.raises(K8sError, match="cluster-scoped"):
+        apply_documents([doc], run=FakeRunner())
+
+
+def test_a_cluster_scoped_kind_without_a_namespace_is_accepted():
+    runner = FakeRunner(stdout="clustersecretstore.external-secrets.io/ladon-ns-a-sample created\n")
+    report = apply_documents([store_doc()], run=runner)
+    assert report.results[0].action == "created"
 
 
 # read_back -----------------------------------------------------------------
@@ -412,10 +544,13 @@ def test_eso_api_version_returns_the_older_served_version():
     assert eso_api_version(run=runner) == "v1beta1"
 
 
-def test_eso_api_version_raises_when_the_crd_is_absent():
+def test_eso_api_version_raises_a_distinguishable_error_when_the_crd_is_absent():
+    # The absent case is its own error type: it is the one failure a caller may
+    # answer by installing the chart, rather than by stopping.
     runner = FakeRunner(handler=_api_version_handler(resources="\n"))
-    with pytest.raises(K8sError, match="not installed"):
+    with pytest.raises(ESONotInstalledError, match="not installed"):
         eso_api_version(run=runner)
+    assert issubclass(ESONotInstalledError, K8sError)
     # The absent case is answered by the first probe alone.
     assert len(runner.calls) == 1
 
@@ -509,3 +644,38 @@ def test_detect_eso_raises_when_kubectl_fails():
     with pytest.raises(K8sError) as excinfo:
         detect_eso(run=runner)
     assert "noise" not in str(excinfo.value)
+
+
+def test_detect_eso_refuses_more_than_one_operator():
+    runner = FakeRunner(
+        stdout=json.dumps({"items": [deployment(namespace="ns-a"), deployment(namespace="ns-b")]})
+    )
+    with pytest.raises(K8sError, match="2 deployments"):
+        detect_eso(run=runner)
+
+
+def test_detect_eso_reads_the_version_off_the_operator_container():
+    item = deployment(version_label=None, image="registry.example.com/eso:v0.18.1")
+    containers = item["spec"]["template"]["spec"]["containers"]
+    containers.insert(0, {"name": "sidecar", "image": "registry.example.com/sidecar:v9"})
+    containers[1]["name"] = "external-secrets"
+    runner = FakeRunner(stdout=json.dumps({"items": [item]}))
+    assert detect_eso(run=runner).version == "v0.18.1"
+
+
+# The subprocess seam ---------------------------------------------------------
+
+
+def test_run_turns_a_missing_binary_into_a_k8s_error():
+    with pytest.raises(K8sError, match="not found on PATH"):
+        k8s.run(["definitely-not-a-real-binary-xyz", "version"])
+
+
+def test_run_turns_a_timeout_into_a_k8s_error(monkeypatch):
+    def fake_subprocess_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(k8s.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(k8s.subprocess, "run", fake_subprocess_run)
+    with pytest.raises(K8sError, match="timed out"):
+        k8s.run(["kubectl", "get", "pods"])

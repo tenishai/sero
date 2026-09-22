@@ -16,7 +16,7 @@ from ladon.install.eso import (
     install_eso,
 )
 from ladon.install.helm import HelmError
-from ladon.install.k8s import ESOInstall
+from ladon.install.k8s import ESOInstall, ESONotInstalledError, K8sError
 
 
 def patch_run(monkeypatch, fn):
@@ -37,6 +37,15 @@ def no_operator():
 
 def existing_operator():
     return ESOInstall(namespace="ns-a", service_account="external-secrets", version="v0.19.2")
+
+
+def no_crds():
+    """The CRD probe for a cluster the operator has never been installed on."""
+    raise ESONotInstalledError("the External Secrets CRDs are not installed on this cluster")
+
+
+def crds_at_v1():
+    return "v1"
 
 
 def test_upgrade_argv_dry_run_by_default():
@@ -78,7 +87,7 @@ def test_webhook_wait_argv():
 def test_install_defaults_to_dry_run_and_skips_webhook(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    result = install_eso(detect=no_operator)
+    result = install_eso(detect=no_operator, probe=no_crds)
     # repo add, repo update, upgrade (dry-run). No webhook wait on a dry-run.
     assert len(calls) == 3
     assert "--dry-run" in calls[2]
@@ -90,7 +99,7 @@ def test_install_defaults_to_dry_run_and_skips_webhook(monkeypatch):
 def test_apply_runs_install_then_waits_for_webhook(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    result = install_eso(apply=True, detect=no_operator)
+    result = install_eso(apply=True, detect=no_operator, probe=no_crds)
     assert len(calls) == 4
     assert "--dry-run" not in calls[2]
     assert calls[3][0] == "kubectl"
@@ -104,7 +113,7 @@ def test_apply_runs_install_then_waits_for_webhook(monkeypatch):
 def test_apply_can_skip_webhook_wait(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    install_eso(apply=True, wait_for_webhook=False, detect=no_operator)
+    install_eso(apply=True, wait_for_webhook=False, detect=no_operator, probe=no_crds)
     assert len(calls) == 3
     assert not any(c[0] == "kubectl" for c in calls)
 
@@ -117,7 +126,16 @@ def test_webhook_failure_is_reframed(monkeypatch):
 
     patch_run(monkeypatch, fake_run)
     with pytest.raises(HelmError, match="webhook did not become ready"):
-        install_eso(apply=True, detect=no_operator)
+        install_eso(apply=True, detect=no_operator, probe=no_crds)
+
+
+def test_crds_without_an_operator_is_refused(monkeypatch):
+    # Installing over somebody else's orphaned CRDs would adopt them.
+    calls = []
+    patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
+    with pytest.raises(K8sError, match="resolve by hand"):
+        install_eso(apply=True, detect=no_operator, probe=crds_at_v1)
+    assert calls == []
 
 
 # Reusing an operator somebody else installed (D18a) --------------------------
@@ -126,7 +144,9 @@ def test_webhook_failure_is_reframed(monkeypatch):
 def test_an_existing_operator_is_reused_and_no_helm_command_runs(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    result = install_eso(apply=True, detect=existing_operator)
+    result = install_eso(
+        apply=True, wait_for_webhook=False, detect=existing_operator, probe=crds_at_v1
+    )
     assert calls == []
     assert result.reused is True
     assert result.commands == ()
@@ -134,21 +154,51 @@ def test_an_existing_operator_is_reused_and_no_helm_command_runs(monkeypatch):
     assert result.existing == existing_operator()
 
 
+def test_reuse_carries_the_crd_api_version(monkeypatch):
+    patch_run(monkeypatch, _ok)
+    result = install_eso(detect=existing_operator, probe=crds_at_v1)
+    assert result.api_version == "v1"
+
+
+def test_the_install_path_carries_no_api_version(monkeypatch):
+    patch_run(monkeypatch, _ok)
+    result = install_eso(detect=no_operator, probe=no_crds)
+    assert result.api_version is None
+
+
+def test_reuse_waits_for_the_webhook_in_the_operators_own_namespace(monkeypatch):
+    calls = []
+    patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
+    result = install_eso(apply=True, detect=existing_operator, probe=crds_at_v1)
+    assert len(calls) == 1
+    assert calls[0][0] == "kubectl"
+    assert calls[0][calls[0].index("--namespace") + 1] == "ns-a"
+    assert len(result.commands) == 1
+
+
+def test_a_reused_operator_with_an_unready_webhook_is_reported_as_such(monkeypatch):
+    patch_run(monkeypatch, _raise_timeout)
+    with pytest.raises(HelmError, match="being reused"):
+        install_eso(apply=True, detect=existing_operator, probe=crds_at_v1)
+
+
 def test_reuse_is_reported_on_a_dry_run_too(monkeypatch):
     calls = []
     patch_run(monkeypatch, lambda argv: calls.append(argv) or _ok(argv))
-    result = install_eso(detect=existing_operator)
+    result = install_eso(detect=existing_operator, probe=crds_at_v1)
     assert calls == []
     assert result.reused is True
 
 
-def test_detection_defaults_to_the_cluster_probe():
-    # The default is the real kubectl probe; the tests inject their own.
+def test_the_cluster_probes_are_the_defaults():
+    # The defaults are the real kubectl probes; the tests inject their own.
     import inspect
 
-    from ladon.install.k8s import detect_eso
+    from ladon.install.k8s import detect_eso, eso_api_version
 
-    assert inspect.signature(install_eso).parameters["detect"].default is detect_eso
+    parameters = inspect.signature(install_eso).parameters
+    assert parameters["detect"].default is detect_eso
+    assert parameters["probe"].default is eso_api_version
 
 
 class _Result:
@@ -161,3 +211,7 @@ class _Result:
 
 def _ok(argv):
     return _Result(argv)
+
+
+def _raise_timeout(argv):
+    raise HelmError("timed out waiting for the condition")
