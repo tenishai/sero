@@ -1383,6 +1383,16 @@ def test_unsyncing_an_object_that_was_never_there_is_not_an_error(client, cluste
     response = unsync(client, unsync_body(apply=True))
     assert response.status_code == 200
     assert response.json()["deleted"] is False
+    assert response.json()["report"] == ["ExternalSecret/sample/sample-demo: absent"]
+
+
+def test_an_absent_object_is_answered_without_a_second_look(client, cluster):
+    # The route read and found nothing. Handing the removal a document to read
+    # again would open a window: an object created in between is one this
+    # route never checked and the removal would delete.
+    unsync(client, unsync_body(apply=True))
+    assert cluster.deletes == []
+    assert len([call for call in cluster.calls if call[1] == "get"]) == 1
 
 
 def test_unsync_refuses_an_object_a_client_side_apply_has_taken_over(sessions, store):

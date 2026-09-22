@@ -60,8 +60,10 @@ from ladon.config.eso import external_secret, external_secret_ref
 from ladon.config.teams import ConfigError
 from ladon.hygiene import WriteRefused
 from ladon.install.k8s import (
+    ABSENT,
     DELETE,
     ApplyReport,
+    ApplyResult,
     K8sError,
     converge_documents,
     delete_documents,
@@ -887,7 +889,13 @@ def unsync_secret(
         # not what this lane hands out.
         live = _cluster_call(cluster.read, document, missing_ok=True)
         cascades = False
-        if live is not None:
+        if live is None:
+            # Nothing to remove, and nothing to establish about an object that
+            # is not there. Calling the removal anyway would open a second
+            # window: it reads again, and an object created in between is one
+            # this route never checked and would delete.
+            report = _absent(document)
+        else:
             _require_ours(
                 live,
                 document,
@@ -897,7 +905,7 @@ def unsync_secret(
                 k8s_namespace=k8s_namespace,
             )
             cascades = _owns_its_target(live)
-        report = _cluster_call(cluster.remove, [document], dry_run=not body.apply)
+            report = _cluster_call(cluster.remove, [document], dry_run=not body.apply)
         outcome = report.results[0].action
         _audit(
             session,
@@ -1079,6 +1087,26 @@ def _owns_its_target(live: dict[str, Any]) -> bool:
     """Whether removing this object removes the Kubernetes Secret with it."""
     target = ((live.get("spec") or {}).get("target")) or {}
     return str(target.get("creationPolicy", OWNER_CREATION_POLICY)) == OWNER_CREATION_POLICY
+
+
+def _absent(document: dict[str, Any]) -> ApplyReport:
+    """The report for an object the route found was not there.
+
+    A removal that never ran, said in the vocabulary one that did would use,
+    so the answer's shape does not depend on which path produced it.
+    """
+    metadata = document.get("metadata") or {}
+    return ApplyReport(
+        results=(
+            ApplyResult(
+                document.get("kind", ""),
+                metadata.get("namespace"),
+                metadata.get("name", ""),
+                ABSENT,
+            ),
+        ),
+        dry_run=True,
+    )
 
 
 def _store_for(namespace: str, app: str) -> str:
