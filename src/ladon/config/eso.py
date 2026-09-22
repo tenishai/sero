@@ -39,6 +39,11 @@ API_GROUP = "external-secrets.io"
 DEFAULT_ESO_SA = "external-secrets"
 DEFAULT_ESO_NAMESPACE = "external-secrets"
 
+# Set by the Kubernetes API server from the namespace's own name, on every
+# namespace, and not writable by a namespace owner. That is why the store's
+# conditions select on it rather than on a label a team can set.
+K8S_NAMESPACE_NAME_LABEL = "kubernetes.io/metadata.name"
+
 
 @dataclass(frozen=True)
 class ClusterSecretStore:
@@ -53,15 +58,43 @@ def _sa_ref(name: str, namespace: str) -> dict:
     return {"name": name, "namespace": namespace}
 
 
-def _store(name: str, provider_block: dict, api_version: str) -> ClusterSecretStore:
+def _store(
+    name: str,
+    provider_block: dict,
+    api_version: str,
+    conditions: list[dict] | None = None,
+) -> ClusterSecretStore:
     provider = next(iter(provider_block))
+    spec: dict = {"provider": provider_block}
+    if conditions:
+        spec["conditions"] = conditions
     manifest = {
         "apiVersion": f"{API_GROUP}/{api_version}",
         "kind": "ClusterSecretStore",
         "metadata": {"name": name},
-        "spec": {"provider": provider_block},
+        "spec": spec,
     }
     return ClusterSecretStore(name=name, provider=provider, manifest=manifest)
+
+
+def _namespace_conditions(namespaces: list[str]) -> list[dict]:
+    """Restrict a ClusterSecretStore to the named Kubernetes namespaces.
+
+    A ClusterSecretStore is cluster-wide: without conditions, any namespace may
+    reference it and read what it can read. The selector matches
+    ``kubernetes.io/metadata.name``, which the API server sets from the
+    namespace's own name and which cannot be forged by relabeling, unlike a
+    team-managed label. ESO treats the conditions as alternatives, so one entry
+    per namespace admits exactly those namespaces.
+    """
+    return [
+        {"namespaceSelector": {"matchLabels": {K8S_NAMESPACE_NAME_LABEL: ns}}} for ns in namespaces
+    ]
+
+
+def _optional_conditions(namespaces: list[str] | None) -> list[dict] | None:
+    """Conditions for a store where the restriction is opt-in, or None."""
+    return _namespace_conditions(list(namespaces)) if namespaces else None
 
 
 def vault_store(
@@ -71,26 +104,39 @@ def vault_store(
     auth_mount: str,
     role: str,
     audiences: list[str],
+    namespace: str,
+    k8s_namespaces: list[str] | None = None,
     mount_path: str = "kv",
     sa_name: str = DEFAULT_ESO_SA,
     sa_namespace: str = DEFAULT_ESO_NAMESPACE,
     api_version: str = DEFAULT_API_VERSION,
 ) -> ClusterSecretStore:
-    """A store that reads from OpenBao over the JWT auth method.
+    """A store that reads one OpenBao namespace, for one Kubernetes namespace.
 
     ESO authenticates with its projected service-account token against the
     per-cluster JWT mount and ``role`` (the external-secrets role from team
     onboarding); ``audiences`` must match the role's bound audiences. No secret
     is stored: the token is minted in-cluster and verified by OpenBao.
+
+    Both namespaces are explicit because they are the isolation the model rests
+    on. ``namespace`` is the OpenBao namespace whose KV this store reads: without
+    it the store reads the root namespace, which is not where a team's secrets
+    live. ``k8s_namespaces`` are the Kubernetes namespaces allowed to reference
+    this cluster-wide store, defaulting to the one named by ``namespace`` (the
+    team name, by the baseline convention).
     """
     require(server, "server", context="vault_store")
     require(role, "role", context="vault_store")
     require(audiences, "audiences", context="vault_store")
+    require(namespace, "namespace", context="vault_store")
+    allowed = [namespace] if k8s_namespaces is None else list(k8s_namespaces)
+    require(allowed, "k8s_namespaces", context="vault_store")
     provider = {
         "vault": {
             "server": server,
             "path": mount_path,
             "version": "v2",
+            "namespace": namespace,
             "auth": {
                 "jwt": {
                     "path": auth_mount,
@@ -103,7 +149,7 @@ def vault_store(
             },
         }
     }
-    return _store(name, provider, api_version)
+    return _store(name, provider, api_version, _namespace_conditions(allowed))
 
 
 def gcpsm_store(
@@ -113,6 +159,7 @@ def gcpsm_store(
     cluster_name: str,
     cluster_location: str,
     cluster_project_id: str,
+    k8s_namespaces: list[str] | None = None,
     sa_name: str = DEFAULT_ESO_SA,
     sa_namespace: str = DEFAULT_ESO_NAMESPACE,
     api_version: str = DEFAULT_API_VERSION,
@@ -123,6 +170,11 @@ def gcpsm_store(
     Workload Identity. ``project_id`` is the fallback project for short secret
     names; fully qualified ``projects/<p>/secrets/<n>`` remote refs can target any
     project the identity can reach.
+
+    ``k8s_namespaces`` restricts which Kubernetes namespaces may reference this
+    cluster-wide store. Unlike the OpenBao store there is no team namespace to
+    default to, so the restriction is opt-in; set it whenever the store is not
+    meant for the whole cluster.
     """
     require(project_id, "project_id", context="gcpsm_store")
     require(cluster_name, "cluster_name", context="gcpsm_store")
@@ -141,7 +193,7 @@ def gcpsm_store(
             },
         }
     }
-    return _store(name, provider, api_version)
+    return _store(name, provider, api_version, _optional_conditions(k8s_namespaces))
 
 
 def awssm_store(
@@ -149,6 +201,7 @@ def awssm_store(
     name: str,
     region: str,
     role: str | None = None,
+    k8s_namespaces: list[str] | None = None,
     sa_name: str = DEFAULT_ESO_SA,
     sa_namespace: str = DEFAULT_ESO_NAMESPACE,
     api_version: str = DEFAULT_API_VERSION,
@@ -158,6 +211,9 @@ def awssm_store(
     ESO assumes an IAM role through IRSA using its service-account token; no
     access key is stored. ``role`` is an optional role ARN to assume for
     cross-account access; omit it to use the service account's own role.
+
+    ``k8s_namespaces`` restricts which Kubernetes namespaces may reference this
+    cluster-wide store, as on ``gcpsm_store``.
     """
     require(region, "region", context="awssm_store")
     aws: dict = {
@@ -167,7 +223,7 @@ def awssm_store(
     }
     if role:
         aws["role"] = role
-    return _store(name, {"aws": aws}, api_version)
+    return _store(name, {"aws": aws}, api_version, _optional_conditions(k8s_namespaces))
 
 
 def external_secret(

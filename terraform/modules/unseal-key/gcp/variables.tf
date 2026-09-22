@@ -11,7 +11,7 @@ variable "project_id" {
 }
 
 variable "location" {
-  description = "KMS location (region or multi-region) for the keyring, for example us-east4."
+  description = "KMS location (region or multi-region) for the keyring, for example <region>."
   type        = string
 }
 

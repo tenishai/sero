@@ -173,10 +173,15 @@ Agent-driven apply (D3) works like this:
 3. A dry-run shows what would change, per layer: a Terraform plan for the
    substrate, a `helm diff` for the install, and an SDK/`kubectl` diff for config
    and runtime, showing namespace, path, key names, and sync target. No secret
-   values appear.
+   values appear. The config layer reads each live object to produce that diff,
+   so every operation reports create, update with the fields that differ, or
+   already current, rather than what it intends to send.
 4. After explicit confirmation, Ladon applies the relevant layer: `terraform
    apply` for the substrate, `helm upgrade --install` for OpenBao, and the
-   OpenBao SDK / `kubectl` for configuration, secret, and ESO operations.
+   OpenBao SDK / `kubectl` for configuration, secret, and ESO operations. The
+   config layer writes only what differs, so a repeated apply converges instead
+   of failing, and reads each object back afterwards: a write that does not land
+   fails loudly rather than reporting success.
 5. Day-2 operations (init, unseal, snapshot, migration) are explicit, audited
    operations in the tooling, not background reconciliation.
 

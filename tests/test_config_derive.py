@@ -34,6 +34,14 @@ def test_kv_mount_rejects_empty():
         kv_mount(make_config(kv_mount=""))
 
 
+@pytest.mark.parametrize("value", ["team/kv", "/kv", "kv/", ".", "..", "kv v2"])
+def test_kv_mount_must_be_a_single_path_segment(value):
+    # The apply layer takes the last path segment as the mount name, so a
+    # multi-segment value would silently enable a different mount.
+    with pytest.raises(ConfigError, match="single path segment"):
+        kv_mount(make_config(kv_mount=value))
+
+
 def test_team_namespace_resolves_by_name():
     assert team_namespace(make_config(), "team-a") == "ns-a"
     assert team_namespace(make_config(), "team-b") == "ns-b"

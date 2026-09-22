@@ -27,6 +27,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from ladon.config.auth import AuthMethod, jwt_auth, jwt_role
+from ladon.config.eso import DEFAULT_ESO_NAMESPACE, DEFAULT_ESO_SA
 from ladon.config.policies import DEFAULT_KV_MOUNT, Policy, external_secrets_read
 from ladon.config.teams import ConfigError
 
@@ -188,13 +189,27 @@ def team_onboarding_plan(
     policy_name: str = DEFAULT_ESO_POLICY,
     role_name: str = DEFAULT_ESO_ROLE,
     audience: str = DEFAULT_ESO_AUDIENCE,
+    eso_namespace: str = DEFAULT_ESO_NAMESPACE,
+    eso_sa: str = DEFAULT_ESO_SA,
 ) -> Plan:
     """Plan the phase-10 per-team ESO onboarding inside an existing namespace.
 
     Faithful to the source platform: enable a JWT auth mount named
     ``jwt-<cluster>`` (one per cluster), configure it with the cluster's OIDC
     discovery URL (also used as the bound issuer) and a default role, write the
-    ESO read-only policy, then write a JWT role bound by audience to that policy.
+    ESO read-only policy, then write a JWT role bound to that policy.
+
+    The role is bound by audience *and* by subject: any workload in the cluster
+    can mint a token for a known audience, so the audience alone does not
+    identify ESO. ``eso_namespace`` and ``eso_sa`` are where the operator runs
+    and the service account it runs as, matching what the store renderer
+    (``config.eso``) points at.
+
+    Note what that subject pins and what it does not: it pins the role to the
+    External Secrets Operator's own identity, not to the team, because one
+    operator reads for every team on the cluster. The store's namespace selector
+    is what keeps a team's secrets to a team's Kubernetes namespaces, until
+    per-application identities replace the shared operator.
 
     The team's OpenBao namespace is assumed to already exist (created at root
     config / namespace request time); this plan operates within it and does not
@@ -217,6 +232,7 @@ def team_onboarding_plan(
         role_name,
         policies=[policy_name],
         bound_audiences=[audience],
+        bound_subject=f"system:serviceaccount:{eso_namespace}:{eso_sa}",
     )
     # Reuse the baseline ESO read policy's HCL, named to the onboarding
     # convention so policies.py stays the single source of truth for the grant.

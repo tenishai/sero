@@ -57,8 +57,9 @@ standby) on managed Kubernetes.
   and the team-specific bindings do not.
 - **Auth methods:** five in the source (OIDC via an identity provider,
   Kubernetes, a JWT method for ESO, AppRole, and a root JWT method). Ladon's
-  baseline is OIDC plus Kubernetes, with JWT and AppRole as documented optional
-  additions (D6).
+  baseline is JWT for workloads plus OIDC for operators, with AppRole as a
+  documented optional addition and Kubernetes auth deliberately left out, since
+  the source treats it as legacy and is migrating away from it (D6).
 - **Secret engines:** KV v2 only, one mount per namespace.
 
 ### The generic seam to build on
@@ -169,8 +170,8 @@ review:
 - **Policies:** the generalized shapes only (a team read/write policy, a
   read-only policy, an external-secrets read policy, and the operational roles),
   with bindings driven by config.
-- **Auth methods:** OIDC plus Kubernetes as the baseline; JWT and AppRole
-  documented as optional.
+- **Auth methods:** JWT for workloads and OIDC for operators as the baseline,
+  with AppRole documented as optional and Kubernetes auth excluded.
 - **Customization model:** a parameterized config (teams, environments,
   identity-provider settings, sync targets) drives reusable Terraform modules
   and the backend, with sensible generic defaults and nothing company-specific

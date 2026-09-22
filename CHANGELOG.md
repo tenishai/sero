@@ -122,5 +122,60 @@ point of view, not a list of commit subjects.
   triggered for the hub cluster at bring-up and per target cluster from the
   UI/MCP, rather than a static deploy step. Target clusters are registered over
   time, so ESO is installed on demand once networking and auth are in place.
+- `ladon apply` converges instead of writing blind. Each operation is diffed
+  against the live object and reported as create, update (naming the fields that
+  differ), already current, or blocked; only the first two are written, so
+  running it twice is safe. The dry-run now connects read-only to produce that
+  diff, so it describes what would really change; `ladon plan` remains the
+  offline render. Every write is read back and verified, so a change OpenBao
+  accepts but does not hold fails loudly instead of appearing to succeed.
+- A difference Ladon will not converge is reported as a blocked operation rather
+  than an error that hides the rest of the plan. The whole plan is diffed before
+  anything is written, so the report is always complete, and if any operation is
+  blocked an apply writes nothing at all and exits non-zero. An engine type
+  change and a KV version change are both blocked: tuning the version on a live
+  v1 mount triggers OpenBao's one-way upgrade, which moves every secret under
+  the mount, so it is an operator's decision and not a side effect of an apply.
+- The diff shows values only for the fields Ladon itself sets and knows to be
+  safe to print; every other field reports that it differs without showing
+  either value, and credentials embedded in a URL are stripped from what is
+  shown.
+- The conventions lint also rejects cloud region literals, and the regions in
+  the Terraform module docs, variables, and tests became placeholders or
+  made-up values. It matches the GCP, AWS and Azure region shapes, including
+  government and China partitions, and has its own tests.
+- The GCP Secret Manager and AWS Secrets Manager stores take the same optional
+  Kubernetes namespace restriction as the OpenBao store. It stays opt-in for
+  those two: they are platform-level push targets with no team namespace to
+  default to.
+- Team onboarding takes the External Secrets Operator's service account name as
+  a parameter, so a deployment that renames it can keep the role's bound subject
+  and the store pointing at the same identity.
+
+### Fixed
+
+- JWT auth mounts pin `bound_issuer` to the discovery URL. Left empty, a mount
+  accepted any token its discovery keys verified.
+- JWT roles set `token_no_default_policy`, so a scoped workload role no longer
+  also inherits the namespace's `default` policy, whose grants are outside
+  Ladon's control.
+- The per-team ESO role binds the operator's service account subject, not just
+  the audience: any workload in a cluster can mint a token for a known audience.
+- The rendered OpenBao `ClusterSecretStore` sets the OpenBao namespace it reads
+  (without it, it read the root namespace rather than the team's KV) and carries
+  conditions restricting which Kubernetes namespaces may reference it, matching
+  on the API-server-set `kubernetes.io/metadata.name` label.
+- The OIDC client-secret reference is written but never verified. It is Ladon's
+  own reference, which OpenBao does not store, so comparing it made every
+  read-back fail and every later dry-run report drift that was not there.
+- Values that OpenBao echoes back in another shape (a composite duration, a
+  boolean as a string, a one-element list as a bare value, a reordered nested
+  claim) no longer read as drift, and a policy that exists but is empty is an
+  update rather than a create.
+- `deployment.kv_mount` must be a single path segment. A value with a separator
+  in it would have enabled a mount other than the one the config named.
+- Documentation drift: the baseline auth methods are JWT plus OIDC, with
+  Kubernetes auth deliberately excluded, in the roadmap and source review as
+  well as the baseline and design documents.
 
 [Unreleased]: https://github.com/tenishai/ladon/commits/main

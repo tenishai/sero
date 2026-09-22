@@ -30,7 +30,7 @@ def test_gcpckms_stanza():
         {
             "provider": "gcpckms",
             "project": "proj",
-            "region": "us-east1",
+            "region": "example-region1",
             "key_ring": "ring",
             "crypto_key": "key",
         }
@@ -48,16 +48,18 @@ def test_gcpckms_missing_field_rejected():
 
 
 def test_awskms_stanza():
-    seal = render_seal({"provider": "awskms", "region": "us-west-2", "kms_key_id": "abcd-1234"})
+    seal = render_seal(
+        {"provider": "awskms", "region": "example-region2", "kms_key_id": "abcd-1234"}
+    )
     assert seal.provider == AWS_KMS
     assert 'seal "awskms" {' in seal.hcl
-    assert 'region = "us-west-2"' in seal.hcl
+    assert 'region = "example-region2"' in seal.hcl
     assert 'kms_key_id = "abcd-1234"' in seal.hcl
 
 
 def test_awskms_missing_field_rejected():
     with pytest.raises(ConfigError, match="awskms seal requires a non-empty 'kms_key_id'"):
-        render_seal({"provider": "awskms", "region": "us-west-2"})
+        render_seal({"provider": "awskms", "region": "example-region2"})
 
 
 def test_azure_managed_identity_no_credentials():
