@@ -32,6 +32,7 @@ from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.web.app import create_app
 from ladon.web.assertion import STALE_KEYS_MAX_SECONDS
 from ladon.web.service_lane import (
+    ACTING_EMAIL_MAX,
     MAX_SERVICE_TOKEN_AGE_SECONDS,
     SERVICE_STALE_KEYS_MAX_SECONDS,
     ClusterSync,
@@ -648,6 +649,24 @@ def test_a_missing_acting_email_is_refused(client):
 def test_an_acting_email_that_is_not_an_address_is_refused(client):
     body = put_body(acting_email="not-an-address")
     assert client.post("/api/service/secrets", json=body, headers=bearer()).status_code == 422
+
+
+def test_an_unreasonably_long_acting_email_is_refused_on_every_route(client, sessions):
+    # It matches the address pattern, which says nothing about length, and it
+    # is written to an audit row.
+    long = "a" * ACTING_EMAIL_MAX + "@example.com"
+    assert put(client, put_body(acting_email=long)).status_code == 422
+    assert erase(client, erase_body(acting_email=long)).status_code == 422
+    assert sync(client, sync_body(acting_email=long)).status_code == 422
+    assert unsync(client, unsync_body(acting_email=long)).status_code == 422
+    assert read(client, acting_email=long).status_code == 422
+    assert rows(sessions, "service.put_secret") == []
+
+
+def test_an_address_at_the_bound_is_accepted(client):
+    at_bound = "a" * (ACTING_EMAIL_MAX - len("@example.com")) + "@example.com"
+    assert len(at_bound) == ACTING_EMAIL_MAX
+    assert put(client, put_body(acting_email=at_bound)).status_code == 200
 
 
 # ── The merge rules ────────────────────────────────────────────────────

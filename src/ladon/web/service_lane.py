@@ -130,6 +130,11 @@ SERVICE_STALE_KEYS_MAX_SECONDS = 600
 # where the audit trail needs a person.
 ACTING_EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 
+# The longest address SMTP defines: 64 for the local part, 1 for the "@", 254
+# for the whole. The pattern above says nothing about length, and this value
+# reaches an audit row, so it is bounded like everything else that does.
+ACTING_EMAIL_MAX = 254
+
 # Kubernetes DNS-1123 label, the rule every name in a rendered document obeys.
 LABEL_PATTERN = r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
 LABEL_MAX = 63
@@ -344,15 +349,20 @@ def build_service_lane(
 
 
 # The read takes its arguments in the query string rather than a body, so the
-# same three fields are declared once here. Every one of them is bounded before
-# it is read, because an argument that reaches the audit row before anything
-# checks its length is a way to write a megabyte into the trail with one call.
-# The path's bound is the store's own, so nothing is refused here that the path
-# rules would have accepted. ``acting_email`` is required on the
-# read too: config refuses a caller that would not record who it acts for, and
-# a read of which keys an application holds is as much that caller's business
-# as a write is.
-ActingEmailQuery = Annotated[str, Query(pattern=ACTING_EMAIL_PATTERN)]
+# same three fields are declared once here.
+#
+# Every argument on this lane carries a length, whether it travels in a query
+# or a body, because each of them reaches an audit row: an unbounded one is a
+# way to write as much as a caller cares to send into the trail with a single
+# call. The bounds are the ones the values already have to obey elsewhere, so
+# nothing that would have been accepted is refused here: a path may be as long
+# as the store allows, a namespace as long as an OpenBao namespace, a label as
+# long as a Kubernetes label, and an address as long as SMTP defines.
+#
+# ``acting_email`` is required on the read too: config refuses a caller that
+# would not record who it acts for, and a read of which keys an application
+# holds is as much that caller's business as a write is.
+ActingEmailQuery = Annotated[str, Query(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)]
 NamespaceQuery = Annotated[str, Query(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)]
 PathQuery = Annotated[str, Query(max_length=MAX_KV_PATH_LENGTH)]
 
@@ -361,7 +371,7 @@ class ServicePutBody(BaseModel):
     """One application secret, merged."""
 
     # Required: a machine write with nobody behind it is not one this lane does.
-    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     path: str = Field(max_length=MAX_KV_PATH_LENGTH)
     values: dict[str, str] = Field(default_factory=dict)
@@ -373,7 +383,7 @@ class ServicePutBody(BaseModel):
 class ServiceDeleteBody(BaseModel):
     """One application path, removed outright."""
 
-    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     path: str = Field(max_length=MAX_KV_PATH_LENGTH)
     apply: bool = False
@@ -382,7 +392,7 @@ class ServiceDeleteBody(BaseModel):
 class ServiceSyncBody(BaseModel):
     """One ExternalSecret, converged against the application's own store."""
 
-    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
     path: str = Field(max_length=MAX_KV_PATH_LENGTH)
@@ -407,7 +417,7 @@ class ServiceUnsyncBody(BaseModel):
     values that may have moved since the object was created.
     """
 
-    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
     namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
     app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
     k8s_namespace: str | None = Field(default=None, pattern=LABEL_PATTERN, max_length=LABEL_MAX)
