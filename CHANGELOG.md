@@ -301,6 +301,17 @@ Proven live on a shared development cluster, against the platform vault:
   this reason, and `--namespace` names the namespace the operations run in
   rather than scoping the connection. The rendered plan shows the namespace on
   each line, so two identical paths in two namespaces can be told apart.
+- The backend can verify the proxy's signed assertion, and a deployment whose
+  proxy can issue one should configure it (`identity.assertion`). A plain
+  identity header is a claim that anything able to reach the process can make;
+  an assertion is a proof. When configured it is required on every request and
+  the plain header is not read. `docs/backend.md` states the matching deployment
+  requirement: the pod must be reachable only through the proxy. Sending the
+  deciding header twice is refused.
+- One deployment serves one environment (`deployment.environment`). A request
+  naming another is refused with 400 and the name of the one that is served;
+  `/api/me` reports it. Every route accepted an environment and none of them
+  used it, so two environments shared one set of paths under different labels.
 - Updating a secret refuses two things it used to accept. A key named in both
   `values` and `remove_keys` is ambiguous, so it is refused rather than resolved
   by an order the caller cannot see. A merge that would leave a path with no
@@ -310,6 +321,17 @@ Proven live on a shared development cluster, against the platform vault:
 
 ### Fixed
 
+- A failed or refused operation now leaves an audit row. It was written into the
+  caller's session and rolled back with it, so the calls most worth
+  investigating were exactly the ones that left no trace. Refusals are recorded
+  as `denied` with the gate that refused them.
+- The UI reads the backend's error messages again. The client looked for a
+  `detail` field and the backend sends `error`, so every explained failure
+  reached the screen as "Forbidden". The UI also takes admin standing from
+  `/api/me` instead of guessing it from namespace membership, which named the
+  wrong people in both directions.
+- An unexpected failure answers `internal error` and logs the traceback alone,
+  rather than returning whatever the exception said.
 - JWT auth mounts pin `bound_issuer` to the discovery URL. Left empty, a mount
   accepted any token its discovery keys verified.
 - JWT roles set `token_no_default_policy`, so a scoped workload role no longer

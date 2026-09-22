@@ -199,7 +199,9 @@ def _register_ui(app: FastAPI, ui_dist: Path | None) -> None:
 
     Registered last, so it only sees what no API route claimed. An unmatched
     ``/api`` path stays a JSON 404 rather than quietly returning the shell, which
-    would turn a typo in the client into an unreadable parse error.
+    would turn a typo in the client into an unreadable parse error. A real route
+    asked with the wrong method never reaches here at all: the router answers
+    405, which the HTTPException handler renders in the same error shape.
     """
     root = ui_dist.resolve() if ui_dist is not None else None
 

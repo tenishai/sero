@@ -852,3 +852,9 @@ def test_a_malformed_body_is_refused_without_echoing_it(client, store):
     assert "sentinel-not-a-string" not in resp.text
     assert "values" in resp.json()["error"]
     assert "new" not in store
+
+
+def test_a_real_route_asked_with_the_wrong_method_is_a_json_405(client):
+    resp = as_member(client, "DELETE", "/api/namespaces/team-a/secrets")
+    assert resp.status_code == 405
+    assert "error" in resp.json()
