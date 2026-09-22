@@ -17,6 +17,8 @@ from starlette.testclient import TestClient
 from fake_assertion import SETTINGS as ASSERTION_SETTINGS
 from fake_assertion import token as assertion_token
 from fake_assertion import verifier as assertion_verifier
+from fake_secrets import StubSecrets
+from ladon.config.teams import ConfigError
 from ladon.datastore import repositories as repo
 from ladon.datastore.models import Base, ToolCallLog
 from ladon.mcp.openbao import OpenBaoSecrets
@@ -724,7 +726,7 @@ def test_creating_a_path_ending_in_reveal_is_refused(client, store):
 def test_an_unexpected_value_error_is_not_reported_as_a_refusal(sessions, store, allowed):
     # Only a deliberate refusal is a 400. A ValueError from anywhere else is a
     # bug, and a bug is a 500 that says nothing.
-    class Exploding:
+    class Exploding(StubSecrets):
         def list_namespaces(self, user_email):
             raise ValueError("a sentinel from somewhere unexpected")
 
@@ -957,7 +959,7 @@ def test_a_missing_reveal_key_is_a_404_naming_the_key(sessions, store, allowed):
 def test_an_internal_key_error_is_a_500_not_a_404(sessions, store, allowed):
     # A KeyError from somewhere that did not mean "not found" used to be
     # reported to the caller as a 404 carrying whatever the key happened to be.
-    class Exploding:
+    class Exploding(StubSecrets):
         def list_namespaces(self, user_email):
             raise KeyError("sentinel-internal-detail")
 
@@ -967,3 +969,56 @@ def test_an_internal_key_error_is_a_500_not_a_404(sessions, store, allowed):
     assert resp.status_code == 500
     assert resp.json() == {"error": "internal error"}
     assert "sentinel-internal-detail" not in resp.text
+
+
+# ── What a deployment must wire ────────────────────────────────────────
+
+
+def test_an_implementation_that_cannot_delete_fails_the_boot(sessions):
+    # The ports are protocols, which nothing checks at runtime, so an
+    # implementation that predates a method satisfies the annotation and fails
+    # at the first call. A deployment should learn at startup instead.
+    class CannotDelete(StubSecrets):
+        delete_secret = None
+
+    with pytest.raises(ConfigError, match="delete_secret"):
+        create_app(build_settings(), session_factory=sessions, secrets=CannotDelete())
+
+
+def test_the_boot_failure_names_every_missing_method(sessions):
+    with pytest.raises(ConfigError) as excinfo:
+        create_app(build_settings(), session_factory=sessions, secrets=object())
+    message = str(excinfo.value)
+    assert "list_namespaces" in message
+    assert "delete_secret" in message
+
+
+def test_reveal_is_only_required_where_a_deployment_enabled_it(sessions):
+    class CannotReveal(StubSecrets):
+        reveal_value = None
+
+    # The gate denies by default, so the method is never reached.
+    create_app(build_settings(), session_factory=sessions, secrets=CannotReveal())
+    with pytest.raises(ConfigError, match="reveal_value"):
+        create_app(
+            build_settings(reveal_enabled=True),
+            session_factory=sessions,
+            secrets=CannotReveal(),
+        )
+
+
+def test_no_vault_configured_is_not_a_boot_failure(sessions):
+    # A deployment with no vault answers 503 and says so; that is not the same
+    # as one that wired something incomplete.
+    settings = WebSettings(
+        identity=IdentitySettings(),
+        access=ACCESS,
+        environment="dev",
+        openbao_address=None,
+        kv_mount="kv",
+        ui_dist=None,
+        reveal_enabled=False,
+    )
+    app = create_app(settings, session_factory=sessions, secrets=None)
+    client = TestClient(app)
+    assert client.get("/api/namespaces", headers={HEADER: MEMBER}).status_code == 503

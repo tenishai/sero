@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 from starlette.testclient import TestClient
 
+from fake_secrets import StubSecrets
 from ladon.datastore import repositories as repo
 from ladon.web.app import create_app
 from ladon.web.boot import MigrationError, run_migrations
@@ -124,7 +125,7 @@ def test_a_migrated_database_assigns_ids_on_every_table(tmp_path):
     assert family.jti
 
 
-class OneNamespace:
+class OneNamespace(StubSecrets):
     """The secret reader's surface, as far as /api/namespaces needs it."""
 
     def list_namespaces(self, user_email):
