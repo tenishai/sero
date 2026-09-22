@@ -10,6 +10,7 @@ cluster name, registry, address, and address range is a placeholder to replace.
 | `gojira.yaml` | The deploy contract. The deployment platform's generator reads it and emits the Deployment and the Service. |
 | `k8s/base/` | The manifests that generator preserves: identity, RBAC, the volume, and the network policies. |
 | `standalone/` | A plain Deployment and Service, for a cluster where that platform is not in use. |
+| `standalone/front-door/` | The cloud front door: an external HTTPS load balancer with the provider's identity-aware proxy, a managed certificate, and an http-to-https redirect. Optional, and applied by hand. |
 
 Both paths read the same Secret and PersistentVolumeClaim, and the same
 ConfigMap under one differently named key (see below), so an instance can move
@@ -123,6 +124,36 @@ hand out that ability.
 
 So exposure is the proxy's job. The backend is reachable from the proxy and
 from nothing else.
+
+The cloud front door in `standalone/front-door/` does not change that. The
+Service stays `ClusterIP`; the load balancer reaches the pods through a
+container-native network endpoint group, which is to say it bypasses the
+Service's virtual IP rather than being given one of its own. The Service is
+there to be selected and annotated, not to be exposed.
+
+## The front door
+
+Optional, and one shape of proxy rather than the only one: the cloud
+provider's external HTTPS load balancer with its identity-aware proxy in
+front. Four manifests, each documented in its own file.
+
+| File | What it is |
+| --- | --- |
+| `backendconfig.yaml` | The health check (`/healthz` on 8000) and `iap.enabled`. Bound through the Service's `cloud.google.com/backend-config` annotation. |
+| `managedcertificate.yaml` | The TLS certificate, issued and renewed by the provider. |
+| `frontendconfig.yaml` | The http-to-https redirect. |
+| `ingress.yaml` | The load balancer: `gce` class, the reserved static address, the host, and the backend Service. |
+
+Two annotations on `standalone/service.yaml` connect them to the workload:
+`cloud.google.com/neg` and `cloud.google.com/backend-config`. Both are inert
+on a cluster with no such load balancer.
+
+They are not covered by `scripts/validate-deploy.sh`, deliberately: they are
+provider custom resources whose definitions are not on every cluster, and
+they carry placeholders that are not valid values for the fields they sit in.
+The step-by-step, including the address reservation, the DNS record, the IAP
+grant, and the `identity.assertion` config that follows, is in
+[../../docs/deployment-order.md](../../docs/deployment-order.md).
 
 ## The NetworkPolicy is required, not optional
 
