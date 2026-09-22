@@ -114,3 +114,11 @@ def test_a_half_configured_assertion_is_rejected():
     partial = "identity:\n  assertion:\n    jwks_url: https://proxy.example.com/keys\n"
     with pytest.raises(ConfigError, match="audience"):
         parse_web_settings(load_deployment_config_text(partial), env={})
+
+
+def test_a_plaintext_jwks_url_is_rejected():
+    plain = ASSERTION_CONFIG.replace(
+        "https://proxy.example.com/keys", "http://proxy.example.com/keys"
+    )
+    with pytest.raises(ConfigError, match="https"):
+        parse_web_settings(load_deployment_config_text(plain), env={})

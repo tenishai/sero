@@ -5,7 +5,7 @@ tests/fake_assertion.py, so these run offline and nothing here is a real
 credential.
 """
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -25,10 +25,12 @@ from fake_assertion import (
     verifier,
 )
 from ladon.web.assertion import (
+    STALE_KEYS_MAX_SECONDS,
     AssertionInvalid,
     AssertionSettings,
     AssertionVerifier,
     JwksCache,
+    fetch_jwks,
 )
 from ladon.web.identity import IdentityReader, NoIdentityError
 
@@ -227,3 +229,117 @@ def test_one_identity_header_is_still_fine():
     name = b"x-goog-authenticated-user-email"
     headers = Headers(raw=[(name, b"op@example.com")])
     assert IdentityReader(header=name.decode()).email(headers) == "op@example.com"
+
+
+# ── The JWKS URL must be https ─────────────────────────────────────────
+
+
+def test_a_plaintext_jwks_url_is_refused_at_call_time():
+    settings = AssertionSettings(
+        jwks_url="http://proxy.example.com/keys", audience=AUDIENCE, issuer=ISSUER
+    )
+    subject = AssertionVerifier(settings, fetch=lambda url: jwks((KEY, KID)))
+    # Configuration is checked when the config is parsed, but the fetcher
+    # refuses too: the keys decide who everybody is, and fetching them over a
+    # channel anyone can rewrite would let a listener choose the signer.
+    with pytest.raises(AssertionInvalid):
+        fetch_jwks("http://proxy.example.com/keys")
+    assert subject is not None
+
+
+def test_the_real_fetcher_refuses_a_non_https_url():
+    with pytest.raises(AssertionInvalid, match="https"):
+        fetch_jwks("http://proxy.example.com/keys")
+
+
+# ── Clock skew ─────────────────────────────────────────────────────────
+
+
+def test_a_token_a_few_seconds_early_is_accepted():
+    # Proxy and backend clocks differ; a token that becomes valid in ten
+    # seconds is skew, not an attack.
+    soon = datetime.now(UTC) + timedelta(seconds=10)
+    assert verifier().email(token(claims={"nbf": soon})) == "op@example.com"
+
+
+def test_a_token_far_in_the_future_is_still_refused():
+    later = datetime.now(UTC) + timedelta(minutes=10)
+    with pytest.raises(AssertionInvalid):
+        verifier().email(token(claims={"nbf": later}, expires_in=timedelta(minutes=20)))
+
+
+# ── Surviving a key-endpoint outage ────────────────────────────────────
+
+
+class FlakyKeys:
+    """A key endpoint that can be turned off and back on."""
+
+    def __init__(self):
+        self.up = True
+        self.fetches = 0
+
+    def __call__(self, url):
+        self.fetches += 1
+        if not self.up:
+            raise OSError("the key endpoint is unreachable")
+        return jwks((KEY, KID))
+
+
+def test_a_failing_fetch_is_retried_at_most_once_per_interval():
+    keys = FlakyKeys()
+    keys.up = False
+    clock = [1000.0]
+    cache = JwksCache(JWKS_URL, fetch=keys, ttl_seconds=900, now=lambda: clock[0])
+
+    for _ in range(10):
+        with pytest.raises(AssertionInvalid):
+            cache.key_for(KID)
+    # Without stamping the failure, every request would be a fetch, and a
+    # struggling endpoint would get a stampede exactly when it is down.
+    assert keys.fetches == 1
+
+    clock[0] += 61
+    with pytest.raises(AssertionInvalid):
+        cache.key_for(KID)
+    assert keys.fetches == 2
+
+
+def test_the_last_good_keys_survive_an_outage_for_a_while():
+    keys = FlakyKeys()
+    clock = [1000.0]
+    subject = AssertionVerifier(SETTINGS, fetch=keys, ttl_seconds=900, now=lambda: clock[0])
+    assert subject.email(token()) == "op@example.com"
+
+    # The endpoint goes away. People keep working.
+    keys.up = False
+    clock[0] += 901
+    assert subject.email(token()) == "op@example.com"
+
+
+def test_keys_do_not_survive_an_outage_forever():
+    keys = FlakyKeys()
+    clock = [1000.0]
+    subject = AssertionVerifier(SETTINGS, fetch=keys, ttl_seconds=900, now=lambda: clock[0])
+    subject.email(token())
+
+    keys.up = False
+    clock[0] += STALE_KEYS_MAX_SECONDS + 1
+    # Past the grace window the keys could have been revoked an hour ago, so
+    # refusing is the only honest answer.
+    with pytest.raises(AssertionInvalid, match="could not read"):
+        subject.email(token())
+
+
+def test_a_recovered_endpoint_is_used_again():
+    keys = FlakyKeys()
+    clock = [1000.0]
+    subject = AssertionVerifier(SETTINGS, fetch=keys, ttl_seconds=900, now=lambda: clock[0])
+    subject.email(token())
+
+    keys.up = False
+    clock[0] += 901
+    subject.email(token())
+
+    keys.up = True
+    clock[0] += 61
+    assert subject.email(token()) == "op@example.com"

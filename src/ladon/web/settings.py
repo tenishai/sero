@@ -116,9 +116,14 @@ def parse_assertion(data: object) -> AssertionSettings | None:
     missing = [f for f in ("jwks_url", "audience", "issuer") if not data.get(f)]
     if missing:
         raise ConfigError(f"'identity.assertion' needs {', '.join(missing)}")
+    jwks_url = str(data["jwks_url"])
+    if not jwks_url.lower().startswith("https://"):
+        # These keys decide who everybody is. Over plain HTTP anyone on the path
+        # chooses the signer, which makes verifying the assertion theatre.
+        raise ConfigError("'identity.assertion.jwks_url' must be an https URL")
     header = data.get("header") or DEFAULT_ASSERTION_HEADER
     return AssertionSettings(
-        jwks_url=str(data["jwks_url"]),
+        jwks_url=jwks_url,
         audience=str(data["audience"]),
         issuer=str(data["issuer"]),
         header=str(header).lower(),
