@@ -11,7 +11,10 @@ away from whoever else manages it is a decision for an operator, not a default.
 The same read-diff-write-verify rule the OpenBao apply layer follows applies
 here. ``apply_documents`` writes, ``read_back`` reads the live objects, and
 ``verify`` compares only the fields the document sets, so server-set defaults
-and controller status never read as drift.
+and controller status never read as drift. ``converge_documents`` is the four of
+them in one call, and it is what gives the cluster half the same no-op signal
+the OpenBao half has: a document that already matches is reported
+``already current`` and never reaches kubectl at all.
 
 Two probes support the ESO work (D18a): ``eso_api_version`` reports which CRD
 version the cluster stores, and ``detect_eso`` finds an operator somebody else
@@ -36,6 +39,20 @@ from typing import Any
 import yaml
 
 DEFAULT_FIELD_MANAGER = "ladon"
+
+# What a document needs, in the vocabulary the OpenBao apply layer already uses.
+# kubectl's own verbs cannot answer this: a server-side apply prints one verb
+# whether it created or updated, and it has no word at all for a document the
+# cluster already holds unchanged.
+CREATE = "create"
+UPDATE = "update"
+ALREADY_CURRENT = "already current"
+BLOCKED = "blocked"
+
+# The API server's reason code for an object that is not there. Only this counts
+# as absent: any other refusal (a denial, an unknown resource type) means Ladon
+# could not look, which is never the same as nothing being there.
+NOT_FOUND_REASON = "(NotFound)"
 
 # Every kubectl call here is a read or a single apply against one cluster; none
 # of them is a long-running watch, so a call still open after this has hung.
@@ -80,6 +97,17 @@ UNKNOWN_VERSION = "unknown"
 VERIFIED_TOP_LEVEL_FIELDS = ("spec", "automountServiceAccountToken")
 VERIFIED_METADATA_FIELDS = ("labels", "annotations")
 
+# Subtrees where a subset comparison is not safe, so the live object may hold
+# nothing Ladon did not set. Both of these are places where one added key widens
+# access while every field Ladon wrote still reads back unchanged: a `namespaces`
+# list beside a store's `namespaceSelector` admits a namespace Ladon never
+# admitted, and a second entry in a provider's `auth` block is another way to
+# authenticate. Everywhere else the subset rule stands, because a live object
+# legitimately carries what the API server, a controller or another manager put
+# there. Paths are dotted field paths, and strictness is inherited by everything
+# below them, list entries included.
+STRICT_PATHS = frozenset({"spec.conditions", "spec.provider.vault.auth"})
+
 # kubectl prints one line per object: "<resource>/<name> <verb>", with a
 # "(server dry run)" suffix on a server dry-run.
 _RESULT_LINE = re.compile(
@@ -110,6 +138,19 @@ _MISSING = object()
 
 class K8sError(RuntimeError):
     """A kubectl invocation failed, or kubectl is unavailable."""
+
+
+class ClusterApplyError(K8sError):
+    """An apply failed after documents were already written.
+
+    Carries the report of what the apply did, so a caller can print it before
+    the error: the write happened, and an operator who cannot see what landed
+    has to go and look by hand.
+    """
+
+    def __init__(self, message: str, *, report: ApplyReport):
+        super().__init__(message)
+        self.report = report
 
 
 class ESONotInstalledError(K8sError):
@@ -151,7 +192,7 @@ class ApplyReport:
 
     @property
     def blocked(self) -> tuple[ApplyResult, ...]:
-        return tuple(r for r in self.results if r.action == "blocked")
+        return tuple(r for r in self.results if r.action == BLOCKED)
 
     def lines(self) -> list[str]:
         return [str(r) for r in self.results]
@@ -266,29 +307,105 @@ def apply_documents(
                     kind,
                     namespace,
                     name,
-                    "blocked",
+                    BLOCKED,
                     blocked_reason or "kubectl reported no result",
                 )
             )
     return ApplyReport(results=tuple(results), dry_run=dry_run)
 
 
-def read_back(docs: Iterable[dict], *, run: Runner = run) -> list[dict]:
-    """Read the live object for each document, in the order given."""
-    live = []
-    for doc in docs:
-        kind, _, name = _identify(_checked(doc))
-        result = run(get_argv(doc))
-        if result.returncode != 0:
-            raise K8sError(
-                f"reading back {kind}/{name} failed ({result.returncode}): "
-                f"{_first_line(result.stderr or result.stdout)}"
-            )
+def converge_documents(
+    docs: Iterable[dict],
+    *,
+    field_manager: str = DEFAULT_FIELD_MANAGER,
+    dry_run: bool = True,
+    run: Runner = run,
+) -> ApplyReport:
+    """Read, diff, write and verify a set of documents against the cluster.
+
+    Every document is read back before anything is written. One that verifies
+    clean is reported ``already current`` and is kept out of the apply stream
+    entirely, so a second run writes nothing at all; one whose live object is
+    absent is a ``create``; one that differs is an ``update``. The report names
+    every document in the order it was given, whether or not it was sent.
+
+    On an apply, what was written is read back again and verified, and a
+    mismatch is an error naming the kind, the object and the field. A document
+    kubectl refused keeps its ``blocked`` result and is not verified: it was
+    never written. A dry run verifies nothing, because nothing landed.
+    """
+    docs = [_checked(doc) for doc in docs]
+    actions = [_needed_action(doc, run=run) for doc in docs]
+    pending = [index for index, action in enumerate(actions) if action != ALREADY_CURRENT]
+
+    report = apply_documents(
+        [docs[index] for index in pending],
+        field_manager=field_manager,
+        dry_run=dry_run,
+        run=run,
+    )
+    applied = dict(zip(pending, report.results, strict=True))
+
+    results: list[ApplyResult] = []
+    landed: list[dict] = []
+    for index, doc in enumerate(docs):
+        kind, namespace, name = _identify(doc)
+        outcome = applied.get(index)
+        if outcome is None:
+            results.append(ApplyResult(kind, namespace, name, ALREADY_CURRENT))
+        elif outcome.action == BLOCKED:
+            results.append(outcome)
+        else:
+            # Ladon's own verb, not kubectl's: the read-back above is what knows
+            # whether this was a create or an update.
+            results.append(ApplyResult(kind, namespace, name, actions[index]))
+            landed.append(doc)
+
+    report = ApplyReport(results=tuple(results), dry_run=dry_run)
+    if not dry_run and landed:
+        # Past this point the documents are written, so every failure carries
+        # the report: what landed is what a caller has to be told about.
         try:
-            live.append(json.loads(result.stdout))
-        except json.JSONDecodeError as exc:
-            raise K8sError(f"reading back {kind}/{name} returned output that is not JSON") from exc
-    return live
+            problems = verify(landed, read_back(landed, run=run))
+        except K8sError as exc:
+            raise ClusterApplyError(str(exc), report=report) from exc
+        if problems:
+            raise ClusterApplyError(
+                "the cluster did not store what Ladon applied: " + "; ".join(problems),
+                report=report,
+            )
+    return report
+
+
+def read_one(doc: dict, *, missing_ok: bool = False, run: Runner = run) -> dict | None:
+    """Read one document's live object, or None when it is absent.
+
+    ``missing_ok`` is the difference between a diff and a verification: before a
+    write, an absent object is the reason to create it; after one, it means the
+    write did not land.
+    """
+    kind, _, name = _identify(_checked(doc))
+    result = run(get_argv(doc))
+    if result.returncode != 0:
+        message = result.stderr or result.stdout
+        if missing_ok and NOT_FOUND_REASON in message:
+            return None
+        raise K8sError(
+            f"reading back {kind}/{name} failed ({result.returncode}): {_first_line(message)}"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise K8sError(f"reading back {kind}/{name} returned output that is not JSON") from exc
+
+
+def read_back(docs: Iterable[dict], *, run: Runner = run) -> list[dict]:
+    """Read the live object for each document, in the order given.
+
+    An object that is not there is a failure here, not a None: this is the
+    verification step, and a document with no live object did not land.
+    """
+    return [read_one(doc, run=run) for doc in docs]
 
 
 def verify(docs: Iterable[dict], live: Iterable[dict]) -> list[str]:
@@ -300,6 +417,10 @@ def verify(docs: Iterable[dict], live: Iterable[dict]) -> list[str]:
     compared as subsets (key order is meaningless), lists element by element in
     order, with a length difference reported: an extra entry in a store's
     ``conditions`` widens who may use it, so it is drift, not noise.
+
+    Under :data:`STRICT_PATHS` the subset rule is off and a key the document
+    does not set is itself a mismatch, because inside those subtrees an added
+    key widens access while everything Ladon wrote still reads back unchanged.
     """
     index = {_identify(obj): obj for obj in live}
     problems: list[str] = []
@@ -312,7 +433,9 @@ def verify(docs: Iterable[dict], live: Iterable[dict]) -> list[str]:
             continue
         for key in VERIFIED_TOP_LEVEL_FIELDS:
             if key in doc:
-                problems += _compare(doc[key], obj.get(key, _MISSING), f"{target}: {key}")
+                problems += _compare(
+                    doc[key], obj.get(key, _MISSING), f"{target}: {key}", field=key
+                )
         desired_meta = doc.get("metadata", {})
         live_meta = obj.get("metadata", {})
         for key in VERIFIED_METADATA_FIELDS:
@@ -321,6 +444,7 @@ def verify(docs: Iterable[dict], live: Iterable[dict]) -> list[str]:
                     desired_meta[key],
                     live_meta.get(key, _MISSING),
                     f"{target}: metadata.{key}",
+                    field=f"metadata.{key}",
                 )
     return problems
 
@@ -332,6 +456,12 @@ def eso_api_version(*, run: Runner = run) -> str:
     resource at a version the cluster does not store is the API mismatch
     deployment-order.md warns about. Raises when the CRDs are absent: that is a
     cluster without an operator, not a cluster on an older version.
+
+    One CRD is read and its answer is taken for the group: an operator installs
+    its custom resource definitions as a unit, so ``ExternalSecret`` and
+    ``ClusterSecretStore`` are stored at the same version wherever one operator
+    owns them, which is what D18a keeps true. Probe per kind if a deployment
+    ever splits that ownership.
     """
     resources = run(["kubectl", "api-resources", f"--api-group={ESO_API_GROUP}", "-o", "name"])
     if resources.returncode != 0:
@@ -420,6 +550,14 @@ def _checked(doc: dict) -> dict:
     return doc
 
 
+def _needed_action(doc: dict, *, run: Runner) -> str:
+    """What one document needs: a create, an update, or nothing at all."""
+    live = read_one(doc, missing_ok=True, run=run)
+    if live is None:
+        return CREATE
+    return UPDATE if verify([doc], [live]) else ALREADY_CURRENT
+
+
 def _identify(doc: dict) -> tuple[str, str | None, str]:
     metadata = doc.get("metadata") or {}
     return doc.get("kind", ""), metadata.get("namespace"), metadata.get("name", "")
@@ -485,15 +623,30 @@ def _first_line(text: str) -> str:
     return "no output"
 
 
-def _compare(desired: Any, live: Any, path: str) -> list[str]:
+def _compare(desired: Any, live: Any, path: str, *, field: str, strict: bool = False) -> list[str]:
+    """Compare one field, reporting paths and never values.
+
+    ``path`` is what a message says; ``field`` is the dotted field path the
+    strict rule is keyed on, which list indexes do not extend, so strictness
+    covers every entry of a strict list alike.
+    """
     if live is _MISSING:
         return [f"{path} is missing from the live object"]
     if isinstance(desired, dict):
         if not isinstance(live, dict):
             return [f"{path} has a different shape in the live object"]
         problems: list[str] = []
+        if strict:
+            problems += [f"{path}.{key} is not set by Ladon" for key in live if key not in desired]
         for key, value in desired.items():
-            problems += _compare(value, live.get(key, _MISSING), f"{path}.{key}")
+            child = f"{field}.{key}" if field else key
+            problems += _compare(
+                value,
+                live.get(key, _MISSING),
+                f"{path}.{key}",
+                field=child,
+                strict=strict or child in STRICT_PATHS,
+            )
         return problems
     if isinstance(desired, list):
         if not isinstance(live, list):
@@ -502,7 +655,7 @@ def _compare(desired: Any, live: Any, path: str) -> list[str]:
             return [f"{path} has {_entries(len(desired))}, the live object has {len(live)}"]
         problems = []
         for index, (want, got) in enumerate(zip(desired, live, strict=True)):
-            problems += _compare(want, got, f"{path}[{index}]")
+            problems += _compare(want, got, f"{path}[{index}]", field=field, strict=strict)
         return problems
     if desired != live:
         return [f"{path} differs from the live object"]

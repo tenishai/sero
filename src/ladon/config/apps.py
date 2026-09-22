@@ -42,7 +42,7 @@ import re
 from dataclasses import dataclass
 
 from ladon.config.auth import AuthRole, jwt_role
-from ladon.config.eso import ClusterSecretStore, vault_store
+from ladon.config.eso import DEFAULT_API_VERSION, ClusterSecretStore, vault_store
 from ladon.config.policies import DEFAULT_KV_MOUNT, Policy, path_block
 from ladon.config.teams import ConfigError
 from ladon.config.validate import require
@@ -114,6 +114,22 @@ def _identity_digest(team: str, app: str) -> str:
     return hashlib.sha256(f"{team}\x00{app}".encode()).hexdigest()[:_DIGEST_LENGTH]
 
 
+def _store_name(team: str, app: str) -> str:
+    return f"ladon-{team}-{app}-{_identity_digest(team, app)}"
+
+
+def app_store_name(*, team: str, app: str) -> str:
+    """The ClusterSecretStore name for one application.
+
+    The same function :attr:`AppIdentity.store_name` uses, validated the same
+    way, so a caller that points an ``ExternalSecret`` at an application's store
+    and the onboarding that created it cannot disagree about the name. Neither
+    the cluster nor either namespace takes part in it, so a caller holding only
+    the team and the application can compute it without guessing the rest.
+    """
+    return _store_name(_label(team, "team"), _label(app, "app"))
+
+
 @dataclass(frozen=True)
 class AppIdentity:
     """The resolved names for one application's ESO identity.
@@ -154,7 +170,7 @@ class AppIdentity:
 
     @property
     def store_name(self) -> str:
-        return f"ladon-{self.team}-{self.app}-{self.digest}"
+        return _store_name(self.team, self.app)
 
     @property
     def auth_mount(self) -> str:
@@ -260,12 +276,19 @@ def eso_app_service_account(identity: AppIdentity) -> dict:
     }
 
 
-def eso_app_store(identity: AppIdentity, *, server: str) -> ClusterSecretStore:
+def eso_app_store(
+    identity: AppIdentity, *, server: str, api_version: str = DEFAULT_API_VERSION
+) -> ClusterSecretStore:
     """The ClusterSecretStore for one application, admitted into one namespace.
 
     Every field comes from the same identity as the role and the service
     account, so the store cannot request an audience the role does not bind or
     authenticate as an account the role does not trust.
+
+    ``api_version`` is the ESO custom-resource version the target cluster
+    stores. It defaults to the current one; a caller that has probed a cluster
+    passes what it found, because a resource rendered at a version the cluster
+    does not store is the API mismatch deployment-order.md warns about.
     """
     return vault_store(
         name=identity.store_name,
@@ -278,10 +301,13 @@ def eso_app_store(identity: AppIdentity, *, server: str) -> ClusterSecretStore:
         mount_path=identity.kv_mount,
         sa_name=identity.name,
         sa_namespace=identity.sa_namespace,
+        api_version=api_version,
     )
 
 
-def app_cluster_documents(identity: AppIdentity, *, server: str) -> list[dict]:
+def app_cluster_documents(
+    identity: AppIdentity, *, server: str, api_version: str = DEFAULT_API_VERSION
+) -> list[dict]:
     """The cluster half of app onboarding, in apply order.
 
     The service account comes first: the store names it, and ESO cannot mint a
@@ -289,5 +315,5 @@ def app_cluster_documents(identity: AppIdentity, *, server: str) -> list[dict]:
     """
     return [
         eso_app_service_account(identity),
-        eso_app_store(identity, server=server).manifest,
+        eso_app_store(identity, server=server, api_version=api_version).manifest,
     ]

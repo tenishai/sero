@@ -13,6 +13,7 @@
   <a href="#overview">Overview</a> |
   <a href="#how-it-works">How it works</a> |
   <a href="#stack">Stack</a> |
+  <a href="#running">Running</a> |
   <a href="#status">Status</a> |
   <a href="#docs">Docs</a>
 </p>
@@ -54,6 +55,32 @@ is a separate concern (see [Part of a larger platform](#part-of-a-larger-platfor
 The architecture and the decisions behind it are in
 [docs/design.md](docs/design.md); every pinned version is in
 [docs/versions.md](docs/versions.md).
+
+## Running
+
+The apply layers run from a checkout through the `ladon` CLI wrapper. Every
+command is a dry-run until `--apply` is passed, and every apply converges: a
+second run reports each object already current and writes nothing.
+
+```
+# Put the External Secrets Operator on the cluster, or reuse the one already
+# running on it:
+scripts/ladon install-eso --apply
+
+# Onboard one application: its OpenBao policy and role, then its service
+# account and secret store on the cluster, in one command:
+scripts/ladon apply --phase app-onboarding --config deployment.yaml \
+  --team TEAM --app APP --cluster CLUSTER --k8s-namespace NAMESPACE --apply
+
+# Sync one path into the Kubernetes Secret a workload already reads:
+scripts/ladon apply --phase sync --team TEAM --app APP \
+  --path apps/APP/PURPOSE --name NAME --apply
+```
+
+The OpenBao address and token come from the environment (`BAO_ADDR`/`VAULT_ADDR`
+and `BAO_TOKEN`/`VAULT_TOKEN`); the token is never logged. The full bring-up
+sequence, and the rest of the phases, are in
+[docs/deployment-order.md](docs/deployment-order.md).
 
 ## Status
 

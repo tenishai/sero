@@ -138,6 +138,18 @@ As in phase 6, an operator already running on that cluster is detected, reported
 and reused rather than reinstalled; a team cluster is the likely place to find
 one somebody else owns.
 
+```
+scripts/ladon install-eso                      # dry-run
+scripts/ladon install-eso --apply              # install, or reuse and report
+scripts/ladon install-eso --namespace NS --apply
+```
+
+The command runs against whatever cluster the current `kubectl` context points
+at. When it reuses an operator it also reports which custom-resource version
+that cluster stores, which is the version the later phases render at; the
+`--namespace` flag applies only to an install, since a reused operator stays
+where it is.
+
 Prerequisites: phase 8 (registered, reachable cluster) and phase 7 (private
 connectivity from that cluster to OpenBao).
 
@@ -148,6 +160,49 @@ cluster in the team's namespace, point it at the cluster's token issuer, and
 create the team's read policy and the role bound to the ESO workload identity. On
 the cluster: apply the team's secret store so its ExternalSecrets can read from
 the team namespace. Designed to be idempotent and safe to re-run.
+
+An application is onboarded the same way, one level down (D17), and both of its
+halves are applied by one command: the OpenBao policy and role first, then the
+service account and the store on the cluster. The cluster half is never applied
+when the OpenBao half did not land, since a store pointing at a role that does
+not exist fails later, at refresh time, somewhere else. Re-running reports every
+object and every document already current and writes nothing.
+
+```
+scripts/ladon apply --phase app-onboarding --config deployment.yaml \
+  --team TEAM --app APP --cluster CLUSTER --k8s-namespace NAMESPACE --apply
+```
+
+Applying refuses outright on a cluster with no operator: nothing would read the
+store, so phase 9 comes first. The store is rendered at the custom-resource
+version that cluster stores, probed at apply time.
+
+One `ExternalSecret` per secret then carries a path into the Secret a workload
+already reads, through the store the onboarding created. The path must be inside
+the application's own prefix, which is all its identity can read.
+
+```
+scripts/ladon apply --phase sync --team TEAM --app APP \
+  --path apps/APP/PURPOSE --name NAME \
+  [--k8s-namespace NAMESPACE] [--target-name SECRET] \
+  [--refresh-interval 1h] --apply
+```
+
+`--k8s-namespace` defaults to the application name, as onboarding does, so an
+application with a namespace of its own needs no flag. Naming a namespace the
+application's store does not admit is not refused here: which namespaces may use
+a store is the store's to say, so the document applies and then fails at refresh
+time, in the operator's logs, with no Secret created. `--target-name` is the
+Kubernetes Secret ESO creates, which is the name the workload already uses when
+it differs from the ExternalSecret's; `--refresh-interval` is how often ESO
+re-reads the path, defaulting to `1h`.
+
+The dry-run names the path and the Secret each document would fill, so what is
+about to be wired is reviewable before it is:
+
+```
+  [cluster] create ExternalSecret/NAMESPACE/NAME (apps/APP/PURPOSE -> Secret/SECRET)
+```
 
 Prerequisites: phase 9 (ESO on the cluster) and the team's namespace from
 phase 11.
@@ -192,12 +247,28 @@ apply layers hang from.
 
 ## Running the apply CLI
 
-The SDK config phases (4 and 10) are runnable from a checkout with the `ladon`
+The SDK config phases (4, 9 and 10) are runnable from a checkout with the `ladon`
 CLI wrapper. It builds a plan and either renders it or applies it; every apply is
 a dry-run unless `--apply` is passed. Both apply modes connect, because the
 dry-run diffs the plan against live state and reports, per operation, whether it
 would create, update, or find it already current. Use `plan` for the offline
 render.
+
+Phases with a cluster half (`app-onboarding`, `sync`) report it the same way,
+one line per document, prefixed `[cluster]`:
+
+```
+Cluster documents (applied):
+  [cluster] create ServiceAccount/ladon/eso-TEAM-APP-DIGEST
+  [cluster] create ClusterSecretStore/ladon-TEAM-APP-DIGEST
+```
+
+A dry-run sends the documents to the API server as a server-side dry run, so the
+report is what that cluster would really do, and a document another field
+manager owns a field of is reported `blocked` with the conflict as its reason
+rather than forced. `plan` is the offline render and connects to neither
+OpenBao nor the cluster, so the documents it prints carry the current
+custom-resource version rather than one probed from the target.
 
 ```
 # Render a plan, no connection made:
@@ -210,6 +281,13 @@ scripts/ladon apply --phase root-config --jwt-discovery-url URL --apply
 # Phase 10 per-team onboarding, scoped to the team namespace:
 scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
   --oidc-discovery-url URL --namespace TEAM --apply
+
+# Phase 9 the operator, then phase 10 one application and one of its secrets:
+scripts/ladon install-eso --apply
+scripts/ladon apply --phase app-onboarding --config deployment.yaml \
+  --team TEAM --app APP --cluster CLUSTER --k8s-namespace NAMESPACE --apply
+scripts/ladon apply --phase sync --team TEAM --app APP \
+  --path apps/APP/PURPOSE --k8s-namespace NAMESPACE --name NAME --apply
 ```
 
 For either apply mode, the OpenBao address and token come from the environment
