@@ -256,6 +256,15 @@ helm upgrade --install ladon-openbao openbao/openbao \
 # Same command without --dry-run once the render is what you expect.
 ```
 
+One release per cluster, and the release name matters. The chart creates a
+cluster-scoped ClusterRoleBinding named after the release, and cluster-scoped
+objects have no namespace to keep two copies apart. A second install of the
+same chart under the same release name in another namespace fails on ownership,
+because the object already exists and belongs to the first release. So: exactly
+one release named `ladon-openbao` per cluster. If you need a second vault on
+the same cluster, give it a different release name and expect a second
+ClusterRoleBinding.
+
 ### 3. Initialize and unseal (manual, one-time)
 
 This is phase 3 above, unchanged and still the one irreducibly manual step.
@@ -279,38 +288,60 @@ Identity, RBAC, the data volume, and the network policies:
 kubectl apply -k deploy/ladon/k8s/base
 ```
 
-Then label the namespace your ingress proxy runs in, or the network policy will
-keep everything out, including the proxy:
+Then label two namespaces, or the policies keep out the two things that must
+get in:
 
 ```
 kubectl label namespace <proxy-namespace> ladon.dev/proxy=true
+kubectl label namespace <eso-namespace>   ladon.dev/eso=true
 ```
 
-The API-server egress rule carries a placeholder address range that routes
-nowhere. Replace it with your cluster's control plane endpoint before the
-cluster-apply layer is used, or that layer will hang rather than fail loudly.
-See [../deploy/ladon/README.md](../deploy/ladon/README.md).
+Without the first the backend is unreachable; without the second every
+`ExternalSecret` on the cluster fails, because the operator runs in its own
+namespace and cannot reach OpenBao.
+
+The API-server and https egress rules carry placeholders: the first is an
+address range that routes nowhere, the second is deliberately wide. Replace
+both before the cluster-apply layer is used. A wrong range is accepted by the
+API server and is simply wrong, so that layer hangs rather than failing
+loudly. See [../deploy/ladon/README.md](../deploy/ladon/README.md).
 
 ### 5. The config and the bootstrap Secret
 
 The ConfigMap holds names only, so it can be created from the example and
-edited:
+edited. On this path the backend mounts it as a file, so the key is
+`config.yaml`:
 
 ```
 kubectl -n ladon create configmap ladon-config \
   --from-file=config.yaml=config/example.yaml
 ```
 
+On a cluster whose deployment platform delivers the ConfigMap as environment
+variables rather than a volume, the key is `LADON_CONFIG_YAML` instead and the
+backend reads the config inline. That difference, and why it exists, is in
+[../deploy/ladon/README.md](../deploy/ladon/README.md).
+
+While you are editing the config: if your proxy signs what it asserts, set
+`identity.assertion` so the backend verifies the signature rather than trusting
+the header's text. The network policy is what stops anything but the proxy
+reaching the backend; a verified assertion is what stops a misconfigured
+network policy from being the only thing standing between a caller and any
+identity they name. Set both.
+
 The Secret holds the two values the backend cannot get from anywhere else: the
-datastore URL, and the token that lets it reach OpenBao. Create it from a file
-or an environment variable rather than typing values on a command line, where
-they land in shell history.
+datastore URL, and the token that lets it reach OpenBao.
 
 ```
 kubectl -n ladon create secret generic ladon-bootstrap \
   --from-literal=LADON_DATABASE_URL=sqlite:////data/ladon.db \
-  --from-file=BAO_TOKEN=<path-to-a-file-holding-the-token>
+  --from-literal=BAO_TOKEN="$(tr -d '\n' < <path-to-a-file-holding-the-token>)"
 ```
+
+Note the `tr`. `--from-file` would store the file's bytes exactly, and almost
+every editor leaves a trailing newline, which becomes part of the token and
+makes every OpenBao call fail authentication for a reason nothing reports
+clearly. Use `--from-literal`, or strip the newline as above.
 
 Delete the file afterwards. The token is the one credential in the deployment
 that OpenBao cannot issue to itself.

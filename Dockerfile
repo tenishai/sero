@@ -103,7 +103,10 @@ WORKDIR /app
 COPY src/ /app/src/
 COPY migrations/ /app/migrations/
 COPY alembic.ini /app/alembic.ini
-COPY scripts/ /app/scripts/
+# Only the CLI wrapper. The other scripts are lint and contract checks that run
+# in CI and on a laptop; shipping them puts code in the image that nothing in
+# the image runs.
+COPY scripts/ladon /app/scripts/ladon
 COPY --from=ui /ui/dist/ /srv/ladon/ui/
 
 # A fixed uid so a volume's ownership can be set once and stay right. The
