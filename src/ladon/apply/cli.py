@@ -17,6 +17,10 @@ runnable end to end. Three subcommands:
   ``plan`` when there is nothing to connect to.
 * ``install-eso`` puts the External Secrets Operator on the cluster, or reports
   and reuses the one already running on it (D18a).
+* ``audit`` connects read-only and reports every role and policy that grants
+  more than it was meant to. It writes nothing, ever, so it needs no
+  ``--apply``; it exits 3 when it finds something serious, which is what a
+  scheduled run keys on.
 
 Run as ``scripts/ladon plan ...`` / ``scripts/ladon apply ...`` (the wrapper puts
 ``src`` on the path; there is no installed console script). Inputs are explicit
@@ -37,12 +41,20 @@ second run reports every document already current and writes nothing.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Callable, Sequence
 
 import yaml
 
+from ladon.apply.audit import (
+    AUDIT_FINDINGS_EXIT,
+    AuditError,
+    AuditReport,
+    audit_all,
+    audit_namespace,
+)
 from ladon.apply.client import (
     ADDRESS_ENV_VARS,
     BaoConnection,
@@ -139,6 +151,29 @@ def build_parser() -> argparse.ArgumentParser:
             "already running on the cluster is reused where it is, so this is "
             "ignored then."
         ),
+    )
+
+    audit = sub.add_parser(
+        "audit",
+        help="Report roles and policies that grant more than they were meant to.",
+    )
+    audit.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Path to a deployment config file. Without --namespace, the audit "
+            "covers the root and every team namespace the config names."
+        ),
+    )
+    audit.add_argument(
+        "--namespace",
+        default=None,
+        help="Audit only this OpenBao namespace. Without it, the root is audited.",
+    )
+    audit.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the findings as JSON instead of one line each.",
     )
 
     return parser
@@ -612,6 +647,57 @@ def _run_install_eso(args: argparse.Namespace, out) -> int:
     return 0
 
 
+# What a clean report does not cover when nothing told the audit which
+# namespaces exist. Read without this line, "no findings" reads as "the
+# deployment is clean", and every team namespace went unlooked at.
+ROOT_ONLY_WARNING = (
+    "only the root namespace was audited; pass --config to cover every team "
+    "namespace the deployment has, or --namespace to name one"
+)
+
+
+def _audit_reports(args: argparse.Namespace, client) -> tuple[AuditReport, ...]:
+    """Which namespaces to audit: the one named, or the root plus the config's.
+
+    An explicit ``--namespace`` wins, as it does everywhere else in this CLI.
+    Otherwise the deployment config names the team namespaces, so a scheduled
+    audit covers the whole deployment without being told what is in it.
+    """
+    if args.namespace:
+        return (audit_namespace(client, args.namespace),)
+    config = _load_config(args)
+    namespaces = [team.namespace for team in config.teams] if config else []
+    return audit_all(client, namespaces)
+
+
+def _run_audit(args: argparse.Namespace, out) -> int:
+    """Audit roles and policies, read-only, and exit non-zero on a high finding."""
+    client = connect(BaoConnection.from_env(), TokenAuth.from_env())
+    reports = _audit_reports(args, client)
+    ok = all(report.ok for report in reports)
+    warning = ROOT_ONLY_WARNING if not (args.namespace or args.config) else None
+
+    if args.json:
+        payload = {"ok": ok, "namespaces": [report.as_dict() for report in reports]}
+        if warning:
+            payload["warning"] = warning
+        print(json.dumps(payload, indent=2), file=out)
+        return 0 if ok else AUDIT_FINDINGS_EXIT
+
+    if warning:
+        print(f"WARNING: {warning}.", file=out)
+    if any(report.findings for report in reports):
+        for report in reports:
+            if report.findings:
+                print(report.render(), file=out)
+    else:
+        print(f"No findings: {len(reports)} namespace(s) audited and clean.", file=out)
+
+    # A distinct code, so a scheduled run can tell "found something" from
+    # "could not run at all".
+    return 0 if ok else AUDIT_FINDINGS_EXIT
+
+
 def _require_eso() -> str:
     """The ESO resource version this cluster stores, or a refusal.
 
@@ -708,7 +794,9 @@ def main(argv: Sequence[str] | None = None, *, out=None) -> int:
             return _run_apply(args, out)
         if args.command == "install-eso":
             return _run_install_eso(args, out)
-    except (ConfigError, ApplyError, BaoConnectionError, K8sError, HelmError) as exc:
+        if args.command == "audit":
+            return _run_audit(args, out)
+    except (ConfigError, ApplyError, AuditError, BaoConnectionError, K8sError, HelmError) as exc:
         # Expected, value-free failures: report and exit non-zero without a
         # traceback. The messages never include a secret.
         print(f"error: {exc}", file=sys.stderr)

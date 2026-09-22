@@ -269,6 +269,50 @@ point of view, not a list of commit subjects.
   the pinned chart, the manual initialize and unseal, the backend's own objects,
   the config and bootstrap Secret, the workload, and a port-forward for a first
   look. It says what it deliberately leaves out.
+- `scripts/ladon audit [--config FILE] [--namespace NS] [--json]` reports every
+  role and policy that grants more than it was meant to. For each namespace it
+  reads every workload role on every JWT and OIDC auth mount (does it refuse the
+  `default` policy, does it name `root`, does it pin a subject to one real
+  service account, does it bind an audience, does every policy it names exist,
+  and for a per-application role, does it carry only its own policy), the
+  `default` policy's own body (does it reach `sys/policies/*`, `sys/auth/*` or
+  `sys/mounts/*`, does it write or destroy any segment of the KV mount, does it
+  glob a whole mount even at read, does it grant `sudo` anywhere), and every
+  `eso-<app>-readonly` policy (does any grant leave the application's own
+  prefix, reach another application's, or carry more than read and list). It
+  connects read-only and writes nothing, so it needs no `--apply`. Without
+  `--namespace` it covers the root plus every team namespace the deployment
+  config names; with neither that nor `--config` it audits the root alone and
+  says so on a `WARNING` line, because otherwise a clean report reads as a
+  clean deployment. Human output is one line per finding,
+  `[<namespace>] <severity> <code> <object>: <detail>`, and `--json` carries
+  the same findings for a caller. Every report also carries the counts of what
+  it looked at, and a namespace with no auth mount or no policies is reported
+  rather than called clean. It exits 0 when every audited namespace is clean, 3
+  when any has a high finding, and 2 when the audit could not run.
+
+  This is the one deviation a scoped-identity model cannot survive and cannot
+  see: the platform this baseline is drawn from had its `default` policy widened
+  to full KV access plus `sudo` on the policy endpoints, so every role that
+  inherited `default` had every capability and every per-application policy was
+  decorative. Logins kept succeeding and nothing detected it for months.
+
+  Policy bodies are read with a strict reader of the `path "<p>" { capabilities
+  = [...] }` block form Ladon renders, tolerating comments and blank lines and
+  adding no dependency. A body it cannot read becomes an `unparsed-policy`
+  finding rather than a crash or, worse, a partial reading that silently vouches
+  for the rest: high for `default` and for an application policy, which are the
+  two the audit claims to judge, and medium for any other policy, which a
+  deployment shapes for itself. An explicit `deny` is never a finding, because
+  an audit that reports hardening teaches operators to stop hardening. No
+  finding ever carries a policy body or a field value: it names the object, the
+  path, and the capability.
+
+  Ladon's own output is the fixture that keeps all of this honest. The test
+  suite applies the real plans (root config, one team, three applications in
+  one namespace) through the real executor and asserts the audit comes back
+  with nothing to say. A rule that fires on what Ladon renders is not a rule
+  about drift.
 
 Proven live on a shared development cluster, against the platform vault:
 

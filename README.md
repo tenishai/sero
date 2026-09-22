@@ -75,6 +75,11 @@ scripts/ladon apply --phase app-onboarding --config deployment.yaml \
 # Sync one path into the Kubernetes Secret a workload already reads:
 scripts/ladon apply --phase sync --team TEAM --app APP \
   --path apps/APP/PURPOSE --name NAME --apply
+
+# Check that nothing has been widened since: every JWT role, the default
+# policy, and every per-application policy. Read-only; exits 3 on a high
+# finding, so a scheduled run can fail on it:
+scripts/ladon audit --config deployment.yaml
 ```
 
 The OpenBao address and token come from the environment (`BAO_ADDR`/`VAULT_ADDR`
