@@ -120,15 +120,39 @@ who they are, one of two ways.
 which is stripped, and it is lowercased before anything authorizes on it. This
 is a claim; see the trust boundary above.
 
-**A signed assertion**, configured under `identity.assertion`:
+**A signed assertion**, configured under `identity.assertion`. For a cloud
+identity-aware proxy in front of an external HTTPS load balancer, which is
+the front door in
+[deployment-order.md](deployment-order.md#6a-the-front-door):
 
 ```yaml
 identity:
   assertion:
     header: x-goog-iap-jwt-assertion
+    jwks_url: https://www.gstatic.com/iap/verify/public_key-jwk
+    issuer: https://cloud.google.com/iap
+    audience: /projects/<project-number>/global/backendServices/<backend-service-id>
+    email_claim: email
+```
+
+The header, the key set and the issuer are the provider's, identical in every
+deployment of this shape. The audience is not: it names one backend service,
+and it is the field that stops a token the same proxy signed for another
+service behind it from working here. The project *number* and the backend
+service's numeric `id` are what go in it, neither of which is the name you
+know them by; `gcloud compute backend-services describe <name> --global
+--format='value(id)'` prints the second.
+
+Any other proxy that signs what it asserts takes the same five fields with
+its own values:
+
+```yaml
+identity:
+  assertion:
+    header: x-proxy-assertion
     jwks_url: https://proxy.example.com/keys
-    audience: /projects/<project-number>/apps/<app-id>
     issuer: https://proxy.example.com
+    audience: https://ladon.example.com
     email_claim: email
 ```
 

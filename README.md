@@ -137,13 +137,17 @@ repair; the backend deployed from the image in the cluster, migrating at
 boot and serving the UI's routes through a port-forward; app onboarding run
 as a job through the admin endpoint. The platform vault runs on cloud-KMS
 auto-unseal, migrated in place from Shamir on the running vault and proven by
-a pod delete it came back from unsealed on its own.
+a pod delete it came back from unsealed on its own. The backend now sits
+behind an identity-aware proxy on that cluster: a cloud external HTTPS load
+balancer terminating a managed certificate at a reserved address, with the
+proxy authenticating every caller and the backend verifying the signed
+assertion rather than trusting a header.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
 sync; reveal step-up not built (gate denies by default); no fleet / second
 cluster; one process, one replica (the job runner and the allow list are per
 process); the image workflow publishes only once the deployer grants its
-identity; a front door (proxy + assertion) is a deployment step.
+identity.
 
 See [ROADMAP.md](ROADMAP.md) for the phased plan.
 
