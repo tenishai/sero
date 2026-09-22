@@ -7,6 +7,7 @@ touches a live OpenBao. The cluster half is pointed at the fake cluster the
 same way, so both halves of an onboarding are exercised end to end offline.
 """
 
+import argparse
 import io
 
 import pytest
@@ -16,6 +17,7 @@ from fake_cluster import FakeCluster
 from fake_openbao import FakeOpenBao
 from ladon.apply import cli
 from ladon.apply.executor import ApplyResult, OpDiff
+from ladon.config.loader import load_deployment_config
 from ladon.config.teams import ConfigError
 from ladon.install.eso import ESOInstallResult
 from ladon.install.k8s import ESOInstall, K8sError, converge_documents
@@ -379,6 +381,26 @@ def test_root_config_without_a_config_has_no_teams():
     code, text = run(["plan", "--phase", "root-config", "--jwt-discovery-url", ISSUER])
     assert code == 0
     assert "ensure-namespace" not in text
+
+
+def test_root_config_narrowed_to_one_team_touches_nothing_at_the_root(tmp_path):
+    # What approving a namespace request applies. It needs no auth inputs,
+    # because it plans nothing at the root that would use them.
+    cfg = write_config(tmp_path)
+    code, text = run(["plan", "--phase", "root-config", "--config", cfg, "--teams", "team-a"])
+    assert code == 0
+    assert text.strip().splitlines() == [
+        "ensure-namespace sys/namespaces/ns-a",
+        "[ns-a] enable-secrets-engine sys/mounts/team-kv",
+        "[ns-a] write-policy sys/policies/acl/team-readwrite",
+        "[ns-a] write-policy sys/policies/acl/external-secrets-read",
+    ]
+
+
+def test_root_config_narrowed_to_an_unknown_team_is_refused(tmp_path):
+    cfg = write_config(tmp_path)
+    code, _ = run(["plan", "--phase", "root-config", "--config", cfg, "--teams", "team-z"])
+    assert code == 2
 
 
 # The team's namespace defaults to its name here, so the rendered plan reads the
@@ -907,3 +929,98 @@ def test_sync_refuses_a_path_that_climbs_out_of_the_prefix(monkeypatch):
     code, _ = run(["apply", *sync_argv()[:6], "--path", "apps/sample/../other", *sync_argv()[8:]])
     assert code == 2
     assert cluster.calls == []
+
+
+# The seam the backend shares ---------------------------------------------------
+
+
+def phase_args(**fields):
+    """The flags one phase runs with, as the backend's job runner builds them."""
+    defaults = {
+        "phase": "app-onboarding",
+        "config": None,
+        "namespace": None,
+        "kv_mount": None,
+        "team": "team-a",
+        "teams": None,
+        "app": "sample",
+        "cluster": "cluster-a",
+        "k8s_namespace": None,
+        "sa_namespace": "ladon",
+        "audience": "bao",
+        "server": "https://bao.example:8200",
+        "jwt_discovery_url": None,
+        "oidc_discovery_url": None,
+        "oidc_client_id": None,
+        "oidc_client_secret_ref": None,
+    }
+    return argparse.Namespace(**{**defaults, **fields})
+
+
+def test_run_phase_takes_a_loaded_config_and_an_address_and_reports_both_halves(
+    tmp_path, monkeypatch
+):
+    # The backend never takes a config path from a request: it hands the
+    # deployment's own loaded config in, and the address it was configured with.
+    client = FakeOpenBao()
+    cluster = FakeCluster()
+    dialled = {}
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.delenv("BAO_ADDR", raising=False)
+
+    def record_and_connect(conn, credential, **kwargs):
+        dialled["address"] = conn.address
+        return client
+
+    monkeypatch.setattr(cli, "connect", record_and_connect)
+    use_cluster(monkeypatch, cluster)
+    config = load_deployment_config(write_app_config(tmp_path))
+
+    run = cli.run_phase(phase_args(), config=config, apply=True, address="https://vault.example")
+
+    assert dialled["address"] == "https://vault.example"
+    assert [d.action for d in run.openbao.diffs] == ["create", "create"]
+    assert [r.action for r in run.cluster.results] == ["create", "create"]
+    assert run.blocked is False
+    assert run.error is None
+
+    # A second run converges: nothing is written to either half.
+    again = cli.run_phase(phase_args(), config=config, apply=True, address="https://vault.example")
+    assert [d.action for d in again.openbao.diffs] == ["already current"] * 2
+    assert [r.action for r in again.cluster.results] == ["already current"] * 2
+
+
+def test_run_phase_keeps_the_cluster_half_from_a_blocked_openbao_half(tmp_path, monkeypatch):
+    blocked = OpDiff(summary="write-auth-role auth/jwt-cluster-a/role/x", action="blocked")
+    cluster = FakeCluster()
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: "C")
+    monkeypatch.setattr(
+        cli,
+        "apply_plan",
+        lambda plan, **k: ApplyResult(applied=(), dry_run=False, diffs=(blocked,)),
+    )
+    use_cluster(monkeypatch, cluster)
+    config = load_deployment_config(write_app_config(tmp_path))
+
+    run = cli.run_phase(phase_args(), config=config, apply=True, address="https://vault.example")
+
+    assert run.blocked is True
+    assert run.cluster is None
+    assert cluster.calls == []
+
+
+def test_run_phase_reports_a_cluster_that_did_not_store_what_was_applied(tmp_path, monkeypatch):
+    # The documents were written, so the report travels with the failure
+    # rather than being raised out from under it.
+    client = FakeOpenBao()
+    cluster = FakeCluster(mutate=lambda doc: {**doc, "spec": {}} if "spec" in doc else doc)
+    with_bao(monkeypatch)
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+    use_cluster(monkeypatch, cluster)
+    config = load_deployment_config(write_app_config(tmp_path))
+
+    run = cli.run_phase(phase_args(), config=config, apply=True)
+
+    assert run.error and "did not store" in run.error
+    assert [r.action for r in run.cluster.results] == ["create", "create"]

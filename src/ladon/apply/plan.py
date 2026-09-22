@@ -218,6 +218,7 @@ def root_config_plan(
     auth_methods: Sequence[AuthMethod],
     kv_mount: str = DEFAULT_KV_MOUNT,
     teams: Sequence[Team] = (),
+    only_teams: Sequence[str] | None = None,
 ) -> Plan:
     """Plan the phase-4 root config: the platform root, then each team's namespace.
 
@@ -226,12 +227,22 @@ def root_config_plan(
     them), then enable and configure each auth method with its roles. Each team
     in the deployment config then gets its namespace and the baseline inside it.
 
+    ``only_teams`` narrows the run to the named teams: their namespaces and the
+    baseline inside them, and nothing at the root. That is what an approved
+    namespace request applies, and it is why approving one team's request cannot
+    rewrite the deployment's auth methods. A name the config does not define is
+    refused: the namespace, the mount and the policies all come from that entry.
+
     Duplicate root policy names or auth mount paths are rejected: they would
     collide in OpenBao and almost always signal a config mistake. The teams are
     not part of that check. Each team's templates are rendered once inside its
     own namespace, where the same name is a different object, so every team
     carrying the same three names is the design and not a collision.
     """
+    if only_teams is not None:
+        selected = _select_teams(teams, only_teams)
+        return Plan(ops=tuple(op for team in selected for op in team_namespace_ops(team, kv_mount)))
+
     _reject_duplicates([p.name for p in policies], what="policy name")
     _reject_duplicates([m.path for m in auth_methods], what="auth mount path")
 
@@ -343,6 +354,17 @@ def app_onboarding_plan(identity: AppIdentity) -> Plan:
         ),
     )
     return Plan(ops=tuple(op.scoped_to(identity.namespace) for op in ops))
+
+
+def _select_teams(teams: Sequence[Team], names: Sequence[str]) -> list[Team]:
+    """The named teams, in the order they were named."""
+    by_name = {team.name: team for team in teams}
+    missing = [name for name in names if name not in by_name]
+    if missing:
+        raise ConfigError(
+            f"no team named {', '.join(repr(n) for n in missing)} in the deployment config"
+        )
+    return [by_name[name] for name in names]
 
 
 def _reject_duplicates(names: Sequence[str], *, what: str) -> None:

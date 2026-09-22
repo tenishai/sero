@@ -245,3 +245,35 @@ def test_the_same_policy_name_in_two_namespaces_is_not_a_duplicate():
 def test_a_policy_name_repeated_in_one_namespace_is_still_rejected():
     with pytest.raises(ConfigError, match="duplicate policy name"):
         root_config_plan(policies=[team_readonly(), team_readonly()], auth_methods=[])
+
+
+def test_only_teams_plans_one_teams_namespace_and_nothing_at_the_root():
+    # What an approved namespace request applies. Approving one team's request
+    # must not rewrite the deployment's auth methods.
+    plan = root_config_plan(
+        policies=[team_readwrite()],
+        auth_methods=sample_auth_methods(),
+        teams=teams(),
+        only_teams=["team-b"],
+    )
+    assert [op.summary() for op in plan.ops] == [
+        "ensure-namespace sys/namespaces/ns-b",
+        "[ns-b] enable-secrets-engine sys/mounts/kv",
+        "[ns-b] write-policy sys/policies/acl/team-readonly",
+        "[ns-b] write-policy sys/policies/acl/external-secrets-read",
+    ]
+
+
+def test_only_teams_refuses_a_team_the_config_does_not_define():
+    # The namespace, the mount and the policies all come from the config entry;
+    # with no entry there is nothing to apply, and guessing would create a
+    # namespace nobody configured.
+    with pytest.raises(ConfigError, match="team-c"):
+        root_config_plan(policies=[], auth_methods=[], teams=teams(), only_teams=["team-c"])
+
+
+def test_no_only_teams_filter_plans_everything():
+    everything = root_config_plan(policies=[], auth_methods=[], teams=teams())
+    assert root_config_plan(policies=[], auth_methods=[], teams=teams(), only_teams=None).ops == (
+        everything.ops
+    )
