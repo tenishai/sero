@@ -12,6 +12,13 @@ point of view, not a list of commit subjects.
 
 ### Added
 
+- DNS egress in the deploy manifests also admits the link-local resolver
+  address, for clusters whose pods resolve through a node-local or cloud DNS
+  address rather than the kube-dns pods. Proven live: with only the kube-dns
+  pod selector, the vault could not resolve the workload token issuer and
+  every store reported that it could not create a client; with the
+  link-local rule the store validated and the sync recovered.
+
 - Repository foundations: Apache-2.0 license, NOTICE, README, secrets-hygiene
   `.gitignore`, `.gitattributes`, and `.editorconfig`.
 - Project-local Vercel `web-design-guidelines` skill and `docs/skills.md`.
