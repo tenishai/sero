@@ -119,6 +119,12 @@ All merged on main:
 - The machine lane: `POST /api/service/secrets` and `/api/service/sync` per
   configured OIDC caller, pinned subject and namespaces, attribution via
   `acting_email`. (PR #66)
+- The machine lane reads and deletes: `GET /api/service/secrets` for the key
+  names, the version and when a path last changed; `DELETE` on both routes,
+  removing a path with all of its versions and the ExternalSecret in front of
+  it. Dry run by default, idempotent, and a cluster object another field
+  manager owns is `409` rather than removed. The lane can now delete; the
+  room's destroy step is the remaining half.
 - Apply phases as admin jobs with a restart sweep; namespace-request approval
   applies the team; MCP denial audit; the SQLite primary-key migration. (PR
   #68)
@@ -144,10 +150,12 @@ proxy authenticating every caller and the backend verifying the signed
 assertion rather than trusting a header.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
-sync; reveal step-up not built (gate denies by default); no fleet / second
-cluster; one process, one replica (the job runner and the allow list are per
-process); the image workflow publishes only once the deployer grants its
-identity.
+sync; reveal step-up not built (gate denies by default); no application
+off-boarding phase (the lane removes a secret and its ExternalSecret; the
+store, the role, the policy and the service account are still an operator's
+job); no fleet / second cluster; one process, one replica (the job runner and
+the allow list are per process); the image workflow publishes only once the
+deployer grants its identity.
 
 See [ROADMAP.md](ROADMAP.md) for the phased plan.
 

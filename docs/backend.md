@@ -282,8 +282,8 @@ service_callers:
 required, because each one is a boundary. `jwks_url` must be https: over plain
 HTTP anyone on the path chooses the signer. `acting_email_required` may only be
 `true`; a lane that wrote on nobody's behalf would leave a machine write with no
-trace of a human, so `false` is refused rather than honoured, and both routes
-require the field. Two callers may not share an issuer and audience pair,
+trace of a human, so `false` is refused rather than honoured, and every route
+on the lane requires the field, the read included. Two callers may not share an issuer and audience pair,
 because that pair is what picks the caller a token belongs to.
 
 `k8s_namespaces` is where this caller may place an ExternalSecret beyond the
@@ -309,6 +309,11 @@ machine could therefore set that header to any address and be any person: read
 every namespace that person holds, reveal where reveal is on, and put itself on
 the allow list through the admin routes. None of the machine lane's pins apply,
 because none of those routes are the machine lane.
+
+`/api/service/*` is also the only place a `DELETE` reaches a secret at all. The
+human surface has no route that removes a path: a person who wants one gone
+asks an operator, and the reason it is here instead is that a machine that
+created an application is the thing that knows when that application is over.
 
 With an assertion configured the human routes want a signed proof instead, and
 the machine's own token does not verify as one: the audiences must differ, which
@@ -351,7 +356,9 @@ guesses at).
 
 ### What a caller can do
 
-Two things.
+Five things, which together are the life of one application secret: write it,
+see what is in it by name, put the cluster object in front of it, take that
+object away, and delete the secret itself.
 
 **`POST /api/service/secrets`** merges keys into one application path. The
 semantics are the human lane's, because they are the same two functions: values
@@ -383,6 +390,72 @@ The answer is the write summary the other surfaces return, key names only:
   "removed_keys": []
 }
 ```
+
+**`GET /api/service/secrets`** answers which keys one path holds, by name. It
+takes its arguments in the query string (`acting_email`, `namespace`, `path`)
+because there is no body on a read, and `acting_email` is as required here as
+it is on a write.
+
+```
+GET /api/service/secrets?acting_email=operator@example.com&namespace=team-a&path=apps/sample/demo
+```
+
+```json
+{
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "keys": ["API_KEY", "DB_URL"],
+  "version": 2,
+  "updated_at": "2026-09-22T10:00:00.000000Z"
+}
+```
+
+Names, sorted, and nothing else. This is narrower than the human read beside
+it, which returns a masked preview of every value: a mask is a hint about a
+value, and a caller assembling an application needs to know whether `DB_URL` is
+there, not what it starts with. No value, masked or otherwise, leaves through
+this route. The version and the timestamp are what make the answer useful for
+deciding whether a path needs writing; they say a path changed without saying
+what it changed to.
+
+A path that is not there is `404 {"error": "there is no secret at ..."}`, and
+still an audited read: the request was authorized and the lookup happened, and
+who asked about a path that does not exist is worth being able to answer.
+
+**`DELETE /api/service/secrets`** removes one application path and every
+version of it. This is the half of provisioning the lane did not have: an
+application that goes away otherwise leaves its secret behind, and a KV path
+nobody is watching is the one whose values go stale in place.
+
+```json
+{
+  "acting_email": "operator@example.com",
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "apply": false
+}
+```
+
+Metadata and all versions, not KV v2's default soft delete: a soft-deleted path
+still exists, still lists, can be undeleted, and its versions still hold the
+values. Dry run by default, like every write here, and the dry run says what it
+would remove:
+
+```json
+{
+  "applied": false,
+  "namespace": "team-a",
+  "path": "apps/sample/demo",
+  "keys": ["API_KEY", "DB_URL"],
+  "would_delete": true
+}
+```
+
+With `apply`, `would_delete` becomes `deleted`. Deleting a path that is already
+gone is `"deleted": false` with an empty `keys` and a `200`, because a destroy
+step that fails when it is run twice is a destroy step nobody can retry. The key
+names are read before the delete and go into the audit row as `key_names`, so
+the record still says what was destroyed once the path is gone.
 
 **`POST /api/service/sync`** makes sure the Kubernetes Secret exists. Writing
 the value into OpenBao is half the job; until an `ExternalSecret` reads the path,
@@ -448,6 +521,63 @@ also how it would take over one it should not, so it is allowed only in a
 namespace the deployment admitted on purpose. In the default namespace, the
 target is the ExternalSecret's own name.
 
+**`DELETE /api/service/sync`** removes one ExternalSecret. Deleting the KV path
+without this leaves an object ESO keeps reconciling: an error in the operator's
+log every interval over a path that is gone on purpose, and the Kubernetes
+Secret it owns still sitting there.
+
+```json
+{
+  "acting_email": "operator@example.com",
+  "namespace": "team-a",
+  "app": "sample",
+  "k8s_namespace": "sample",
+  "name": "sample-demo",
+  "apply": true
+}
+```
+
+```json
+{
+  "applied": true,
+  "namespace": "team-a",
+  "app": "sample",
+  "k8s_namespace": "sample",
+  "name": "sample-demo",
+  "deleted": true,
+  "report": ["ExternalSecret/sample/sample-demo: delete"]
+}
+```
+
+The body names the object and nothing else. No path, no store, no refresh
+interval: a removal should not depend on the store name and the path still
+resolving the way they did when the object was created.
+
+Three rules stand in front of it.
+
+- **It must be Ladon's object.** The live object is read first, and if its
+  `managedFields` do not record `ladon`, the answer is `409` naming the manager
+  that does own it and nothing is deleted. This is the mirror of never passing
+  `--force-conflicts` on the apply side: taking a field from another manager is
+  an operator's decision, and so is deleting that manager's object.
+- **The same pinning as the POST.** `k8s_namespace` defaults to the
+  application's name, and anywhere else must be in the caller's
+  `k8s_namespaces`; otherwise `403`. Without it, a caller admitted to one
+  namespace could remove any ExternalSecret Ladon manages anywhere on the
+  cluster.
+- **Dry run by default.** A dry run does the read and the ownership check, so
+  it answers the same `403` and `409` an apply would, and deletes nothing.
+  `"deleted"` is `false` when the object was already gone, which is a success;
+  the report line reads `absent`.
+
+It removes the ExternalSecret and only that. The application's
+ClusterSecretStore, its JWT role, its read-only policy and its service account
+stay, and so does the KV path. Those are application off-boarding: they are
+cluster-scoped or namespace-wide, one of them is shared with anything else the
+application runs, and removing them is a decision about an application's whole
+identity rather than about one of its secrets. That is an operator and an apply
+phase, not a per-secret call on this lane.
+
 ### What a caller cannot do
 
 - Write outside `apps/`. This lane provisions application secrets and nothing
@@ -461,18 +591,36 @@ target is the ExternalSecret's own name.
   whatever the acting email holds on the human lane.
 - Place a cluster object in a Kubernetes namespace its config does not pin to
   it, or name a target Secret outside one. Also `403`; see above.
-- Read a secret, reveal a value, touch the allow list, approve a namespace
-  request, or run an apply phase. Those are human routes and stay human.
+- Read a value. The lane's read returns key names, and the reveal route, the
+  one place a plaintext value leaves Ladon, is not on it.
+- Touch the allow list, approve a namespace request, or run an apply phase.
+  Those are human routes and stay human.
+- Off-board an application: remove its ClusterSecretStore, its JWT role, its
+  policy or its service account. The lane takes one secret down, not an
+  application's identity.
+- Delete a cluster object another field manager owns. That is `409`, and the
+  message names the manager.
 - Exceed its call budget. Each caller has an in-process token bucket, 60 calls a
-  minute by default, shared across both routes; past it the answer is `429`. It
-  is a guard against a stuck loop filling the vault, not a distributed quota: a
-  second replica has a second bucket.
+  minute by default, shared across every route on the lane; past it the answer
+  is `429`. It is a guard against a stuck loop filling the vault, not a
+  distributed quota: a second replica has a second bucket.
 
 ### Auditing
 
-One row per call, in the same table as everything else. Both routes record
-against `acting_email`, under `service.put_secret` and `service.sync_secret`,
-and every row this lane writes carries three arguments saying how it got there:
+One row per call, in the same table as everything else. Every route records
+against `acting_email`, under a tool name that says which one it was:
+
+| Route | Tool name |
+| --- | --- |
+| `POST /api/service/secrets` | `service.put_secret` |
+| `GET /api/service/secrets` | `service.get_secret` |
+| `DELETE /api/service/secrets` | `service.delete_secret` |
+| `POST /api/service/sync` | `service.sync_secret` |
+| `DELETE /api/service/sync` | `service.delete_sync` |
+
+A dry run is recorded as `dry-run` and an apply as `ok`, so the trail
+distinguishes what was asked from what happened. Every row this lane writes
+carries three arguments saying how it got there:
 
 | Argument | What it says |
 | --- | --- |

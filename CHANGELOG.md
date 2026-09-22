@@ -53,6 +53,35 @@ for the task-by-task record.
 
 ### Added
 
+- The machine lane can read and delete, so a caller that provisions an
+  application can also take one down. Three routes, all authenticated,
+  pinned, budgeted and audited exactly like the two that were already there.
+
+  `GET /api/service/secrets` answers which keys a path holds, by name, with
+  the version and when the current version was written. No value, masked or
+  otherwise: the human read beside it returns a masked preview of every
+  value, and a caller assembling an application needs to know whether
+  `DB_URL` is there, not what it starts with. A path that is not there is a
+  `404` and still an audited read.
+
+  `DELETE /api/service/secrets` removes a path and every version of it, not
+  KV v2's default soft delete, which leaves a path that still exists, still
+  lists, and still holds its values. `DELETE /api/service/sync` removes the
+  ExternalSecret in front of it, which otherwise stays behind and has ESO
+  logging an error every refresh interval over a path that is gone on
+  purpose. Both are dry run by default and name what they would remove; both
+  are idempotent, because a destroy step that fails when it is run twice is a
+  destroy step nobody can retry.
+
+  A cluster object whose live field manager is not `ladon` is `409` naming
+  the manager that owns it, and nothing is deleted. That is the mirror of
+  never passing `--force-conflicts`: taking a field from another manager is
+  an operator's decision, and so is deleting that manager's object.
+
+  Scope, so nobody has to infer it: this removes one secret and one
+  ExternalSecret. An application's ClusterSecretStore, JWT role, read-only
+  policy and service account are off-boarding, and still an operator's job.
+
 - A front door, so the backend is a service people can reach rather than a
   port-forward. `deploy/ladon/standalone/front-door/` holds four manifests
   for the cloud provider's external HTTPS load balancer with its
