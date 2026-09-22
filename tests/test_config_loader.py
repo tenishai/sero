@@ -69,3 +69,26 @@ def test_missing_file_rejected(tmp_path):
 
 def test_parse_deployment_config_none_is_empty():
     assert parse_deployment_config(None) == DeploymentConfig()
+
+
+def test_identity_and_access_sections_parse():
+    cfg = load_deployment_config_text(
+        """
+        identity:
+          header: x-forwarded-email
+        access:
+          admins: [admin@example.com]
+        """
+    )
+    assert cfg.identity["header"] == "x-forwarded-email"
+    assert cfg.access["admins"] == ["admin@example.com"]
+
+
+def test_bad_identity_section_rejected():
+    with pytest.raises(ConfigError, match="'identity' must be a mapping"):
+        load_deployment_config_text("identity: not-a-mapping\n")
+
+
+def test_bad_access_section_rejected():
+    with pytest.raises(ConfigError, match="'access' must be a mapping"):
+        load_deployment_config_text("access: not-a-mapping\n")
