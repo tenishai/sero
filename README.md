@@ -48,10 +48,11 @@ it never stores secret values.
 
 OpenBao on Integrated Storage (Raft) with cloud-KMS auto-unseal; a pinned Helm
 install; configuration and runtime driven through the OpenBao API; the External
-Secrets Operator for sync; a Python apply/agent backend with a PostgreSQL
-datastore; and a Svelte 5 web UI that rebrands from two files. Terraform provides
-only the OpenBao-specific substrate (the auto-unseal key); creating the cluster
-is a separate concern (see [Part of a larger platform](#part-of-a-larger-platform)).
+Secrets Operator for sync; a Python apply/agent backend with a SQLite or
+PostgreSQL datastore; and a Svelte 5 web UI that rebrands from two files.
+Terraform provides only the OpenBao-specific substrate (the auto-unseal key);
+creating the cluster is a separate concern (see
+[Part of a larger platform](#part-of-a-larger-platform)).
 The architecture and the decisions behind it are in
 [docs/design.md](docs/design.md); every pinned version is in
 [docs/versions.md](docs/versions.md).
@@ -89,36 +90,62 @@ sequence, and the rest of the phases, are in
 
 ## Status
 
-In development, and feature-complete end to end in code. Implemented and tested:
+All merged on main:
 
-- the OpenBao Helm install and auto-unseal seal rendering (GCP, AWS, Azure, or
-  Shamir), plus the Terraform module for the auto-unseal key;
-- the configuration and apply layer (namespaces, policies, teams, JWT and OIDC
-  auth, KV mounts) as a dry-run-first plan/apply engine with a `ladon` CLI;
-- the External Secrets Operator install and `ClusterSecretStore` /
-  `ExternalSecret` rendering for Kubernetes, GCP Secret Manager, and AWS
-  Secrets Manager;
-- the PostgreSQL datastore (audit, token families, allow list, namespace-request
-  workflow, reveal grants);
-- the MCP agent surface (read and dry-run-first write tools, OAuth 2.1 bearer
-  auth, allow-list gating);
-- the HTTP backend (FastAPI): the UI's routes over the datastore and the vault,
-  identity from a trusted proxy header, namespace membership from the deployment
-  config, migrations at boot, and the built UI served from one process. See
-  [docs/backend.md](docs/backend.md);
-- the Svelte 5 web UI (secrets view with on-demand reveal, create/edit with a
-  dry-run preview, namespace requests, an admin panel), rebrandable from two
-  files;
-- the container image and deploy contract: a digest-pinned multi-stage build
-  carrying the built UI and checksum-verified `helm` and `kubectl`, an image
-  workflow that pushes on a green `main` through workload identity federation,
-  and Kubernetes manifests (identity, least-privilege RBAC, data volume, and
-  default-deny network policies) for a generated deployment or a plain one
-  (`deploy/ladon/`).
+- Apply converges (create / update with a shown diff / already current), reads
+  back every write, blocks instead of destroying; `plan` is offline, `apply`
+  without `--apply` connects and diffs. (PR #59)
+- Teams in config become OpenBao namespaces with the KV mount and team
+  policies inside; team onboarding runs inside the namespace; per-application
+  identities (`app-onboarding`): a read-only policy on the app's prefix, a JWT
+  role pinned to a dedicated service account with no default policy, a
+  ClusterSecretStore scoped to the OpenBao namespace and to the app's
+  Kubernetes namespace by its immutable name label. (PR #61)
+- Cluster documents applied with server-side apply under the `ladon` field
+  manager, read back and verified with strict comparison under
+  `spec.conditions` and the auth block, with an already-current signal; an
+  operator already on the cluster is detected and reused; `install-eso`;
+  `--phase sync` for one ExternalSecret. (PRs #60, #63)
+- The HTTP backend: proxy-header or signed-assertion identity, config group
+  source, the UI's routes, one environment per deployment, audit rows in
+  their own session including denials and 401s, reveal behind a
+  deny-by-default gate, migrations at boot, SQLite or PostgreSQL. (PR #62)
+- Image (pinned by digest, helm/kubectl by checksum, non-root, read-only
+  rootfs), image workflow behind repository variables, deploy contract for
+  the deploy platform (class gateway), standalone manifests, three
+  NetworkPolicies including the link-local DNS rule, a CI image smoke. (PRs
+  #64, #67)
+- The role audit (`scripts/ladon audit`). (PR #65)
+- The machine lane: `POST /api/service/secrets` and `/api/service/sync` per
+  configured OIDC caller, pinned subject and namespaces, attribution via
+  `acting_email`. (PR #66)
+- Apply phases as admin jobs with a restart sweep; namespace-request approval
+  applies the team; MCP denial audit; the SQLite primary-key migration. (PR
+  #68)
 
-Everything above runs and is tested offline (unit tests plus a browser render
-smoke test); the one milestone still ahead is a live end-to-end run against a
-real cluster, OpenBao, and PostgreSQL. See [ROADMAP.md](ROADMAP.md).
+Proven live on a shared development cluster: a single-node vault installed
+from the pinned chart; the full configuration rebuilt from config on a fresh
+vault, with a second run writing nothing and a repointed store updated in
+place; a hand-edited policy diffed and repaired; an existing External Secrets
+Operator detected and reused; the round-trip vault -> store -> ExternalSecret
+-> Secret, and the same ExternalSecret from another namespace refused; the
+acceptance matrix with real projected tokens (own prefix readable, another
+app's prefix and system paths and writes refused, a different service
+account refused with invalid subject, re-onboarding a no-op); the audit
+clean, then a widened default policy caught as HIGH, then clean after
+repair; the backend deployed from the image in the cluster, migrating at
+boot and serving the UI's routes through a port-forward; app onboarding run
+as a job through the admin endpoint.
+
+Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
+sync; reveal step-up not built (gate denies by default); no fleet / second
+cluster; no KMS auto-unseal in the dev shape (the Shamir vault sealed itself
+once during the build with no pod restart: auto-unseal is required beyond
+dev); one process, one replica (the job runner and the allow list are per
+process); the image workflow publishes only once the deployer grants its
+identity; a front door (proxy + assertion) is a deployment step.
+
+See [ROADMAP.md](ROADMAP.md) for the phased plan.
 
 ## Docs
 

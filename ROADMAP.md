@@ -5,6 +5,13 @@ decisions behind it are in [docs/design.md](docs/design.md). The plan is
 deliberately incremental: each phase is releasable and builds on the last.
 Foundations first, quality over velocity.
 
+**2026-09-22:** the platform-vault program proved a dev-shape deployment live
+on a shared development cluster. See
+[docs/specs/2026-09-22-platform-vault-design.md](docs/specs/2026-09-22-platform-vault-design.md)
+and [docs/plans/2026-09-22-platform-vault.md](docs/plans/2026-09-22-platform-vault.md)
+for what ran, and the README's Status section for what is proven versus not
+yet built. The checkboxes below are ticked only for what that program proved.
+
 ## Phase 0: Foundations
 
 Bootstrap the repository with good hygiene before any feature code: license,
@@ -36,27 +43,27 @@ auth methods driven by configuration.
 
 Stand up OpenBao on a single environment with the chosen architecture.
 
-- Pinned Helm install of OpenBao on Integrated Storage (Raft), HA
-- The generic baseline: namespaces, policies, KV engines
-- Auth methods: JWT (workloads) and OIDC (operators); Kubernetes auth is
-  deliberately out of the baseline (D6, [docs/baseline.md](docs/baseline.md))
-- The direct apply tooling with dry-run by default
-- cert-manager for TLS, confirmed and pinned
+- [ ] Pinned Helm install of OpenBao on Integrated Storage (Raft), HA
+- [x] The generic baseline: namespaces, policies, KV engines
+- [ ] Auth methods: JWT (workloads) and OIDC (operators); Kubernetes auth is
+      deliberately out of the baseline (D6, [docs/baseline.md](docs/baseline.md))
+- [x] The direct apply tooling with dry-run by default
+- [ ] cert-manager for TLS, confirmed and pinned
 
 ## Phase 3: Secret sync with ESO
 
 Sync secrets out to the supported targets.
 
-- One agent-driven Helm bootstrap capability that installs the External Secrets
-  Operator on a cluster (pinned chart, CRD-ownership handling, webhook health
-  check), plus a status check. Triggered for the hub cluster at bring-up and per
-  target cluster on demand (D4a). Depends on networking and an ESO auth role, so
-  it follows the deploy baseline.
-- `SecretStore` and `ExternalSecret` rendering for Kubernetes, GCP Secret
-  Manager, and AWS Secrets Manager
-- The gated integration smoke test: a dummy secret round-trips from OpenBao
-  through ESO to a target and back
-- Terraform for the cloud-side resources (IAM, store access)
+- [x] One agent-driven Helm bootstrap capability that installs the External
+      Secrets Operator on a cluster (pinned chart, CRD-ownership handling,
+      webhook health check), plus a status check. Triggered for the hub
+      cluster at bring-up and per target cluster on demand (D4a). Depends on
+      networking and an ESO auth role, so it follows the deploy baseline.
+- [ ] `SecretStore` and `ExternalSecret` rendering for Kubernetes, GCP Secret
+      Manager, and AWS Secrets Manager
+- [x] The gated integration smoke test: a dummy secret round-trips from
+      OpenBao through ESO to a target and back
+- [ ] Terraform for the cloud-side resources (IAM, store access)
 
 Installing ESO onto target clusters from the UI/MCP is surfaced in Phase 4 (the
 UI is a front-end to the same bootstrap capability), once the networking pieces
@@ -66,12 +73,12 @@ are in place.
 
 The custom wrapper application.
 
-- Secrets view: namespaces, paths, key names (never values), sync status
-- Admin surface: manage namespaces, policies, and sync targets
-- Register a target cluster and bootstrap ESO onto it on demand (front-end to
-  the Phase 3 capability), with ESO status
-- OIDC login, reviewed against the web-design-guidelines skill
-- Never displays secret values
+- [x] Secrets view: namespaces, paths, key names (never values), sync status
+- [x] Admin surface: manage namespaces, policies, and sync targets
+- [ ] Register a target cluster and bootstrap ESO onto it on demand (front-end
+      to the Phase 3 capability), with ESO status
+- [ ] OIDC login, reviewed against the web-design-guidelines skill
+- [x] Never displays secret values
 
 ## Phase 5: Agent surface and multi-environment hardening
 

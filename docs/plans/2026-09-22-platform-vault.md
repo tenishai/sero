@@ -23,9 +23,13 @@
 
 ### Task 1: Convergent apply, pinned roles, scoped stores
 
+- [x] Done: PR #59
+
 Already dispatched. Produces: read-diff-write-verify for every op; `bound_issuer`; `token_no_default_policy` + `bound_subject` on roles; `ClusterSecretStore` with `namespace` and `conditions`; docs drift fixed; region literal removed. Its live proof: a second `apply --apply` on the scratch vault reports every op already current; a hand-edited policy is shown as a diff and repaired.
 
 ### Task 2: Namespaces and per-app identities from config
+
+- [x] Done: PR #61
 
 **Files:** `src/ladon/apply/plan.py` (+ new ops), `src/ladon/apply/client.py`, `src/ladon/config/{teams,policies,auth,eso}.py`, new `src/ladon/config/apps.py`, `src/ladon/apply/cli.py`, tests, `docs/baseline.md`, `config/example.yaml`.
 
@@ -37,11 +41,15 @@ Already dispatched. Produces: read-diff-write-verify for every op; `bound_issuer
 
 ### Task 3: Apply manifests to the cluster, install ESO from code, live round-trip
 
+- [x] Done: PR #60, PR #63
+
 **Files:** new `src/ladon/install/k8s.py` (`apply_documents(docs, *, field_manager="ladon", dry_run: bool)` via `kubectl apply --server-side --field-manager --force-conflicts=false -f -`, `--dry-run=server` for the diff; read-back with `kubectl get -o json` and a comparison of the fields we set; API-version probe for ESO CRDs `v1` vs `v1beta1` via `kubectl api-resources`), `src/ladon/install/eso.py` (use the probe; keep pinned chart), `src/ladon/apply/cli.py` (`app-onboarding --apply` applies the OpenBao half then the cluster half), tests with a fake runner.
 
 - `install_eso` first detects an existing operator (`kubectl get deploy -A -l app.kubernetes.io/name=external-secrets`, or the CRD) and, when found, reports its version and skips the install (D18a). Live proof on the scratch vault + dev cluster: the existing operator is detected and reused; onboard a sample app whose Kubernetes namespace is `ladon-sample`; write `kv/apps/sample/demo` (through the CLI's existing MCP write function or `bao kv put` in the pod, values are throwaway); apply an `ExternalSecret`; the Kubernetes Secret appears with the expected keys. Negative: the same `ExternalSecret` in namespace `ladon-other` referencing `ladon-platform-sample` must fail. Record both outcomes in the CHANGELOG.
 
 ### Task 4: The backend
+
+- [x] Done: PR #62
 
 **Files:** new `src/ladon/web/{app,identity,groups,routes_secrets,routes_admin,jobs}.py`, `src/ladon/mcp/openbao.py` (reuse `OpenBaoSecrets` as the service layer), `src/ladon/datastore/*` (+ a `jobs` table and migration), `src/ladon/config/loader.py` (`identity.header`, `groups`, `admins`, `service_callers`), `pyproject.toml` + `uv.lock` (fastapi, uvicorn, python-multipart if needed; pinned), `docs/versions.md`, `ui/` build wired to be served from `LADON_UI_DIST`.
 
@@ -53,6 +61,8 @@ Already dispatched. Produces: read-diff-write-verify for every op; `bound_issuer
 
 ### Task 5: Apply operations as endpoints with background jobs
 
+- [x] Done: PR #68
+
 **Files:** `src/ladon/web/routes_admin.py`, `src/ladon/web/jobs.py`, tests.
 
 - `POST /api/admin/apply/{root-config|team-onboarding|app-onboarding|eso-install}` (admin only) with the same parameters the CLI takes, returning a job id; `GET /api/admin/jobs/{id}` returns state (`queued|running|done|failed`), server-computed elapsed time, and the op-by-op report (`create|update|already current`, never a value). Jobs run in a thread with their own OpenBao client; one job per kind at a time (a second request while one runs answers 409 with the running id). Audit row per job.
@@ -60,20 +70,29 @@ Already dispatched. Produces: read-diff-write-verify for every op; `bound_issuer
 
 ### Task 6: Image, deploy contract, and the platform deploy
 
+- [x] Done: PR #64, PR #67
+
 **Files:** new `Dockerfile` (python:3.14-slim by digest; `helm` and `kubectl` pinned by version and sha256; non-root; `alembic upgrade head` then `uvicorn` in an entrypoint), `.github/workflows/image.yml` (build on `main`, push to a registry named by repository variables, workload identity federation with variables `LADON_IMAGE`, `GCP_WIF_PROVIDER`, `GCP_BUILD_SA`, the same shape the sibling platforms use), new `deploy/ladon/` (`gojira.yaml` class `web`, `k8s/base/` with `ServiceAccount ladon`, a namespaced `Role` on secrets/configmaps and a `ClusterRole` limited to ESO CRDs + namespaces + serviceaccounts in the ESO namespace, `RoleBinding`s, a `PersistentVolumeClaim` for the SQLite dev datastore, an `ExternalSecret`-free bootstrap `Secret` reference for `LADON_DATABASE_URL`/config), `docs/deployment-order.md` (a "platform cluster, single node" path), README status.
 - The deploy platform's contract: `gojira.yaml` with `app: ladon`, `class: web`, `service_account: ladon`, `data_mount` for the PVC, `config_from`/`secrets_from` for the config and bootstrap Secret. Manifests preserved by the platform's generator must be in `k8s/base` and registered in its kustomization.
 - Live proof: image built (locally with `docker build` if the workflow's identity is not yet granted; the workflow is the durable path), pushed, and the backend running in namespace `ladon` on the platform cluster next to the vault (moved out of `ladon-scratch` into `ladon`), reachable through a port-forward, `/healthz` 200, `/api/me` correct for the operator's email.
 
 ### Task 7: The acceptance matrix, live
 
+- [x] Done: proven live 2026-09-22 (see CHANGELOG); not a code task, no PR
+
 Not a code task. Using the deployed backend: onboard a throwaway app through the endpoint; then (a) a token from its ESO role reading another app's prefix gets 403; (b) an `ExternalSecret` in another namespace referencing its store is rejected; (c) a JWT for a different service account against its role fails with an invalid-subject error; (d) a second onboard is a no-op. Record all four in the CHANGELOG. Anything that fails becomes a fix task before Task 8.
 
 ### Task 8: The role audit
+
+- [x] Done: PR #65
 
 **Files:** new `src/ladon/apply/audit.py` (`audit_roles(client, namespace)`: every JWT role's `token_policies`, `token_no_default_policy`, `bound_subject`; the `default` policy's capabilities on `kv/*` and `sys/policies/*`; a finding per deviation), CLI `audit --namespace`, endpoint `GET /api/admin/audit/roles`, tests, docs.
 - Live proof: clean on the platform vault; a deliberately widened `default` policy is reported.
 
 ### Task 9: The machine lane and the first consumer
+
+- [x] Done (ladon machine lane): PR #66
+- [ ] Kobo consumer: in progress (separate repository)
 
 **Files (ladon):** `src/ladon/web/service_lane.py` (`POST /api/service/secrets`: OIDC ID token verified against `service_callers[].issuer` and `audience`, subject allow-listed, `acting_email` required, namespace pinned per subject; same merge semantics; audit row), config, tests with a locally signed token and a JWKS fixture.
 **Files (assembly room, separate repo, its own PR):** a `LadonClient` (`put_secret(namespace, path, data)` + `ensure_external_secret(k8s_namespace, name, path)`) used by the colleague-secret and Slack-secret delivery paths when `ladon_url` is configured, else the existing direct Secret write; the config-token store is NOT moved. Flag off by default.
