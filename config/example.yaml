@@ -106,6 +106,9 @@ access:
 #     audience: https://ladon.example.com/service
 #     subject: system:serviceaccount:ladon:provisioner
 #     # OpenBao namespaces this caller may write in. A nested path is fine.
+#     # Two of them may not end in the same segment: store names are built
+#     # from that segment, so `platform/team-a` and `other/team-a` would name
+#     # the same stores and the lane could not tell their objects apart.
 #     namespaces: [team-a]
 #     # Kubernetes namespaces it may place an ExternalSecret in, beyond the
 #     # application's own name. Empty is the right answer for one application

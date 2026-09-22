@@ -12,6 +12,55 @@ point of view, not a list of commit subjects.
 
 ### Fixed
 
+- The machine lane's `POST /api/service/sync` now has to prove whose
+  ExternalSecret it is writing over, the same way the `DELETE` proves whose it
+  is removing. `app` is a field in the request body and `k8s_namespace`
+  defaults to it, and a server-side apply under Ladon's own field manager
+  takes the fields it sets from Ladon's own earlier apply without a conflict,
+  because as far as the API server can tell that is the manager doing its job.
+  A caller pinned to one OpenBao namespace could therefore write over another
+  team's live ExternalSecret, repoint it at a store it does control, and then
+  pass the delete gate on an object it had just made look like its own. An
+  object that is already there must read through this application's own
+  `ClusterSecretStore` and pull a path inside `apps/<app>/`, or it is a `403`,
+  and Ladon must be among its field managers, or it is a `409`.
+
+  Two corrections to that check while it grew a second caller. It requires
+  `secretStoreRef.kind` to be `ClusterSecretStore`, since ESO's default for a
+  ref that names no kind is the namespaced `SecretStore` and a matching name in
+  a ref of the other kind is a different object. And the refusal no longer
+  echoes the live object's store name, which carries another tenant's team and
+  application: what it names is derived from the request.
+
+- Two namespaces pinned to one machine caller whose last path segments are
+  equal are refused at config load. A store name is built from that segment, so
+  `platform/team-a` and `other/team-a` name the same stores for the same
+  application names, and the check above could not have told one team's object
+  from the other's.
+
+- A cluster delete tells a recreated object from a delete that did not happen.
+  The read-back compared presence alone, so an object somebody created under
+  the same name after the delete read as a failure. The uid recorded before the
+  delete sorts three outcomes: `gone`, `terminating` when a finalizer has not
+  run, and `recreated`. The route carries that through as `state`, with
+  `recreated` spelled out beside it, since a caller that reads `deleted` and
+  stops would be leaving a live ExternalSecret it does not know about. This
+  narrows a window rather than closing it: `kubectl delete` takes no uid
+  precondition.
+
+- An ExternalSecret the delete route's own read found absent is answered there
+  rather than handed to the removal, which reads again: an object created
+  between the two would have been one nothing had checked.
+
+- A create cannot overwrite a path that appeared while it ran. Every surface
+  checks a path is absent before creating one, and the check and the write are
+  two calls; the write now carries KV v2's `cas=0`, so the store refuses it and
+  the caller gets a `409` instead of replacing somebody else's secret. The
+  merge path has a window of the same shape and is not addressed here.
+
+- The machine lane bounds `acting_email` at SMTP's 254 characters. The address
+  pattern says nothing about length and the value reaches an audit row.
+
 - Only a 404 from OpenBao means a secret path is not there. Both reads in
   the OpenBao wrapper swallowed every exception and reported the path as
   absent, so a denial, an expired token or an unreachable vault became
@@ -114,6 +163,12 @@ for the task-by-task record.
   Scope, so nobody has to infer it: this removes one secret and one
   ExternalSecret. An application's ClusterSecretStore, JWT role, read-only
   policy and service account are off-boarding, and still an operator's job.
+
+  A namespace listing says whether it is the whole namespace. The folder walk
+  is bounded at a depth and a count, both of them silent until now, so a
+  namespace with more secrets than the bound answered with a short list that
+  looked exactly like a complete one. The listing carries `truncated`, and the
+  UI says "More secrets than shown" under it.
 
   Reads have a budget of their own, `read_limit_per_minute`, 300 a minute
   against the write budget's 60. A caller watching an application come up
