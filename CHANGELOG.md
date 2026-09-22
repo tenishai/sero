@@ -138,6 +138,38 @@ point of view, not a list of commit subjects.
   documents as YAML. Applying the documents to a cluster is a later step; the
   command prints them and says so, and marks them as not to be applied when the
   OpenBao half did not land.
+- The cluster half is applied by Ladon, and converges like the OpenBao half.
+  `apply --phase app-onboarding --apply` now writes the OpenBao policy and role
+  and then applies the service account and the store to the cluster, in one
+  command; the cluster half is never applied when the OpenBao half did not land,
+  because a store pointing at a role that does not exist fails later, at refresh
+  time, somewhere else. Cluster documents now have the same `already current`
+  no-op signal the OpenBao operations have: every document is read back and
+  compared before anything is written, one that already matches never reaches
+  `kubectl` at all, and a second run of an onboarding writes nothing and says so.
+  What was written is read back again and verified, and a mismatch is an error
+  naming the kind, the object and the field. Without `--apply` the same command
+  sends the documents to the API server as a server-side dry run and reports
+  what that cluster would really do, per document, prefixed `[cluster]`.
+- The rendered store carries the External Secrets custom-resource version the
+  target cluster stores, probed at apply time, rather than a fixed guess that
+  the cluster may reject. `plan` stays offline and keeps rendering the current
+  version; it is not allowed to dial a cluster.
+- Applying an application onto a cluster with no External Secrets operator is
+  refused before anything at all is written, naming `install-eso` as the fix:
+  nothing would read the store that onboarding renders.
+- `scripts/ladon install-eso [--apply] [--namespace NS]` puts the operator on
+  the cluster, or reports and reuses the one already running on it and the
+  custom-resource version it stores (D18a). The reuse path existed; nothing but
+  a test could reach it.
+- `apply --phase sync` renders and applies one `ExternalSecret` that carries a
+  KV path into the Kubernetes Secret a workload already reads, through the store
+  the application's onboarding created (`--team`, `--app`, `--path`,
+  `--k8s-namespace`, `--name`, and `--target-name` when the Secret's name
+  differs). The store is named through the same function that named it at
+  onboarding, so the two cannot disagree, and a path outside the application's
+  own prefix is refused: its identity cannot read one, so the document would
+  look right and be denied at refresh time, in the operator's logs, later.
 
 ### Changed
 
