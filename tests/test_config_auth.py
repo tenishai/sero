@@ -15,10 +15,27 @@ def test_jwt_auth_minimal_needs_no_secret():
     method = jwt_auth(discovery_url="https://kube.example.com")
     assert method.type == "jwt"
     assert method.path == "jwt"
-    assert method.config == {"oidc_discovery_url": "https://kube.example.com"}
     assert method.roles == ()
     # JWT verifies via the provider's published keys: no secret is configured.
     assert not any("secret" in k for k in method.config)
+
+
+def test_jwt_auth_bounds_the_issuer_to_the_discovery_url_by_default():
+    # An unbound issuer accepts any token whose signature the discovery keys
+    # verify, so the default must pin it.
+    method = jwt_auth(discovery_url="https://kube.example.com")
+    assert method.config == {
+        "oidc_discovery_url": "https://kube.example.com",
+        "bound_issuer": "https://kube.example.com",
+    }
+
+
+def test_jwt_auth_bound_issuer_can_differ_from_the_discovery_url():
+    method = jwt_auth(
+        discovery_url="https://kube.example.com/.well-known/openid-configuration",
+        bound_issuer="https://kube.example.com",
+    )
+    assert method.config["bound_issuer"] == "https://kube.example.com"
 
 
 def test_jwt_auth_optional_issuer_and_default_role():
@@ -48,6 +65,13 @@ def test_jwt_role_binds_eso_service_account_subject():
     assert role.data["bound_subject"] == ("system:serviceaccount:external-secrets:external-secrets")
     assert role.data["bound_audiences"] == ["bao"]
     assert role.data["token_ttl"] == "1h"
+
+
+def test_jwt_role_never_inherits_the_namespace_default_policy():
+    # The default policy is not narrow and grows over time; a scoped role that
+    # inherits it is decorative.
+    role = jwt_role("eso", policies=["p"], bound_audiences=["bao"])
+    assert role.data["token_no_default_policy"] is True
 
 
 def test_jwt_role_requires_a_binding():

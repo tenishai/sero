@@ -76,6 +76,10 @@ def jwt_role(
         "user_claim": user_claim,
         "token_policies": list(policies),
         "token_ttl": ttl,
+        # Without this the role also carries the namespace's "default" policy,
+        # whose grants are outside Ladon's control and tend to widen over time.
+        # A scoped workload role must carry only the policies named here.
+        "token_no_default_policy": True,
     }
     if bound_audiences:
         data["bound_audiences"] = list(bound_audiences)
@@ -98,12 +102,18 @@ def jwt_auth(
     in the Kubernetes case); OpenBao fetches the signing keys from it, so no
     secret is configured. Each cluster gets its own JWT mount (its own ``path``)
     bound to that cluster's issuer.
+
+    ``bound_issuer`` defaults to ``discovery_url``: an empty bound issuer accepts
+    any token the discovery keys verify, which is wider than the one issuer this
+    mount exists for. Pass it explicitly only when the issuer claim differs from
+    the discovery URL.
     """
     if not discovery_url:
         raise ConfigError("jwt auth requires a non-empty 'discovery_url'")
-    config: dict = {"oidc_discovery_url": discovery_url}
-    if bound_issuer:
-        config["bound_issuer"] = bound_issuer
+    config: dict = {
+        "oidc_discovery_url": discovery_url,
+        "bound_issuer": bound_issuer or discovery_url,
+    }
     if default_role:
         config["default_role"] = default_role
     return AuthMethod(

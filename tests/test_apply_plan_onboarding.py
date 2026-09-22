@@ -51,15 +51,27 @@ def test_oidc_config_uses_discovery_url_as_bound_issuer_and_default_role():
     assert config["default_role"] == DEFAULT_ESO_ROLE
 
 
-def test_role_is_audience_bound_to_the_policy():
+def test_role_is_bound_to_the_eso_service_account_and_the_policy():
     plan = team_onboarding_plan(cluster="team-a", oidc_discovery_url=ISSUER)
     role = next(o for o in plan.ops if o.kind == "write-auth-role").data
     assert role["role_type"] == "jwt"
     assert role["bound_audiences"] == [DEFAULT_ESO_AUDIENCE]
     assert role["token_policies"] == [DEFAULT_ESO_POLICY]
     assert role["user_claim"] == "sub"
-    # An open role (no bound_subject) scoped by the per-cluster mount, per source.
-    assert "bound_subject" not in role
+    # The audience alone is forgeable by any workload in the cluster that can
+    # mint a token for it, so the subject pins the role to the ESO identity.
+    assert role["bound_subject"] == "system:serviceaccount:external-secrets:external-secrets"
+    assert role["token_no_default_policy"] is True
+
+
+def test_eso_namespace_is_a_parameter():
+    plan = team_onboarding_plan(
+        cluster="team-a",
+        oidc_discovery_url=ISSUER,
+        eso_namespace="secrets-operator",
+    )
+    role = next(o for o in plan.ops if o.kind == "write-auth-role").data
+    assert role["bound_subject"] == "system:serviceaccount:secrets-operator:external-secrets"
 
 
 def test_policy_hcl_matches_baseline_eso_read_grant():
