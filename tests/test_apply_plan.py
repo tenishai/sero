@@ -11,6 +11,7 @@ from ladon.apply.plan import (
     Plan,
     WriteOp,
     auth_method_ops,
+    ensure_namespace_op,
     kv_mount_ops,
     policy_ops,
     root_config_plan,
@@ -21,7 +22,7 @@ from ladon.config.policies import (
     team_readonly,
     team_readwrite,
 )
-from ladon.config.teams import ConfigError
+from ladon.config.teams import ConfigError, Team
 
 
 def sample_auth_methods():
@@ -150,3 +151,80 @@ def test_plan_render_is_value_free_and_one_line_per_op():
 def test_empty_plan_renders_explanation():
     assert Plan().render() == "(empty plan: no operations)"
     assert len(Plan()) == 0
+
+
+# Namespaces ------------------------------------------------------------------
+
+
+def teams():
+    return [
+        Team(name="team-a", namespace="team-a", environments=("dev",)),
+        Team(name="team-b", namespace="ns-b", environments=("dev",)),
+    ]
+
+
+def test_ensure_namespace_op_targets_the_namespaces_own_path():
+    op = ensure_namespace_op("team-a")
+    assert op.kind == "ensure-namespace"
+    assert op.path == "sys/namespaces/team-a"
+    # Created from the parent it lives under, so the op itself is unscoped.
+    assert op.namespace is None
+    assert op.summary() == "ensure-namespace sys/namespaces/team-a"
+
+
+def test_a_namespaced_op_shows_its_namespace_in_the_summary():
+    op = WriteOp(kind="enable-secrets-engine", path="sys/mounts/kv", namespace="team-a")
+    assert op.summary() == "[team-a] enable-secrets-engine sys/mounts/kv"
+
+
+def test_root_config_creates_each_team_namespace_and_its_contents():
+    plan = root_config_plan(policies=[], auth_methods=[], teams=teams())
+    summaries = [op.summary() for op in plan.ops]
+    assert summaries[1:] == [
+        "ensure-namespace sys/namespaces/team-a",
+        "[team-a] enable-secrets-engine sys/mounts/kv",
+        "[team-a] write-policy sys/policies/acl/team-readwrite",
+        "[team-a] write-policy sys/policies/acl/team-readonly",
+        "[team-a] write-policy sys/policies/acl/external-secrets-read",
+        "ensure-namespace sys/namespaces/ns-b",
+        "[ns-b] enable-secrets-engine sys/mounts/kv",
+        "[ns-b] write-policy sys/policies/acl/team-readwrite",
+        "[ns-b] write-policy sys/policies/acl/team-readonly",
+        "[ns-b] write-policy sys/policies/acl/external-secrets-read",
+    ]
+
+
+def test_the_namespace_is_created_before_anything_is_mounted_in_it():
+    plan = root_config_plan(policies=[], auth_methods=[], teams=teams())
+    kinds = [op.kind for op in plan.ops]
+    first_team_op = kinds.index("ensure-namespace")
+    assert all(op.namespace is None for op in plan.ops[:first_team_op])
+    assert plan.ops[first_team_op + 1].namespace == "team-a"
+
+
+def test_root_objects_are_unchanged_by_teams():
+    without = root_config_plan(policies=[team_readwrite()], auth_methods=sample_auth_methods())
+    with_teams = root_config_plan(
+        policies=[team_readwrite()], auth_methods=sample_auth_methods(), teams=teams()
+    )
+    assert with_teams.ops[: len(without)] == without.ops
+
+
+def test_team_policies_follow_the_deployments_kv_mount():
+    plan = root_config_plan(policies=[], auth_methods=[], teams=teams(), kv_mount="team-kv")
+    team_ops = [op for op in plan.ops if op.namespace == "team-a"]
+    assert team_ops[0].path == "sys/mounts/team-kv"
+    assert "team-kv/data/*" in team_ops[1].data["policy"]
+
+
+def test_the_same_policy_name_in_two_namespaces_is_not_a_duplicate():
+    # Duplicates collide only within one namespace; team-readwrite exists once
+    # per team by design.
+    plan = root_config_plan(policies=[team_readwrite()], auth_methods=[], teams=teams())
+    # The root mount and its one policy, then five ops for each of two teams.
+    assert len(plan) == 2 + 2 * 5
+
+
+def test_a_policy_name_repeated_in_one_namespace_is_still_rejected():
+    with pytest.raises(ConfigError, match="duplicate policy name"):
+        root_config_plan(policies=[team_readonly(), team_readonly()], auth_methods=[])

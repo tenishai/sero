@@ -10,9 +10,17 @@ import pytest
 
 from fake_openbao import FakeOpenBao
 from ladon.apply.executor import ApplyError, apply_plan
-from ladon.apply.plan import Plan, WriteOp, root_config_plan, team_onboarding_plan
+from ladon.apply.plan import (
+    Plan,
+    WriteOp,
+    app_onboarding_plan,
+    root_config_plan,
+    team_onboarding_plan,
+)
+from ladon.config.apps import app_identity
 from ladon.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
 from ladon.config.policies import external_secrets_read, team_readwrite
+from ladon.config.teams import Team
 
 ISSUER = "https://issuer.example/.well-known/openid-configuration"
 
@@ -400,3 +408,114 @@ def test_a_block_anywhere_stops_the_whole_apply_before_any_write():
     assert client.calls == []
     assert result.applied == ()
     assert [d.summary for d in result.blocked] == ["enable-auth-method sys/auth/jwt"]
+
+
+# Namespaces ------------------------------------------------------------------
+
+
+def team_plan():
+    return root_config_plan(
+        policies=[],
+        auth_methods=[],
+        teams=[
+            Team(name="team-a", namespace="team-a", environments=("dev",)),
+            Team(name="team-b", namespace="team-b", environments=("dev",)),
+        ],
+    )
+
+
+def test_a_namespace_is_created_when_absent_and_current_afterwards():
+    client = FakeOpenBao()
+    result = apply_plan(team_plan(), client=client, apply=True)
+
+    assert actions(result)[1] == "create"
+    assert client.namespaces == {"team-a", "team-b"}
+
+    again = apply_plan(team_plan(), client=client, apply=True)
+    assert actions(again) == ["already current"] * len(team_plan())
+    assert again.applied == ()
+
+
+def test_an_existing_namespace_is_never_recreated():
+    client = FakeOpenBao(namespaces={"team-a"})
+    result = apply_plan(team_plan(), client=client, apply=True)
+
+    created = [c for c in client.calls if c[0] == "create_namespace"]
+    assert [c[1] for c in created] == ["team-b"]
+    assert result.diffs[1].action == "already current"
+
+
+def test_every_namespaced_read_and_write_carries_the_namespace():
+    client = FakeOpenBao()
+    apply_plan(team_plan(), client=client, apply=True)
+
+    # The namespace is the last element of each recorded read and write.
+    assert ("create_namespace", "team-a", None) in client.calls
+    assert ("enable_secrets_engine", "kv", "kv", {"version": "2"}, "team-a") in client.calls
+    assert ("list_mounted_secrets_engines", "team-a") in client.reads
+    assert [c for c in client.calls if c[-1] == "team-b"]
+
+
+def test_the_namespace_header_is_restored_after_each_op():
+    client = FakeOpenBao()
+    apply_plan(team_plan(), client=client, apply=True)
+    assert client.adapter.namespace is None
+
+
+def test_the_same_mount_in_two_namespaces_is_two_objects():
+    # Without per-namespace state a second team would read as already current
+    # and never get its own KV mount.
+    client = FakeOpenBao()
+    apply_plan(team_plan(), client=client, apply=True)
+
+    mounts = [c for c in client.calls if c[0] == "enable_secrets_engine"]
+    assert [c[-1] for c in mounts] == [None, "team-a", "team-b"]
+
+
+def test_a_namespaced_policy_drift_is_repaired_in_its_own_namespace():
+    client = FakeOpenBao()
+    apply_plan(team_plan(), client=client, apply=True)
+    client.state("team-b").policies["team-readonly"] = 'path "kv/data/*" {\n}\n'
+
+    result = apply_plan(team_plan(), client=client, apply=True)
+    assert result.applied == ("[team-b] write-policy sys/policies/acl/team-readonly",)
+
+
+def test_a_client_that_cannot_scope_a_namespace_is_refused():
+    class Unscopable:
+        """A hand-rolled client with no namespace header to set."""
+
+    plan = team_onboarding_plan(cluster="cluster-a", oidc_discovery_url=ISSUER, namespace="team-a")
+    # Refused before the first request, rather than quietly writing to the root.
+    with pytest.raises(ApplyError, match="namespace"):
+        apply_plan(plan, client=Unscopable(), apply=True)
+
+
+def test_an_op_namespace_nests_under_the_clients_own():
+    # X-Vault-Namespace is a path: a client already scoped to a parent runs the
+    # op in the child below it, not in a sibling of the parent.
+    client = FakeOpenBao(namespace="platform")
+    plan = team_onboarding_plan(cluster="cluster-a", oidc_discovery_url=ISSUER, namespace="team-a")
+    apply_plan(plan, client=client, apply=True)
+
+    assert {c[-1] for c in client.calls} == {"platform/team-a"}
+    assert client.adapter.namespace == "platform"
+
+
+# App onboarding --------------------------------------------------------------
+
+
+def app_plan():
+    return app_onboarding_plan(app_identity(team="team-a", app="sample", cluster="cluster-a"))
+
+
+def test_app_onboarding_converges_inside_the_team_namespace():
+    client = FakeOpenBao()
+    result = apply_plan(app_plan(), client=client, apply=True)
+
+    assert actions(result) == ["create", "create"]
+    assert "eso-sample-readonly" in client.state("team-a").policies
+    assert {c[-1] for c in client.calls} == {"team-a"}
+
+    again = apply_plan(app_plan(), client=client, apply=True)
+    assert actions(again) == ["already current", "already current"]

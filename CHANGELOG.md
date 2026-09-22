@@ -109,6 +109,27 @@ point of view, not a list of commit subjects.
   CI job runs fmt and validate; pins Terraform, the Google provider, the KMS
   module, and `hashicorp/setup-terraform`.
 
+- Team namespaces are created from the deployment config. Root config now
+  ensures `sys/namespaces/<namespace>` for every team in `teams:` and then,
+  inside each namespace, enables the KV v2 mount the config names and writes
+  `team-readwrite`, `team-readonly` and `external-secrets-read`. A namespace is
+  only ever created, never deleted, and a second run reports it already current
+  like every other operation. No config change is needed: the teams a deployment
+  already lists are the namespaces it gets.
+- Per-application ESO identities (`ladon.config.apps`, `ladon apply --phase
+  app-onboarding --team <t> --app <a> --cluster <c>`): one application gets one
+  path prefix (`kv/apps/<app>/...`), a policy `eso-<app>-readonly` granting read
+  on that prefix and the four token self paths and nothing else, a JWT role
+  `eso-<team>-<app>` carrying only that policy and bound by subject to a
+  service account created for that application alone, a `ServiceAccount` in
+  Ladon's own namespace, and a `ClusterSecretStore ladon-<team>-<app>` admitted
+  into one Kubernetes namespace. A team namespace holds every application a team
+  runs, so a single team-wide identity let one compromised workload read its
+  neighbours' secrets. `--k8s-namespace`, `--sa-namespace` and `--audience`
+  default sensibly; the plan prints the OpenBao operations and then the cluster
+  documents as YAML. Applying the documents to a cluster is a later step; the
+  command prints them and says so.
+
 ### Changed
 
 - Apply model refined into three separated, agent-driven layers, each with its
@@ -185,6 +206,15 @@ point of view, not a list of commit subjects.
   actually stores (`v1` or `v1beta1`) rather than at a version assumed from the
   chart. This is the API mismatch deployment-order.md warns about, now
   answerable at runtime. An absent CRD is an error, not an older version.
+- Every apply operation carries the OpenBao namespace it runs in, and the
+  executor sets the namespace header for that operation's read, write and
+  read-back before restoring it. One connection therefore serves a whole plan
+  across many namespaces, and an operation is always diffed against the state in
+  the namespace it would be written to: the same mount name in two namespaces is
+  two objects, not one. Team onboarding now runs inside the team's namespace for
+  this reason, and `--namespace` names the namespace the operations run in
+  rather than scoping the connection. The rendered plan shows the namespace on
+  each line, so two identical paths in two namespaces can be told apart.
 
 ### Fixed
 

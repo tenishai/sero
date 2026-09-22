@@ -201,17 +201,24 @@ def test_apply_with_flag_reports_connection_error(monkeypatch):
     assert code == 2
 
 
-def test_apply_passes_namespace_to_connection(monkeypatch):
+def test_the_namespace_travels_on_the_ops_not_on_the_connection(monkeypatch):
+    # The plan says which namespace each op runs in, so one connection serves a
+    # whole plan and a root op and a team op cannot be confused for each other.
     seen = {}
 
     def fake_connect(conn, credential, **k):
-        seen["namespace"] = conn.namespace
+        seen["connection_namespace"] = conn.namespace
         return "C"
 
     monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
     monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
     monkeypatch.setattr(cli, "connect", fake_connect)
-    monkeypatch.setattr(cli, "apply_plan", lambda plan, **k: ApplyResult(applied=(), dry_run=False))
+
+    def record(plan, **k):
+        seen["op_namespaces"] = [o.namespace for o in plan.ops]
+        return ApplyResult(applied=(), dry_run=False)
+
+    monkeypatch.setattr(cli, "apply_plan", record)
 
     run(
         [
@@ -219,7 +226,7 @@ def test_apply_passes_namespace_to_connection(monkeypatch):
             "--phase",
             "team-onboarding",
             "--cluster",
-            "team-a",
+            "cluster-a",
             "--oidc-discovery-url",
             ISSUER,
             "--namespace",
@@ -227,7 +234,8 @@ def test_apply_passes_namespace_to_connection(monkeypatch):
             "--apply",
         ]
     )
-    assert seen["namespace"] == "team-a"
+    assert seen["connection_namespace"] is None
+    assert seen["op_namespaces"] == ["team-a"] * 4
 
 
 def test_no_subcommand_errors():
@@ -287,75 +295,53 @@ def test_explicit_kv_mount_overrides_config(tmp_path):
     assert "sys/mounts/override-kv" in text
 
 
-def test_team_onboarding_namespace_resolved_from_config(tmp_path, monkeypatch):
+def test_team_onboarding_namespace_resolved_from_config(tmp_path):
     cfg = write_config(tmp_path)
-    seen = {}
-
-    def fake_connect(conn, credential, **k):
-        seen["namespace"] = conn.namespace
-        return "C"
-
-    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
-    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
-    monkeypatch.setattr(cli, "connect", fake_connect)
-    monkeypatch.setattr(cli, "apply_plan", lambda plan, **k: ApplyResult(applied=(), dry_run=False))
-
-    code, _ = run(
+    code, text = run(
         [
-            "apply",
+            "plan",
             "--phase",
             "team-onboarding",
             "--cluster",
-            "team-a",
+            "cluster-a",
             "--oidc-discovery-url",
             ISSUER,
             "--config",
             cfg,
             "--team",
             "team-a",
-            "--apply",
         ]
     )
     assert code == 0
-    assert seen["namespace"] == "ns-a"
+    assert "[ns-a] enable-auth-method sys/auth/jwt-cluster-a" in text
 
 
-def test_team_flag_without_config_errors(monkeypatch):
-    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
-    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+def test_team_flag_without_config_errors():
     code, _ = run(
         [
-            "apply",
+            "plan",
             "--phase",
             "team-onboarding",
             "--cluster",
-            "team-a",
+            "cluster-a",
             "--oidc-discovery-url",
             ISSUER,
             "--team",
             "team-a",
-            "--apply",
         ]
     )
     assert code == 2  # --team requires --config
 
 
-def test_explicit_namespace_beats_team_resolution(tmp_path, monkeypatch):
+def test_explicit_namespace_beats_team_resolution(tmp_path):
     cfg = write_config(tmp_path)
-    seen = {}
-    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
-    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
-    monkeypatch.setattr(
-        cli, "connect", lambda conn, cred, **k: seen.setdefault("ns", conn.namespace) or "C"
-    )
-    monkeypatch.setattr(cli, "apply_plan", lambda plan, **k: ApplyResult(applied=(), dry_run=False))
-    run(
+    code, text = run(
         [
-            "apply",
+            "plan",
             "--phase",
             "team-onboarding",
             "--cluster",
-            "team-a",
+            "cluster-a",
             "--oidc-discovery-url",
             ISSUER,
             "--config",
@@ -364,7 +350,158 @@ def test_explicit_namespace_beats_team_resolution(tmp_path, monkeypatch):
             "team-a",
             "--namespace",
             "explicit-ns",
+        ]
+    )
+    assert code == 0
+    assert "[explicit-ns] enable-auth-method" in text
+
+
+# Namespaces and app onboarding -----------------------------------------------
+
+
+def test_root_config_creates_the_teams_from_config(tmp_path):
+    cfg = write_config(tmp_path)
+    code, text = run(
+        ["plan", "--phase", "root-config", "--jwt-discovery-url", ISSUER, "--config", cfg]
+    )
+    assert code == 0
+    assert "ensure-namespace sys/namespaces/ns-a" in text
+    assert "[ns-a] enable-secrets-engine sys/mounts/team-kv" in text
+    assert "[ns-a] write-policy sys/policies/acl/external-secrets-read" in text
+
+
+def test_root_config_without_a_config_has_no_teams():
+    code, text = run(["plan", "--phase", "root-config", "--jwt-discovery-url", ISSUER])
+    assert code == 0
+    assert "ensure-namespace" not in text
+
+
+def test_plan_app_onboarding_prints_both_halves(monkeypatch):
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setattr(cli, "connect", refuse_to_connect)
+    code, text = run(
+        [
+            "plan",
+            "--phase",
+            "app-onboarding",
+            "--team",
+            "team-a",
+            "--app",
+            "sample",
+            "--cluster",
+            "cluster-a",
+        ]
+    )
+    assert code == 0
+    openbao, cluster = text.split("Cluster documents")
+    assert openbao.strip().splitlines()[-2:] == [
+        "[team-a] write-policy sys/policies/acl/eso-sample-readonly",
+        "[team-a] write-auth-role auth/jwt-cluster-a/role/eso-team-a-sample",
+    ]
+    assert "kind: ServiceAccount" in cluster
+    assert "kind: ClusterSecretStore" in cluster
+    assert "name: ladon-team-a-sample" in cluster
+    # The store is the one Task 3 applies; nothing here touches the cluster.
+    assert "capabilities" not in openbao
+
+
+def test_app_onboarding_namespace_comes_from_the_config(tmp_path, monkeypatch):
+    cfg = write_config(tmp_path)
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    code, text = run(
+        [
+            "plan",
+            "--phase",
+            "app-onboarding",
+            "--team",
+            "team-a",
+            "--app",
+            "sample",
+            "--cluster",
+            "cluster-a",
+            "--config",
+            cfg,
+        ]
+    )
+    assert code == 0
+    assert "[ns-a] write-policy sys/policies/acl/eso-sample-readonly" in text
+    assert "namespace: ns-a" in text
+    assert "path: team-kv" in text
+
+
+def test_app_onboarding_kubernetes_namespaces_are_flags(monkeypatch):
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    code, text = run(
+        [
+            "plan",
+            "--phase",
+            "app-onboarding",
+            "--team",
+            "team-a",
+            "--app",
+            "sample",
+            "--cluster",
+            "cluster-a",
+            "--k8s-namespace",
+            "ladon-sample",
+            "--sa-namespace",
+            "ladon-system",
+            "--audience",
+            "ladon",
+        ]
+    )
+    assert code == 0
+    assert "kubernetes.io/metadata.name: ladon-sample" in text
+    assert "namespace: ladon-system" in text
+    assert "- ladon" in text
+
+
+def test_app_onboarding_requires_an_app_and_a_team():
+    code, _ = run(["plan", "--phase", "app-onboarding", "--cluster", "cluster-a"])
+    assert code == 2
+
+
+def test_app_onboarding_needs_a_server_for_the_store(monkeypatch):
+    monkeypatch.delenv("BAO_ADDR", raising=False)
+    monkeypatch.delenv("VAULT_ADDR", raising=False)
+    code, _ = run(
+        [
+            "plan",
+            "--phase",
+            "app-onboarding",
+            "--team",
+            "team-a",
+            "--app",
+            "sample",
+            "--cluster",
+            "cluster-a",
+        ]
+    )
+    assert code == 2
+
+
+def test_apply_app_onboarding_applies_the_openbao_half_only(monkeypatch):
+    client = FakeOpenBao()
+    monkeypatch.setenv("BAO_ADDR", "https://bao.example:8200")
+    monkeypatch.setenv("BAO_TOKEN", "s.realtoken")
+    monkeypatch.setattr(cli, "connect", lambda conn, cred, **k: client)
+
+    code, text = run(
+        [
+            "apply",
+            "--phase",
+            "app-onboarding",
+            "--team",
+            "team-a",
+            "--app",
+            "sample",
+            "--cluster",
+            "cluster-a",
             "--apply",
         ]
     )
-    assert seen["ns"] == "explicit-ns"
+    assert code == 0
+    assert "eso-sample-readonly" in client.state("team-a").policies
+    assert "kind: ClusterSecretStore" in text
+    # Applying the cluster half is Task 3; the documents are printed, not applied.
+    assert "not applied" in text

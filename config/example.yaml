@@ -31,8 +31,12 @@ deployment:
     #   vault_name: <key-vault-name>
     #   key_name: <unseal-key-name>
 
-# Teams. Each becomes a namespace with the baseline policy set. An empty list is
-# valid: the platform still has its root.
+# Teams. Root config creates a namespace per team and, inside it, the KV v2
+# mount above plus the baseline policies (team-readwrite, team-readonly,
+# external-secrets-read). An empty list is valid: the platform still has its
+# root. Applications are not listed here; each is onboarded by command
+# (`ladon plan --phase app-onboarding --team <t> --app <a> --cluster <c>`),
+# which renders that application's own policy, role, service account and store.
 teams:
   - name: team-a
     namespace: team-a
