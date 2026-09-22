@@ -103,7 +103,13 @@ In development, and feature-complete end to end in code. Implemented and tested:
   [docs/backend.md](docs/backend.md);
 - the Svelte 5 web UI (secrets view with on-demand reveal, create/edit with a
   dry-run preview, namespace requests, an admin panel), rebrandable from two
-  files.
+  files;
+- the container image and deploy contract: a digest-pinned multi-stage build
+  carrying the built UI and checksum-verified `helm` and `kubectl`, an image
+  workflow that pushes on a green `main` through workload identity federation,
+  and Kubernetes manifests (identity, least-privilege RBAC, data volume, and
+  default-deny network policies) for a generated deployment or a plain one
+  (`deploy/ladon/`).
 
 Everything above runs and is tested offline (unit tests plus a browser render
 smoke test); the one milestone still ahead is a live end-to-end run against a

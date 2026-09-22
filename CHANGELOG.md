@@ -200,6 +200,50 @@ point of view, not a list of commit subjects.
   reported as drift by its field path and re-applied. Everywhere else the subset
   rule stands, because a live object legitimately carries what the API server
   and its controllers put there.
+- A container image for the backend (`Dockerfile`, `.dockerignore`). A
+  multi-stage build: the Svelte UI is built with node and copied in as static
+  files, the dependency set is exported from `uv.lock` and installed with
+  `pip --require-hashes` so the image carries exactly the lock, and `helm` and
+  `kubectl` are downloaded at their pinned versions and verified against the
+  published sha256 for the architecture being built. Every base image is pinned
+  by digest rather than tag, and the runtime stage upgrades its packages at
+  build time: a base image is only as fresh as the day it was built, and a stale
+  base ships every CVE patched since. The image runs as an unprivileged user
+  (uid 10001), points `helm` and `kubectl` at a writable scratch path so it can
+  run with a read-only root filesystem, and starts with `python -m ladon.web`,
+  which migrates the datastore before it serves.
+- An image workflow (`.github/workflows/image.yml`) that builds and pushes on a
+  green `main`. It is triggered by the CI workflow completing, not by the push
+  itself, so an image only ever exists for a commit whose checks passed. It
+  authenticates through workload identity federation, holds no long-lived
+  credential, and reads the registry, the identity provider, and the build
+  service account from repository variables, so nothing deployment-specific
+  appears in the repository. The tag is the short commit sha.
+- A deploy contract and manifests (`deploy/ladon/`). `gojira.yaml` describes the
+  workload for a deployment platform whose generator emits the Deployment and
+  Service; `k8s/base/` holds what that generator preserves (the service account,
+  a namespaced Role over Secrets, ConfigMaps and ServiceAccounts, a ClusterRole
+  limited to the ESO custom resources plus the namespace, CRD and Deployment
+  reads the install layer needs, a 1Gi data volume, and default-deny network
+  policies); `standalone/` holds a plain Deployment and Service for a cluster
+  where that platform is not in use. Both read the same ConfigMap, Secret, and
+  volume, so an instance moves between them without the application noticing.
+  The Service is ClusterIP in both, and the network policy admits the backend
+  only from a namespace labelled `ladon.dev/proxy=true`: there is no login form,
+  the backend trusts an identity header a proxy sets, and anything that can
+  reach it directly can claim any identity. `deploy/ladon/README.md` documents
+  the bootstrap Secret's two keys, the ConfigMap's one key, and why neither of
+  those two properties is optional.
+- `scripts/validate-deploy.sh`, wired into CI, checking both halves of the
+  deploy directory without applying anything. With a reachable cluster it runs
+  `kubectl apply --dry-run=client` for full schema validation; with none (CI) it
+  falls back to proving the kustomization builds and every document decodes, and
+  says which mode it ran in, so a green run never overstates what it proved.
+- A "platform cluster, single node" path in `docs/deployment-order.md`: the
+  short bring-up for one cluster operating one vault, from the namespace through
+  the pinned chart, the manual initialize and unseal, the backend's own objects,
+  the config and bootstrap Secret, the workload, and a port-forward for a first
+  look. It says what it deliberately leaves out.
 
 Proven live on a shared development cluster, against the platform vault:
 

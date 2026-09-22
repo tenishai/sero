@@ -215,6 +215,151 @@ namespace plus its baseline policies, auth roles, and KV mount through the confi
 layer. An empty platform (zero teams) is valid; teams are added entirely from
 configuration over time.
 
+## Platform cluster, single node
+
+The phases above describe the full sequence, across clouds and clusters and
+teams. A platform cluster that operates one dedicated OpenBao does not need all
+of it, and bringing one up should not require reading all of it either. This is
+the short path: one cluster, one namespace, one node's worth of vault, and the
+backend running beside it.
+
+It is the D13a shape. Raft on a single node with Shamir unseal, no cloud KMS,
+no HA. KMS auto-unseal and more replicas come later by configuration; nothing
+in the consumer contract depends on either.
+
+Everything below runs in one namespace, `ladon`, and every angle-bracketed
+value is a placeholder.
+
+### 1. The namespace
+
+```
+kubectl create namespace ladon
+```
+
+### 2. OpenBao, from the pinned chart
+
+The base values plus the dev overlay: single node, Shamir, small volumes. Use
+the exact chart version from [versions.md](versions.md); never a floating
+chart.
+
+```
+helm repo add openbao https://openbao.github.io/openbao-helm
+helm repo update openbao
+
+helm upgrade --install ladon-openbao openbao/openbao \
+  --version <pinned-chart-version> \
+  --namespace ladon \
+  -f deploy/openbao/values/values-base.yaml \
+  -f deploy/openbao/values/values-dev.yaml \
+  --dry-run
+
+# Same command without --dry-run once the render is what you expect.
+```
+
+### 3. Initialize and unseal (manual, one-time)
+
+This is phase 3 above, unchanged and still the one irreducibly manual step.
+With Shamir there is no KMS to unseal for you, so the pod needs unsealing again
+after every restart.
+
+```
+kubectl -n ladon exec -it ladon-openbao-0 -- bao operator init
+kubectl -n ladon exec -it ladon-openbao-0 -- bao operator unseal
+```
+
+Record the recovery shares and the initial root token the way you would any
+break-glass material. They do not belong in the cluster, in this repository, or
+in a terminal scrollback you keep.
+
+### 4. The backend's own objects
+
+Identity, RBAC, the data volume, and the network policies:
+
+```
+kubectl apply -k deploy/ladon/k8s/base
+```
+
+Then label the namespace your ingress proxy runs in, or the network policy will
+keep everything out, including the proxy:
+
+```
+kubectl label namespace <proxy-namespace> ladon.dev/proxy=true
+```
+
+The API-server egress rule carries a placeholder address range that routes
+nowhere. Replace it with your cluster's control plane endpoint before the
+cluster-apply layer is used, or that layer will hang rather than fail loudly.
+See [../deploy/ladon/README.md](../deploy/ladon/README.md).
+
+### 5. The config and the bootstrap Secret
+
+The ConfigMap holds names only, so it can be created from the example and
+edited:
+
+```
+kubectl -n ladon create configmap ladon-config \
+  --from-file=config.yaml=config/example.yaml
+```
+
+The Secret holds the two values the backend cannot get from anywhere else: the
+datastore URL, and the token that lets it reach OpenBao. Create it from a file
+or an environment variable rather than typing values on a command line, where
+they land in shell history.
+
+```
+kubectl -n ladon create secret generic ladon-bootstrap \
+  --from-literal=LADON_DATABASE_URL=sqlite:////data/ladon.db \
+  --from-file=BAO_TOKEN=<path-to-a-file-holding-the-token>
+```
+
+Delete the file afterwards. The token is the one credential in the deployment
+that OpenBao cannot issue to itself.
+
+### 6. The backend
+
+On a cluster running the deployment platform, `deploy/ladon/gojira.yaml` is the
+whole of it: the generator emits the Deployment and Service from that contract,
+and the manifests from step 4 are preserved alongside.
+
+On a cluster without it, apply the standalone pair. Set the image to the tag the
+image workflow pushed (the short commit sha) and `BAO_ADDR` to where OpenBao
+answers, then:
+
+```
+kubectl apply -f deploy/ladon/standalone/
+kubectl -n ladon rollout status deployment/ladon
+```
+
+The image migrates the datastore before it serves, so a schema that cannot be
+brought to head is a pod that exits rather than one that answers against a
+schema it does not trust.
+
+### 7. A first look
+
+The Service is ClusterIP and the NetworkPolicy admits only the proxy, so the
+way in before a proxy exists is a port-forward:
+
+```
+kubectl -n ladon port-forward svc/ladon 8000:8000
+curl -s http://127.0.0.1:8000/healthz
+```
+
+A port-forward reaches the pod through the API server rather than across the
+pod network, so it is not blocked by the ingress policy. That is a property of
+port-forwarding, not a hole in the policy: it requires cluster credentials that
+already permit far more.
+
+`/healthz` is unauthenticated, because a probe carries no identity. Every `/api`
+route wants the identity header, which is what the proxy supplies in a real
+deployment; on a port-forward, set it yourself to see what an operator sees.
+
+### What is deliberately not here
+
+No ESO install (phase 6), no team clusters (phases 8 to 10), no private
+connectivity (phase 7), no observability (phase 5). Add each when something
+needs it. A platform cluster that only operates its own vault and backend needs
+none of them on day one.
+
 ## Dependency summary
 
 ```
