@@ -391,6 +391,16 @@ connectivity (phase 7), no observability (phase 5). Add each when something
 needs it. A platform cluster that only operates its own vault and backend needs
 none of them on day one.
 
+### DNS under the default deny
+
+Before applying the network policies, read `/etc/resolv.conf` in any pod on the
+cluster. If the nameserver is a link-local address (for example a cloud
+provider's own DNS at `169.254.169.254`), the kube-dns pod selector in the
+policies matches nothing, and the manifests' link-local rule is what keeps DNS
+working for the vault and the backend. Without DNS the vault cannot fetch the
+workload token issuer's keys, and every store reports that it could not create a
+client.
+
 ## Dependency summary
 
 ```
