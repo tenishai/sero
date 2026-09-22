@@ -9,13 +9,30 @@ import pytest
 from ladon.mcp.openbao import OpenBaoSecrets
 
 
+class InvalidPath(Exception):
+    """Named like hvac's: an empty KV listing is a 404 from OpenBao."""
+
+
 class FakeKvV2:
     def __init__(self, store):
         self._store = store  # {path: {key: value}}
+        self.listed: list[str] = []
 
     def list_secrets(self, *, path, mount_point):
-        # Top-level listing: leaf paths plus one folder marker.
-        keys = list(self._store.keys()) + ["sub/"]
+        # The way KV v2 answers: the distinct next segment under the prefix,
+        # folders with a trailing slash, and a 404 when nothing is there.
+        self.listed.append(path)
+        prefix = path.strip("/") + "/" if path.strip("/") else ""
+        keys = sorted(
+            {
+                rest.split("/")[0] + ("/" if "/" in rest else "")
+                for key in self._store
+                if key.startswith(prefix)
+                for rest in [key[len(prefix) :]]
+            }
+        )
+        if not keys:
+            raise InvalidPath(f"no keys under {path!r}")
         return {"data": {"keys": keys}}
 
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
@@ -46,14 +63,35 @@ def test_list_namespaces_uses_resolver():
     assert obs.list_namespaces("op@example.com") == ["team-a", "team-b"]
 
 
-def test_list_secrets_leaf_and_folder():
-    store = {"app": {"API_KEY": "secretval", "DB": "pw"}}
+def test_list_secrets_walks_folders_to_the_leaves():
+    # A folder is not a secret. The listing follows it down and reports the
+    # leaves by their full path, so `apps/sample/demo` shows as itself and
+    # not as an `apps/` entry with a count of zero.
+    store = {
+        "app": {"API_KEY": "secretval", "DB": "pw"},
+        "apps/sample/demo": {"USER": "u"},
+        "apps/sample/cabal": {"TOKEN": "t", "URL": "x"},
+    }
     obs = make_secrets(store)
     paths = obs.list_secrets("op@example.com", "team-a")
     by_path = {p.path: p.key_count for p in paths}
-    assert by_path["app"] == 2
-    assert "sub/" in by_path  # folder reported, count 0
-    assert by_path["sub/"] == 0
+    assert by_path == {"app": 2, "apps/sample/cabal": 2, "apps/sample/demo": 1}
+    assert not any(p.path.endswith("/") for p in paths)
+
+
+def test_list_secrets_on_an_empty_mount_is_an_empty_list():
+    # OpenBao answers an empty KV listing with a 404; a namespace with no
+    # secrets yet is an ordinary state, not an internal error.
+    obs = make_secrets({})
+    assert obs.list_secrets("op@example.com", "team-a") == []
+
+
+def test_list_secrets_stops_at_the_depth_bound():
+    deep = "/".join(["d"] * 12)
+    store = {deep: {"K": "v"}, "shallow": {"K": "v"}}
+    obs = make_secrets(store)
+    paths = obs.list_secrets("op@example.com", "team-a")
+    assert [p.path for p in paths] == ["shallow"]
 
 
 def test_get_secret_masks_values():

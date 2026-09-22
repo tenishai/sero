@@ -10,6 +10,16 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening a namespace with no secrets in it answered "internal error": OpenBao
+  reports an empty KV listing as a 404 and the reader let that escape. An empty
+  namespace is now an empty list.
+- The namespace listing stopped at the first folder, so a secret at
+  `apps/<app>/<purpose>` showed only as an `apps/` entry with a count of zero.
+  The listing now follows folders to the leaves (bounded in depth and count) and
+  reports each secret by its full path.
+
 ### Proven live
 
 The platform-vault program (PRs #57 to #68) took Ladon from complete-in-code

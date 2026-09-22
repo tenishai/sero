@@ -35,6 +35,18 @@ from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult, require_non_e
 # KV v2 mount the tools operate on within a namespace. Matches the baseline.
 DEFAULT_KV_MOUNT = "kv"
 
+# Bounds on the folder walk in `list_secrets`: deep enough for the platform's
+# `apps/<app>/<purpose>` layout with room to spare, small enough that a tree
+# somebody wrote by hand cannot turn one listing into thousands of reads.
+MAX_LIST_DEPTH = 6
+MAX_LISTED_SECRETS = 500
+
+
+def _is_not_found(exc: BaseException) -> bool:
+    """hvac raises `InvalidPath` for a 404; an empty KV listing is one."""
+    return type(exc).__name__ == "InvalidPath" or getattr(exc, "status_code", None) == 404
+
+
 ClientFor = Callable[[str], Any]
 NamespacesFor = Callable[[str], list[str]]
 
@@ -69,18 +81,39 @@ class OpenBaoSecrets:
         return list(self._namespaces_for(user_email))
 
     def list_secrets(self, user_email: str, namespace: str) -> list[SecretPath]:
+        """Every leaf secret in the namespace, by full path.
+
+        KV v2 lists one level at a time and marks folders with a trailing
+        slash, so this walks the folders down (bounded, so a runaway tree
+        cannot pin the request) and reports leaves only. An empty mount is a
+        404 from OpenBao; here it is an empty list, because a namespace with
+        nothing in it yet is the ordinary state of a new team.
+        """
         client = self._client_for(namespace)
-        listing = client.secrets.kv.v2.list_secrets(path="", mount_point=self._mount)
-        keys = listing.get("data", {}).get("keys", []) if listing else []
         out: list[SecretPath] = []
-        for key in keys:
-            if key.endswith("/"):
-                # A folder, not a leaf secret; report it with an unknown count.
-                out.append(SecretPath(path=key, key_count=0))
-                continue
-            detail = self._read(client, namespace, key, env="")
-            out.append(SecretPath(path=key, key_count=detail.key_count))
+        pending: list[tuple[str, int]] = [("", 0)]
+        while pending and len(out) < MAX_LISTED_SECRETS:
+            prefix, depth = pending.pop(0)
+            for key in self._list_level(client, prefix):
+                full = f"{prefix}{key}"
+                if key.endswith("/"):
+                    if depth + 1 < MAX_LIST_DEPTH:
+                        pending.append((full, depth + 1))
+                    continue
+                detail = self._read(client, namespace, full, env="")
+                out.append(SecretPath(path=full, key_count=detail.key_count))
+        out.sort(key=lambda p: p.path)
         return out
+
+    def _list_level(self, client: Any, prefix: str) -> list[str]:
+        try:
+            listing = client.secrets.kv.v2.list_secrets(path=prefix, mount_point=self._mount)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return []
+            raise
+        keys = listing.get("data", {}).get("keys", []) if listing else []
+        return [str(k) for k in keys]
 
     def get_secret(self, user_email: str, namespace: str, path: str, env: str) -> SecretDetail:
         client = self._client_for(namespace)
