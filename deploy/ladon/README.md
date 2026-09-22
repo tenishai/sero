@@ -11,8 +11,9 @@ cluster name, registry, address, and address range is a placeholder to replace.
 | `k8s/base/` | The manifests that generator preserves: identity, RBAC, the volume, and the network policies. |
 | `standalone/` | A plain Deployment and Service, for a cluster where that platform is not in use. |
 
-Both paths read the same ConfigMap, Secret, and PersistentVolumeClaim, so an
-instance can move from one to the other without the application noticing.
+Both paths read the same Secret and PersistentVolumeClaim, and the same
+ConfigMap under one differently named key (see below), so an instance can move
+from one to the other with a single change.
 
 ## What an operator creates
 
@@ -37,17 +38,76 @@ never written to the cluster by Ladon.
 The token is never read from the config file, and a config that names one is
 rejected.
 
+Watch the trailing newline when you create it. `kubectl create secret
+--from-file` stores the file's bytes exactly, and almost every editor and
+`echo` leaves a newline at the end, which becomes part of the token and makes
+every OpenBao call fail authentication for a reason nothing reports clearly.
+Use `--from-literal`, or strip it:
+
+```
+kubectl -n ladon create secret generic ladon-bootstrap \
+  --from-literal=LADON_DATABASE_URL=sqlite:////data/ladon.db \
+  --from-literal=BAO_TOKEN="$(tr -d '\n' < <path-to-a-file-holding-the-token>)"
+```
+
 ### The ConfigMap, `ladon-config`
 
-One key, `config.yaml`, holding the deployment config the backend reads through
-`LADON_CONFIG` (which both deploy paths set to `/etc/ladon/config.yaml`). It is
-the same file shape as `config/example.yaml` in the repository root: the KV
-mount, the teams, the identity header, and the access lists that decide who
-holds which namespace and who is an admin.
-
-It is a ConfigMap and not a Secret because it holds no values, only names. If
-you find yourself wanting to put a credential in it, that credential belongs in
+The deployment config: the KV mount, the teams, the identity header, and the
+access lists that decide who holds which namespace and who is an admin. It is
+the same shape as `config/example.yaml` in the repository root. It is a
+ConfigMap and not a Secret because it holds no values, only names. If you find
+yourself wanting to put a credential in it, that credential belongs in
 OpenBao.
+
+**The two deploy paths deliver it differently, and the key name differs with
+them.**
+
+| Path | Key | How the backend reads it |
+| --- | --- | --- |
+| Generated (`gojira.yaml`) | `LADON_CONFIG_YAML` | Inline YAML in an environment variable. |
+| Standalone | `config.yaml` | A mounted file, at `LADON_CONFIG=/etc/ladon/config.yaml`. |
+
+The reason is that `config_from` in the deploy contract is an `envFrom` source,
+not a volume. Every key in the ConfigMap becomes an environment variable, so a
+key called `config.yaml` becomes an environment variable called `config.yaml`
+and never becomes a file. Rather than fight that, the backend accepts the
+config inline: when `LADON_CONFIG` is not set, it reads `LADON_CONFIG_YAML`.
+
+For the generated path:
+
+```
+kubectl -n ladon create configmap ladon-config \
+  --from-file=LADON_CONFIG_YAML=config/example.yaml
+```
+
+which produces a ConfigMap whose single key holds the file's text:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ladon-config
+  namespace: ladon
+data:
+  LADON_CONFIG_YAML: |
+    deployment:
+      kv_mount: kv
+    # ... the rest of the config
+```
+
+`gojira.yaml` therefore does **not** set `LADON_CONFIG`. Setting it to a path
+nothing mounts is the way to break that deployment: the backend would look for
+a file that is not there instead of reading the variable.
+
+For the standalone path, the key is `config.yaml` and it is mounted as a file:
+
+```
+kubectl -n ladon create configmap ladon-config \
+  --from-file=config.yaml=config/example.yaml
+```
+
+An instance moving between the two paths needs this one key renamed. Nothing
+else about the config changes.
 
 ## The Service is ClusterIP, and that is not an oversight
 
@@ -72,26 +132,69 @@ it, in three parts:
 
 1. `ladon-default-deny` denies all traffic, in and out, for every pod in the
    `ladon` namespace.
-2. `ladon-backend` admits ingress to the backend on port 8000 **only** from a
-   namespace labelled `ladon.dev/proxy=true`, and permits egress only to DNS,
-   to OpenBao, and to the Kubernetes API server.
-3. `ladon-openbao` re-admits the backend to OpenBao, which part 1 also closed.
+2. `ladon-backend` admits ingress to the backend **only** from a namespace
+   labelled `ladon.dev/proxy=true`, and permits egress only to DNS, to
+   OpenBao, to outbound https, and to the Kubernetes API server.
+3. `ladon-openbao` re-admits the backend and the External Secrets Operator to
+   OpenBao, and gives OpenBao the egress that part 1 also closed.
 
-Label the proxy's namespace before applying, or the backend is unreachable:
+### Two namespace labels to apply
 
 ```
 kubectl label namespace <proxy-namespace> ladon.dev/proxy=true
+kubectl label namespace <eso-namespace>   ladon.dev/eso=true
 ```
 
-A label rather than a namespace name, because the namespace an ingress
-controller lives in differs per cluster, and labelling is a deliberate act by
-whoever owns that namespace rather than a name this repository has to guess.
+Without the first, the backend is unreachable. Without the second, every
+`ExternalSecret` on the cluster fails: ESO runs in its own namespace, so a
+same-namespace rule never matches it, and it cannot reach OpenBao to read the
+values it syncs.
 
-One placeholder needs replacing per cluster: the egress rule for the API server
-names an address range, because a control plane endpoint is not a pod and
-cannot be selected. The committed value is the documentation-reserved range
-from RFC 5737 and routes nowhere. A NetworkPolicy with a wrong CIDR is accepted
-by the API server and silently breaks the cluster-apply layer, so check it.
+Labels rather than namespace names, because which namespace an ingress
+controller or the operator lives in differs per cluster, and labelling is a
+deliberate act by whoever owns that namespace rather than a name this
+repository has to guess.
+
+### OpenBao needs egress, not just ingress
+
+The default deny covers egress, and OpenBao is not a passive server. Its JWT
+auth method calls out to verify what a workload presented: it fetches the
+cluster's OIDC discovery document and JWKS, which on this platform is an
+external https endpoint rather than an in-cluster Service, and some auth
+methods make a TokenReview-style call to the API server. A policy listing only
+ingress leaves all of that blocked, and every authentication fails on a timeout
+rather than on anything that names the cause. `ladon-openbao` therefore sets
+`policyTypes: [Ingress, Egress]` and lists DNS, Raft peers, https, and the API
+server.
+
+The backend needs outbound https for the same kind of reason: it fetches the
+proxy's JWKS to verify what the proxy asserted, and `helm repo add` reaches the
+chart repositories the install layer pins.
+
+### What to replace, per cluster
+
+Every placeholder is marked `REPLACE` in the file. None of them fails loudly: a
+NetworkPolicy with a wrong address range is accepted by the API server and is
+simply wrong.
+
+- **The https rules** are `0.0.0.0/0` on TCP 443. That is the deliberate wide
+  default, because the issuer, JWKS, and chart-repository hosts are not
+  knowable from here. Narrow each to the hosts your deployment uses.
+- **The API-server rules** name an address range, because a control plane
+  endpoint is not a pod and cannot be selected. **One rule per cluster
+  endpoint**: a single range cannot cover several clusters, so a deployment
+  that manages more than the cluster it runs on needs one `ipBlock` entry per
+  endpoint. The committed value is the documentation-reserved range from
+  RFC 5737 and routes nowhere.
+- **Name the endpoint, not the Service.** In-cluster traffic to
+  `kubernetes.default.svc` is DNAT'd from the Service ClusterIP to the real
+  control plane address before most CNI plugins evaluate egress, so a rule
+  naming the Service CIDR matches nothing. Use the control plane address. A
+  few CNI plugins evaluate before DNAT instead; if egress to the API server is
+  denied with the endpoint allowed, try the Service CIDR.
+- **The backend's ingress ports** are 8000 and 8080, because the standalone
+  Deployment takes the image's default 8000 and `gojira.yaml` sets
+  `LADON_PORT` to 8080 for the generated one. Drop the port you do not use.
 
 ## RBAC
 

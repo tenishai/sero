@@ -6,8 +6,11 @@
 # moving a deployment either way changes nothing the application sees.
 #
 # Replace before applying:
-#   image          the tag the image workflow pushed (short commit sha)
-#   BAO_ADDR       the OpenBao address, in-cluster or private
+#   image          the tag the image workflow pushed (short commit sha), or
+#                  better, the digest that workflow printed
+#
+# BAO_ADDR defaults to the in-cluster Service the bring-up path installs, so a
+# deployment that follows docs/deployment-order.md needs no change there.
 #
 # One replica: the datastore may be SQLite on a ReadWriteOnce volume, and the
 # apply jobs assume one writer. Scale only once LADON_DATABASE_URL is PostgreSQL.
@@ -45,18 +48,30 @@ spec:
       containers:
         - name: ladon
           image: <registry-host>/<path>/ladon:<tag>
-          imagePullPolicy: IfNotPresent
+          # Always, because the reference above is a tag, and a tag can be
+          # moved. IfNotPresent would then keep serving whatever a node already
+          # cached under that name. Pin the image by digest instead (the image
+          # workflow prints the digest it pushed) and this can go back to
+          # IfNotPresent, because a digest cannot move.
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8000
               protocol: TCP
           env:
+            # The port the process binds. Stated rather than left to the
+            # image's default so it cannot drift from containerPort above.
+            - name: LADON_PORT
+              value: "8000"
+            # This path is a real mounted file on this deploy path: the
+            # ConfigMap is a volume below, not an envFrom source.
             - name: LADON_CONFIG
               value: /etc/ladon/config.yaml
-            # REPLACE: where OpenBao answers. The token is in the Secret below,
-            # never here.
+            # Where OpenBao answers. The default is the in-cluster Service the
+            # single-node bring-up installs in this namespace. The token is in
+            # the Secret below, never here.
             - name: BAO_ADDR
-              value: https://openbao.example.com:8200
+              value: http://ladon-openbao.ladon.svc:8200
           envFrom:
             # LADON_DATABASE_URL and BAO_TOKEN. The only secret values in the
             # deployment, and the reason this Secret is created out of band.
