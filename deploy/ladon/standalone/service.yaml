@@ -1,0 +1,23 @@
+# ClusterIP, and nothing else.
+#
+# The backend trusts an identity header a proxy sets (docs/backend.md), so it
+# must never be reachable from outside the cluster directly. A LoadBalancer or
+# NodePort here would hand anyone on the network the ability to claim any
+# identity. Exposure is the proxy's job, and the NetworkPolicy in ../k8s/base
+# is what enforces that only the proxy gets through.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ladon
+  namespace: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ladon
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,34 @@
+# The deploy contract for the Ladon backend.
+#
+# The deployment platform's generator owns the Deployment and the Service; this
+# file is the input it reads and `k8s/base/` holds the manifests it preserves.
+# Everything here is a placeholder: replace `<cluster>` with the cluster the
+# platform registered, and keep the namespace and the service account matching
+# `k8s/base/`.
+#
+# A cluster where that platform is not in use runs `standalone/` instead, which
+# carries its own Deployment and Service over the same ConfigMap, Secret, and
+# PersistentVolumeClaim. See README.md in this directory.
+
+app: ladon
+# One long-running process serving the API and the built UI (D14).
+class: web
+
+environments:
+  - name: dev
+    cluster: <cluster>
+    namespace: ladon
+
+service_account: ladon
+
+# `config.yaml`, the deployment config the backend reads through LADON_CONFIG.
+config_from: [ladon-config]
+
+# LADON_DATABASE_URL and BAO_TOKEN. Created once by an operator, out of band:
+# it is the credential that lets Ladon reach OpenBao, so it cannot come from
+# OpenBao. Nothing else in the deployment holds a secret value.
+secrets_from: [ladon-bootstrap]
+
+# The development datastore (SQLite at /data/ladon.db). fs_group matches the
+# uid the image runs as, so the volume is writable without a root init step.
+data_mount: { pvc: ladon-data, path: /data, fs_group: 10001 }

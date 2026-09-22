@@ -1,0 +1,24 @@
+# What Ladon may do inside its own namespace.
+#
+# Per D18a the per-app service accounts ESO authenticates as live here, in
+# Ladon's namespace, not the operator's: a namespace only the platform operator
+# can write to gives the same protection without reaching into a namespace
+# another team owns. Creating them is why `serviceaccounts` is in this list.
+#
+# Secrets and ConfigMaps are namespaced here too, so onboarding writes land in
+# this namespace and nowhere else. There is deliberately no `delete`: Ladon
+# converges state forward, and removal is an operator decision.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ladon
+  namespace: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+rules:
+  - apiGroups: [""]
+    resources:
+      - secrets
+      - configmaps
+      - serviceaccounts
+    verbs: ["get", "list", "create", "patch", "update"]

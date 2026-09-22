@@ -1,0 +1,126 @@
+# The trust boundary, expressed on the network.
+#
+# docs/backend.md is explicit that there is no login form: identity arrives in a
+# header a proxy sets, and the backend trusts it. That is only safe if nothing
+# can reach the backend except that proxy, because anything that can set the
+# header is anyone. Without these policies the header is a self-service
+# authentication bypass, so they are part of the deployment, not a hardening
+# option to add later.
+#
+# Three policies, applied together:
+#   1. default-deny: nothing in the namespace talks to anything, in or out.
+#   2. the backend: ingress only from the proxy, egress only to what it needs.
+#   3. OpenBao: ingress from the backend, since (1) closed that path too.
+#
+# The proxy is identified by a label on its namespace, `ladon.dev/proxy=true`,
+# rather than by name: the namespace an ingress controller lives in differs per
+# cluster, and a label is a deliberate act by whoever owns that namespace. Label
+# it before applying these, or the backend is unreachable:
+#
+#   kubectl label namespace <proxy-namespace> ladon.dev/proxy=true
+#
+# Placeholders to replace for a given cluster are marked below. A policy is
+# rejected by the API server if its selectors are malformed, but a placeholder
+# CIDR is syntactically valid and silently wrong, so check it.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ladon-default-deny
+  namespace: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+spec:
+  # An empty pod selector is every pod in the namespace.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ladon-backend
+  namespace: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ladon
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The proxy, and only the proxy. The Service is ClusterIP, so this is the
+    # whole of the backend's reachable surface.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              ladon.dev/proxy: "true"
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    # Name resolution. Without this every other rule below fails on a lookup.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # OpenBao, which D13a places in this same namespace.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openbao
+      ports:
+        - protocol: TCP
+          port: 8200
+    # The Kubernetes API server, for the cluster-apply layer (D18). A cluster's
+    # control plane endpoint is not a pod, so it can only be named as an
+    # address. REPLACE THIS with the endpoint your cluster actually uses; the
+    # value below is the documentation-reserved range from RFC 5737 and routes
+    # nowhere.
+    - to:
+        - ipBlock:
+            cidr: 198.51.100.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ladon-openbao
+  namespace: ladon
+  labels:
+    app.kubernetes.io/name: ladon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+  policyTypes:
+    - Ingress
+  ingress:
+    # The backend. Raft peer traffic between OpenBao replicas is allowed too,
+    # so a later move off the single-node shape (D13a) does not break the
+    # cluster the moment a second replica appears.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ladon
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openbao
+      ports:
+        - protocol: TCP
+          port: 8200
+        - protocol: TCP
+          port: 8201

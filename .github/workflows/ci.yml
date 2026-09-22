@@ -29,7 +29,7 @@ jobs:
         run: bash scripts/lint-conventions.sh
 
   helm-validate:
-    name: helm validate
+    name: helm and deploy validate
     runs-on: ubuntu-24.04
     steps:
       # actions/checkout v6.0.3
@@ -39,8 +39,21 @@ jobs:
         with:
           # Pinned Helm version, see docs/versions.md.
           version: v4.2.1
+      # Azure/setup-kubectl v5.1.0
+      - uses: Azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d
+        with:
+          # Pinned kubectl version, see docs/versions.md. The same version the
+          # image carries, so CI checks the manifests with the client that
+          # applies them.
+          version: v1.37.0
       - name: Render OpenBao chart with Ladon values
         run: bash scripts/validate-helm.sh
+      # No cluster here, so this runs in its offline mode: the kustomization
+      # builds and every document decodes. Full field-level validation needs a
+      # reachable API server and is run by an operator. The script says which
+      # mode it ran in.
+      - name: Validate deploy manifests
+        run: bash scripts/validate-deploy.sh
 
   terraform-validate:
     name: terraform validate
