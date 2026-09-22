@@ -7,6 +7,7 @@ from ladon.config.eso import (
     API_GROUP,
     awssm_store,
     external_secret,
+    external_secret_ref,
     gcpsm_store,
     to_manifest,
     vault_store,
@@ -282,3 +283,26 @@ def test_no_secret_value_in_rendered_output():
     keys = {line.strip().rstrip(":") for line in blob.splitlines() if line.strip().endswith(":")}
     assert "data" not in keys
     assert "stringData" not in keys
+
+
+def test_external_secret_ref_names_an_object_and_nothing_more():
+    # What a delete needs: removing an object must not require being able to
+    # render it again, store name and path included.
+    ref = external_secret_ref(name="sample-demo", namespace="sample")
+    assert ref == {
+        "apiVersion": f"{API_GROUP}/v1",
+        "kind": "ExternalSecret",
+        "metadata": {"name": "sample-demo", "namespace": "sample"},
+    }
+
+
+def test_external_secret_ref_honours_the_probed_api_version():
+    ref = external_secret_ref(name="n", namespace="ns", api_version="v1beta1")
+    assert ref["apiVersion"] == f"{API_GROUP}/v1beta1"
+
+
+def test_external_secret_ref_validates_required():
+    with pytest.raises(ConfigError):
+        external_secret_ref(name="", namespace="ns")
+    with pytest.raises(ConfigError):
+        external_secret_ref(name="n", namespace="")

@@ -7,9 +7,9 @@ patching; ``build_default_app`` is the zero-argument factory uvicorn calls.
 
 Every failure leaves as ``{"error": "..."}`` with a status the UI can act on: 401
 with no identity, 403 for a namespace or an admin route the caller may not have,
-400 for a refused write, 404 for something absent, 503 for a deployment that has
-not been configured yet. A message names the namespace, path, or field at fault
-and never a value.
+400 for a refused write, 404 for something absent, 409 for a cluster object
+another field manager owns, 503 for a deployment that has not been configured
+yet. A message names the namespace, path, or field at fault and never a value.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from starlette.exceptions import HTTPException
 from ladon.apply.client import BaoConnection, BaoConnectionError, TokenAuth, connect
 from ladon.datastore import engine as datastore
 from ladon.hygiene import WriteRefused
+from ladon.install.k8s import ForeignObjectError
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.mcp.server import AccessDeniedError, WrongEnvironment
 from ladon.web import routes_admin, routes_secrets
@@ -180,6 +181,14 @@ def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(WrongEnvironment)
     def _wrong_environment(request: Request, exc: WrongEnvironment) -> JSONResponse:
         return error(400, str(exc))
+
+    @app.exception_handler(ForeignObjectError)
+    def _foreign_object(request: Request, exc: ForeignObjectError) -> JSONResponse:
+        # A conflict, not a bad request: the object named is real and the
+        # caller may act in that namespace, and it belongs to another manager.
+        # Registered before the WriteRefused handler it subclasses, which is
+        # what makes it answer 409 rather than 400.
+        return error(409, str(exc))
 
     @app.exception_handler(WriteRefused)
     def _refused(request: Request, exc: WriteRefused) -> JSONResponse:

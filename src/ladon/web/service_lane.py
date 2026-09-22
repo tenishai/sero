@@ -25,11 +25,17 @@ development hatch is not read, and a deployment that has named no callers
 refuses the lane outright: the lane opens because a deployment configured it,
 never because it forgot to.
 
-What a caller can do is deliberately small: merge keys into one application
-path under ``apps/``, and converge one ExternalSecret for one application, in
-that application's own Kubernetes namespace or one its config admits. Reading a
-secret, revealing a value, touching the allow list, approving a namespace and
-running an apply phase are all somewhere else, behind a person.
+What a caller can do is deliberately small, and it is the life of one
+application secret from end to end: merge keys into one path under ``apps/``,
+list the key names at that path, delete the path outright, and converge or
+remove one ExternalSecret for one application, in that application's own
+Kubernetes namespace or one its config admits.
+
+What is still somewhere else, behind a person: revealing a value, touching the
+allow list, approving a namespace, running an apply phase, and off-boarding an
+application (its store, its role, its policy and its service account). A
+provisioner that can stand a secret up and take it down again is not a
+provisioner that can dismantle an application's identity.
 """
 
 from __future__ import annotations
@@ -45,10 +51,17 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from ladon.config.apps import app_store_name, checked_app_path, checked_apps_path
-from ladon.config.eso import external_secret
+from ladon.config.eso import external_secret, external_secret_ref
 from ladon.config.teams import ConfigError
 from ladon.hygiene import WriteRefused
-from ladon.install.k8s import ApplyReport, K8sError, converge_documents, eso_api_version
+from ladon.install.k8s import (
+    DELETE,
+    ApplyReport,
+    K8sError,
+    converge_documents,
+    delete_documents,
+    eso_api_version,
+)
 from ladon.mcp.server import (
     AccessDeniedError,
     _audit,
@@ -176,13 +189,14 @@ class TokenBucket:
 class ClusterSync:
     """How the lane reaches the cluster.
 
-    Both collaborators are fields rather than direct calls, which is the same
+    Every collaborator is a field rather than a direct call, which is the same
     seam the CLI's tests use: a test hands over a fake cluster and nothing here
     shells out.
     """
 
     api_version: Callable[[], str] = eso_api_version
     converge: Callable[..., ApplyReport] = converge_documents
+    remove: Callable[..., ApplyReport] = delete_documents
 
 
 @dataclass(frozen=True)
@@ -362,6 +376,22 @@ class ServiceSyncBody(BaseModel):
     refresh_interval: str = Field(
         default=DEFAULT_REFRESH_INTERVAL, pattern=REFRESH_INTERVAL_PATTERN
     )
+    apply: bool = False
+
+
+class ServiceUnsyncBody(BaseModel):
+    """One ExternalSecret, removed.
+
+    No path, no store and no refresh interval: naming the object is all a
+    removal needs, and asking for the rest would make a delete depend on
+    values that may have moved since the object was created.
+    """
+
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN)
+    namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
+    app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    k8s_namespace: str | None = Field(default=None, pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    name: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
     apply: bool = False
 
 
@@ -705,6 +735,78 @@ def sync_secret(
         # Names and verbs only: what was converged, never what it carries.
         "report": report.lines(),
         "blocked": [result.target for result in report.blocked],
+    }
+
+
+@router.delete("/service/sync")
+def unsync_secret(
+    body: ServiceUnsyncBody,
+    request: Request,
+    caller: UnsyncCaller,
+    session: DbSession,
+    audit: Auditor,
+) -> dict[str, Any]:
+    """Remove the ExternalSecret this lane created, and only that.
+
+    Deleting the KV path leaves the object that reads it, and ESO keeps
+    reconciling it: the operator logs an error every interval over a path that
+    is gone on purpose, and the Kubernetes Secret it owns stays where it is.
+    So the two halves come apart in the same order they went together.
+
+    Scope, stated so nobody has to infer it. This removes one ExternalSecret.
+    It does NOT remove the application's ClusterSecretStore, its JWT role, its
+    read-only policy or its service account, and it does not touch the KV path.
+    Those are application off-boarding: they are cluster-scoped or
+    namespace-wide, one of them is shared with anything else the application
+    runs, and removing them is a decision about an application's whole
+    identity rather than about one of its secrets. That belongs to an operator
+    and an apply phase, not to a per-secret call on the machine lane.
+
+    An object whose live field manager is not ``ladon`` is refused with a
+    ``409`` naming the manager that does own it, the same rule the apply side
+    follows in never passing ``--force-conflicts``. Same pinning as the POST:
+    the object may land, and be removed, in the application's own Kubernetes
+    namespace, or one pinned to the caller. Dry run by default, and removing
+    an object that is already gone is not an error.
+    """
+    k8s_namespace = body.k8s_namespace or body.app
+    args = {
+        **_attribution(caller),
+        "acting_email": body.acting_email,
+        "namespace": body.namespace,
+        "app": body.app,
+        "k8s_namespace": k8s_namespace,
+        "name": body.name,
+    }
+    with audit.guard(UNSYNC_TOOL, body.acting_email, args, session=session):
+        _require_pinned(caller, body.namespace, action="delete in")
+        # The target rule has nothing to decide here: a removal names no
+        # Secret to adopt, so the object's own name stands in for it.
+        _require_cluster_target(caller, body.app, k8s_namespace, name=body.name, target=body.name)
+        cluster = lane(request).cluster
+        document = external_secret_ref(
+            name=body.name,
+            namespace=k8s_namespace,
+            api_version=_cluster_call(cluster.api_version),
+        )
+        report = _cluster_call(cluster.remove, [document], dry_run=not body.apply)
+        _audit(
+            session,
+            user_email=body.acting_email,
+            tool_name=UNSYNC_TOOL,
+            status="ok" if body.apply else "dry-run",
+            args={**args, "outcome": report.results[0].action},
+        )
+    session.commit()
+    return {
+        "applied": body.apply,
+        "namespace": body.namespace,
+        "app": body.app,
+        "k8s_namespace": k8s_namespace,
+        "name": body.name,
+        # False when the object was already gone, which is a success.
+        "deleted": report.results[0].action == DELETE,
+        "report": report.lines(),
     }
 
 

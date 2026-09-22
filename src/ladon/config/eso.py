@@ -260,6 +260,28 @@ def external_secret(
     }
 
 
+def external_secret_ref(
+    *,
+    name: str,
+    namespace: str,
+    api_version: str = DEFAULT_API_VERSION,
+) -> dict:
+    """Just enough of an ExternalSecret to name one: kind, name, namespace.
+
+    What a read or a delete needs, and no more. Removing an object should not
+    require the caller to be able to render it again, and asking it to would
+    mean a delete quietly depends on the store name and the path still
+    resolving the same way they did when the object was created.
+    """
+    require(name, "name", context="external_secret_ref")
+    require(namespace, "namespace", context="external_secret_ref")
+    return {
+        "apiVersion": f"{API_GROUP}/{api_version}",
+        "kind": "ExternalSecret",
+        "metadata": {"name": name, "namespace": namespace},
+    }
+
+
 def to_manifest(obj: ClusterSecretStore | dict) -> str:
     """Serialize a rendered resource to a YAML manifest string."""
     manifest = obj.manifest if isinstance(obj, ClusterSecretStore) else obj

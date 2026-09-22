@@ -25,7 +25,7 @@ from fake_assertion import verifier as assertion_verifier
 from fake_cluster import FakeCluster
 from ladon.config.teams import ConfigError
 from ladon.datastore.models import Base, ToolCallLog
-from ladon.install.k8s import converge_documents
+from ladon.install.k8s import converge_documents, delete_documents
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.web.app import create_app
 from ladon.web.assertion import STALE_KEYS_MAX_SECONDS
@@ -108,6 +108,16 @@ def sync(client, body=None, *, headers=None):
     return client.post(
         "/api/service/sync",
         json=sync_body() if body is None else body,
+        headers=bearer() if headers is None else headers,
+    )
+
+
+def unsync(client, body=None, *, headers=None):
+    """DELETE one machine-lane ExternalSecret."""
+    return client.request(
+        "DELETE",
+        "/api/service/sync",
+        json=unsync_body() if body is None else body,
         headers=bearer() if headers is None else headers,
     )
 
@@ -235,6 +245,7 @@ def build_client(
         cluster=ClusterSync(
             api_version=lambda: "v1",
             converge=lambda docs, **kwargs: converge_documents(docs, run=cluster, **kwargs),
+            remove=lambda docs, **kwargs: delete_documents(docs, run=cluster, **kwargs),
         ),
         now=clock or (lambda: 0.0),
     )
@@ -283,6 +294,18 @@ def sync_body(**overrides):
         "namespace": NAMESPACE,
         "app": APP,
         "path": PATH,
+        "name": "sample-demo",
+        "apply": False,
+    }
+    body.update(overrides)
+    return body
+
+
+def unsync_body(**overrides):
+    body = {
+        "acting_email": ACTING,
+        "namespace": NAMESPACE,
+        "app": APP,
         "name": "sample-demo",
         "apply": False,
     }
@@ -1037,3 +1060,184 @@ def test_a_delete_spends_the_callers_budget(sessions, store, cluster):
     )
     assert erase(limited).status_code == 200
     assert erase(limited).status_code == 429
+
+
+# ── Removing the ExternalSecret ────────────────────────────────────────
+
+
+def external_secret_is_live(client, cluster):
+    """Put one on the cluster the way the lane does, so it can be removed."""
+    assert sync(client, sync_body(apply=True)).status_code == 200
+    assert len(cluster.objects) == 1
+
+
+def test_a_dry_run_unsync_says_what_it_would_remove_and_removes_nothing(client, cluster):
+    external_secret_is_live(client, cluster)
+    response = unsync(client)
+    assert response.status_code == 200
+    assert response.json() == {
+        "applied": False,
+        "namespace": NAMESPACE,
+        "app": APP,
+        "k8s_namespace": DEFAULT_K8S_NAMESPACE,
+        "name": "sample-demo",
+        "deleted": True,
+        "report": ["ExternalSecret/sample/sample-demo: delete"],
+    }
+    assert cluster.deletes == []
+    assert len(cluster.objects) == 1
+
+
+def test_an_applied_unsync_removes_the_external_secret(client, cluster):
+    external_secret_is_live(client, cluster)
+    response = unsync(client, unsync_body(apply=True))
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert response.json()["report"] == ["ExternalSecret/sample/sample-demo: delete"]
+    assert cluster.objects == {}
+
+
+def test_unsyncing_twice_is_not_an_error(client, cluster):
+    external_secret_is_live(client, cluster)
+    unsync(client, unsync_body(apply=True))
+    again = unsync(client, unsync_body(apply=True))
+    assert again.status_code == 200
+    assert again.json()["deleted"] is False
+    assert again.json()["report"] == ["ExternalSecret/sample/sample-demo: absent"]
+    assert len(cluster.deletes) == 1
+
+
+def test_unsyncing_an_object_that_was_never_there_is_not_an_error(client, cluster):
+    response = unsync(client, unsync_body(apply=True))
+    assert response.status_code == 200
+    assert response.json()["deleted"] is False
+
+
+def test_unsync_refuses_an_object_another_field_manager_owns(sessions, store):
+    # Somebody else's ExternalSecret, at the name this caller asked for.
+    theirs = {
+        "apiVersion": "external-secrets.io/v1",
+        "kind": "ExternalSecret",
+        "metadata": {
+            "name": "sample-demo",
+            "namespace": DEFAULT_K8S_NAMESPACE,
+            "managedFields": [{"manager": "another-controller", "operation": "Apply"}],
+        },
+    }
+    cluster = FakeCluster(live=[theirs])
+    client = build_client(sessions, store, cluster, service_callers=callers())
+
+    response = unsync(client, unsync_body(apply=True))
+    assert response.status_code == 409
+    assert "another-controller" in response.json()["error"]
+    assert cluster.deletes == []
+    assert len(cluster.objects) == 1
+
+
+def test_a_dry_run_unsync_refuses_a_foreign_object_too(sessions, store):
+    theirs = {
+        "apiVersion": "external-secrets.io/v1",
+        "kind": "ExternalSecret",
+        "metadata": {
+            "name": "sample-demo",
+            "namespace": DEFAULT_K8S_NAMESPACE,
+            "managedFields": [{"manager": "another-controller", "operation": "Apply"}],
+        },
+    }
+    cluster = FakeCluster(live=[theirs])
+    client = build_client(sessions, store, cluster, service_callers=callers())
+    assert unsync(client).status_code == 409
+
+
+def test_unsync_needs_a_service_token(client):
+    assert client.request("DELETE", "/api/service/sync", json=unsync_body()).status_code == 401
+
+
+def test_unsync_needs_an_acting_email(client):
+    body = unsync_body()
+    del body["acting_email"]
+    assert unsync(client, body).status_code == 422
+
+
+def test_unsync_refuses_a_namespace_the_caller_is_not_pinned_to(client, cluster):
+    response = unsync(client, unsync_body(namespace=OTHER_NAMESPACE, apply=True))
+    assert response.status_code == 403
+    assert cluster.calls == []
+
+
+def test_unsync_refuses_a_kubernetes_namespace_the_caller_is_not_pinned_to(client, cluster):
+    # The same gate the POST has: this process holds the ladon field manager,
+    # so an unpinned namespace here would let one caller remove an
+    # ExternalSecret anywhere on the cluster that Ladon happens to manage.
+    response = unsync(client, unsync_body(k8s_namespace="kube-system", apply=True))
+    assert response.status_code == 403
+    assert cluster.calls == []
+
+
+def test_unsync_allows_a_kubernetes_namespace_the_caller_is_pinned_to(sessions, store, cluster):
+    pinned = build_client(
+        sessions, store, cluster, service_callers=callers(k8s_namespaces=[PINNED_K8S_NAMESPACE])
+    )
+    placed = sync(pinned, sync_body(k8s_namespace=PINNED_K8S_NAMESPACE, apply=True))
+    assert placed.status_code == 200
+    response = unsync(pinned, unsync_body(k8s_namespace=PINNED_K8S_NAMESPACE, apply=True))
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert cluster.objects == {}
+
+
+def test_unsync_leaves_the_store_and_the_identity_alone(client, cluster):
+    # Application off-boarding is not this route. Only the ExternalSecret is
+    # named, and only one delete runs.
+    external_secret_is_live(client, cluster)
+    unsync(client, unsync_body(apply=True))
+    assert [call[2] for call in cluster.deletes] == [
+        "externalsecret.external-secrets.io/sample-demo"
+    ]
+
+
+def test_an_unsync_is_audited(client, sessions, cluster):
+    external_secret_is_live(client, cluster)
+    unsync(client, unsync_body(apply=True))
+    (row,) = rows(sessions, "service.delete_sync")
+    assert row.status == "ok"
+    assert row.user_email == ACTING
+    assert row.redacted_args["lane"] == "service"
+    assert row.redacted_args["via"] == CALLER
+    assert row.redacted_args["subject"] == SUBJECT
+    assert row.redacted_args["k8s_namespace"] == DEFAULT_K8S_NAMESPACE
+    assert row.redacted_args["name"] == "sample-demo"
+    assert row.redacted_args["outcome"] == "delete"
+
+
+def test_a_dry_run_unsync_is_audited_as_one(client, sessions, cluster):
+    external_secret_is_live(client, cluster)
+    unsync(client)
+    (row,) = rows(sessions, "service.delete_sync")
+    assert row.status == "dry-run"
+
+
+def test_an_unsync_refused_for_a_foreign_object_is_audited(sessions, store):
+    theirs = {
+        "apiVersion": "external-secrets.io/v1",
+        "kind": "ExternalSecret",
+        "metadata": {
+            "name": "sample-demo",
+            "namespace": DEFAULT_K8S_NAMESPACE,
+            "managedFields": [{"manager": "another-controller", "operation": "Apply"}],
+        },
+    }
+    cluster = FakeCluster(live=[theirs])
+    client = build_client(sessions, store, cluster, service_callers=callers())
+    unsync(client, unsync_body(apply=True))
+    (row,) = rows(sessions, "service.delete_sync")
+    assert row.status == "refused"
+    assert row.redacted_args["via"] == CALLER
+
+
+def test_an_unsync_spends_the_callers_budget(sessions, store, cluster):
+    limited = build_client(
+        sessions, store, cluster, service_callers=callers(rate_limit_per_minute=1)
+    )
+    assert unsync(limited).status_code == 200
+    assert unsync(limited).status_code == 429
