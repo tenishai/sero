@@ -74,7 +74,7 @@ scripts/ladon apply --phase app-onboarding --config deployment.yaml \
 
 # Sync one path into the Kubernetes Secret a workload already reads:
 scripts/ladon apply --phase sync --team TEAM --app APP \
-  --path apps/APP/PURPOSE --k8s-namespace NAMESPACE --name NAME --apply
+  --path apps/APP/PURPOSE --name NAME --apply
 ```
 
 The OpenBao address and token come from the environment (`BAO_ADDR`/`VAULT_ADDR`

@@ -165,11 +165,38 @@ point of view, not a list of commit subjects.
 - `apply --phase sync` renders and applies one `ExternalSecret` that carries a
   KV path into the Kubernetes Secret a workload already reads, through the store
   the application's onboarding created (`--team`, `--app`, `--path`,
-  `--k8s-namespace`, `--name`, and `--target-name` when the Secret's name
-  differs). The store is named through the same function that named it at
+  `--name`, plus `--k8s-namespace` when the namespace is not the application's
+  own name, `--target-name` when the Secret's name differs, and
+  `--refresh-interval` to change how often ESO re-reads the path from the `1h`
+  default). The store is named through the same function that named it at
   onboarding, so the two cannot disagree, and a path outside the application's
-  own prefix is refused: its identity cannot read one, so the document would
-  look right and be denied at refresh time, in the operator's logs, later.
+  own prefix, or with a relative segment in it, is refused: its identity cannot
+  read one, so the document would look right and be denied at refresh time, in
+  the operator's logs, later. The dry-run names the path and the target Secret
+  on the report line, so what is about to be wired is reviewable before it is.
+- Verification of a store is exact where a subset comparison is not safe. A key
+  added inside a store's `conditions` (a `namespaces` list beside the selector
+  Ladon wrote) left the list one entry long and every field Ladon set unchanged,
+  so it read as already current while the store had been opened to a namespace
+  Ladon never admitted. Inside a store's conditions and a provider's auth block
+  the live object may now hold nothing Ladon did not set, and anything else is
+  reported as drift by its field path and re-applied. Everywhere else the subset
+  rule stands, because a live object legitimately carries what the API server
+  and its controllers put there.
+
+Proven live on a shared development cluster, against the platform vault:
+
+- an External Secrets operator (v2.3.0) already running on the cluster was
+  detected and reused, and its stored custom-resource version probed as `v1`;
+- a first `app-onboarding --apply` created the application's service account and
+  store; a second run was a complete no-op, reporting every OpenBao operation and
+  every cluster document already current and issuing no apply at all;
+- the store validated on the cluster;
+- `sync` produced the Kubernetes Secret, carrying exactly the keys held at the
+  path and no others;
+- the negative: the same `ExternalSecret` applied from a namespace the store does
+  not admit failed with `could not get secret data from provider`, and no Secret
+  was created there.
 
 ### Changed
 

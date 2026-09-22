@@ -183,8 +183,25 @@ the application's own prefix, which is all its identity can read.
 
 ```
 scripts/ladon apply --phase sync --team TEAM --app APP \
-  --path apps/APP/PURPOSE --k8s-namespace NAMESPACE --name NAME \
-  [--target-name SECRET] --apply
+  --path apps/APP/PURPOSE --name NAME \
+  [--k8s-namespace NAMESPACE] [--target-name SECRET] \
+  [--refresh-interval 1h] --apply
+```
+
+`--k8s-namespace` defaults to the application name, as onboarding does, so an
+application with a namespace of its own needs no flag. Naming a namespace the
+application's store does not admit is not refused here: which namespaces may use
+a store is the store's to say, so the document applies and then fails at refresh
+time, in the operator's logs, with no Secret created. `--target-name` is the
+Kubernetes Secret ESO creates, which is the name the workload already uses when
+it differs from the ExternalSecret's; `--refresh-interval` is how often ESO
+re-reads the path, defaulting to `1h`.
+
+The dry-run names the path and the Secret each document would fill, so what is
+about to be wired is reviewable before it is:
+
+```
+  [cluster] create ExternalSecret/NAMESPACE/NAME (apps/APP/PURPOSE -> Secret/SECRET)
 ```
 
 Prerequisites: phase 9 (ESO on the cluster) and the team's namespace from
