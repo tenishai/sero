@@ -108,6 +108,23 @@ point of view, not a list of commit subjects.
   out of scope (a separate foundation repo owns those). A `terraform validate`
   CI job runs fmt and validate; pins Terraform, the Google provider, the KMS
   module, and `hashicorp/setup-terraform`.
+- HTTP backend (`ladon.web`, `docs/backend.md`): one process serving the UI's
+  routes over the datastore and the vault, and the built UI beside them. A
+  deployer needs to know four things. Identity is a header a trusted proxy sets
+  (`identity.header`, default `x-goog-authenticated-user-email`); there is no
+  login form, and a local hatch exists that warns at startup and is inert unless
+  the config allows it. Who reaches which namespace comes from `access:` in the
+  deployment config, by address and by group, with `admins` governing the admin
+  routes; a directory-backed source can replace it without touching a route.
+  Revealing a plaintext value is refused unless the deployment enables it.
+  Migrations run at boot from `LADON_DATABASE_URL` (SQLite for development,
+  PostgreSQL for anything shared) and a failed upgrade exits non-zero. Every
+  route calls the same functions the agent surface calls, so the allow list, the
+  namespace gate, placeholder refusal, the merge rules, and the audit row have
+  one implementation; a consequence is that the allow list now gates the web
+  surface too. Pins FastAPI and uvicorn.
+- Background apply runs are recorded in a `jobs` table (kind, state, requester,
+  timings, and the op-by-op report), ahead of the endpoints that drive them.
 
 - Team namespaces are created from the deployment config. Root config now
   ensures `sys/namespaces/<namespace>` for every team in `teams:` and then,
@@ -284,6 +301,12 @@ Proven live on a shared development cluster, against the platform vault:
   this reason, and `--namespace` names the namespace the operations run in
   rather than scoping the connection. The rendered plan shows the namespace on
   each line, so two identical paths in two namespaces can be told apart.
+- Updating a secret refuses two things it used to accept. A key named in both
+  `values` and `remove_keys` is ambiguous, so it is refused rather than resolved
+  by an order the caller cannot see. A merge that would leave a path with no
+  keys is refused too: an empty secret still exists and reads as a path with
+  nothing in it. Deleting a path stays a separate, explicit operation. Both
+  apply to the agent surface and the web surface, which share the code.
 
 ### Fixed
 

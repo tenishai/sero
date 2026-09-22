@@ -11,6 +11,7 @@ vault, and the request sits in ``approved`` until that run picks it up.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Response
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ladon.datastore import repositories as repo
+from ladon.datastore.models import NamespaceRequest
 from ladon.mcp.server import _audit
 from ladon.web.deps import AdminEmail, DbSession
 from ladon.web.errors import ApiError
@@ -138,7 +140,9 @@ def remove_from_allow_list(
     return Response(status_code=204)
 
 
-def _decide(session: Session, request_id: int, decide):
+def _decide(
+    session: Session, request_id: int, decide: Callable[[], NamespaceRequest]
+) -> NamespaceRequest:
     """Run a decision, turning an unknown request into a 404 rather than a 500."""
     try:
         return decide()
