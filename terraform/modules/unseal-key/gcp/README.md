@@ -1,13 +1,21 @@
 # unseal-key/gcp
 
 GCP Cloud KMS auto-unseal key for OpenBao. Provisions the keyring, the crypto
-key, and the cryptoKeyEncrypterDecrypter IAM grant for the OpenBao identity, via
-the official `terraform-google-modules/kms/google` module (pinned in
+key, and the IAM grants the OpenBao identity needs on it, via the official
+`terraform-google-modules/kms/google` module (pinned in
 [docs/versions.md](../../../../docs/versions.md)).
 
-The grant is part of this module deliberately: in the source platform it lived
-outside the substrate Terraform, so auto-unseal could fail silently for want of
-it. Here the key and its one required permission apply as a unit.
+Two roles, both on the key and neither on the project:
+
+- `roles/cloudkms.cryptoKeyEncrypterDecrypter`, to wrap and unwrap the root key.
+- `roles/cloudkms.viewer`, because the `gcpckms` seal calls `cryptoKeys.get` at
+  startup to check the key exists. Encrypt/decrypt does not grant that read, and
+  without it the vault fails with `error checking key existence` and never
+  unseals.
+
+The grants are part of this module deliberately: in the source platform they
+lived outside the substrate Terraform, so auto-unseal could fail silently for
+want of one. Here the key and the permissions it needs apply as a unit.
 
 ## Usage
 

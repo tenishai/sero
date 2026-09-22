@@ -30,8 +30,10 @@ variable "unseal_member" {
     IAM member granted use of the unseal key, in the form expected by Google IAM,
     for example "serviceAccount:bao@PROJECT.iam.gserviceaccount.com". This is the
     identity the OpenBao pods run as (via Workload Identity). The module grants it
-    cryptoKeyEncrypterDecrypter on the key, so auto-unseal does not fail silently
-    for want of the grant.
+    cryptoKeyEncrypterDecrypter and cloudkms.viewer on the key, so auto-unseal does
+    not fail silently for want of a grant. Both are needed: the seal encrypts and
+    decrypts with the key, and it reads the key's metadata at startup to check the
+    key exists.
   EOT
   type        = string
 }

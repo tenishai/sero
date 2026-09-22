@@ -224,6 +224,16 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # Cloud-KMS auto-unseal reads the pod's credentials from the node metadata
+    # server, which is plain TCP 80 at the link-local address; without this the
+    # vault crash-loops at startup. The backend holds no cloud identity, so its
+    # policy above does not need it.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
     # Raft peers, once there is more than one replica.
     - to:
         - podSelector:
