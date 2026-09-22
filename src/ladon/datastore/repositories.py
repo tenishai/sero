@@ -43,7 +43,7 @@ from ladon.datastore.models import (
     RevealGrant,
     ToolCallLog,
 )
-from ladon.hygiene import redact
+from ladon.hygiene import redact, redact_text
 
 # ── Audit trail ────────────────────────────────────────────────────────
 
@@ -64,8 +64,10 @@ def append_call(
 
     ``args`` is the raw call arguments; they are passed through
     ``ladon.hygiene.redact`` so secret material never lands in the audit table.
-    The row is added and flushed (so its id/timestamp are populated) but not
-    committed: the caller owns the transaction.
+    ``error`` goes through ``redact_text`` for the same reason: an error message
+    is written by many hands and one that quotes what it was given would carry a
+    token into this table. The row is added and flushed (so its id/timestamp are
+    populated) but not committed: the caller owns the transaction.
     """
     row = ToolCallLog(
         user_email=user_email,
@@ -75,7 +77,7 @@ def append_call(
         duration_ms=duration_ms,
         response_bytes=response_bytes,
         redacted_args=redact(args) if args else None,
-        error=error,
+        error=redact_text(error) if error else None,
     )
     session.add(row)
     session.flush()

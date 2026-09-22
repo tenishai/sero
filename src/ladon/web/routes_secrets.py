@@ -88,8 +88,10 @@ def list_namespaces(
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
+    audit: Auditor,
 ) -> dict[str, Any]:
-    result = list_my_namespaces_impl(secrets, session, user_email=email)
+    with audit.guard("list_my_namespaces", email, session=session):
+        result = list_my_namespaces_impl(secrets, session, user_email=email)
     session.commit()
     return result
 
@@ -100,8 +102,10 @@ def list_secrets(
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
+    audit: Auditor,
 ) -> dict[str, Any]:
-    result = list_secrets_impl(secrets, session, user_email=email, namespace=namespace)
+    with audit.guard("list_secrets", email, {"namespace": namespace}, session=session):
+        result = list_secrets_impl(secrets, session, user_email=email, namespace=namespace)
     session.commit()
     return result
 
@@ -147,17 +151,20 @@ def get_secret(
     email: CallerEmail,
     session: DbSession,
     secrets: Secrets,
+    audit: Auditor,
     environment: DeclaredEnvironment,
 ) -> dict[str, Any]:
-    result = get_secret_impl(
-        secrets,
-        session,
-        user_email=email,
-        namespace=namespace,
-        path=secret_path,
-        env=env,
-        deployment_environment=environment,
-    )
+    args = {"namespace": namespace, "path": secret_path, "env": env}
+    with audit.guard("get_secret", email, args, session=session):
+        result = get_secret_impl(
+            secrets,
+            session,
+            user_email=email,
+            namespace=namespace,
+            path=secret_path,
+            env=env,
+            deployment_environment=environment,
+        )
     session.commit()
     return result
 

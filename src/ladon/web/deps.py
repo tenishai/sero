@@ -19,7 +19,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
-from ladon.web.audit import AuditRecorder
+from ladon.web.audit import DENIED, AuditRecorder
 from ladon.web.errors import ApiError
 from ladon.web.groups import GroupSource
 from ladon.web.identity import IdentityReader, NoIdentityError
@@ -41,15 +41,42 @@ class Services:
     secrets: Any | None
 
 
+# What an unauthenticated request is attributed to. Not an address, and not
+# empty, so these rows group together and cannot collide with a real caller.
+UNIDENTIFIED = "unidentified"
+
+
 def services(request: Request) -> Services:
     return request.app.state.services
 
 
+def audit_recorder(request: Request) -> AuditRecorder:
+    """An auditor that writes outside the request's transaction, so a failed
+    operation still leaves a row."""
+    return AuditRecorder(services(request).session_factory)
+
+
 def caller_email(request: Request) -> str:
-    """The signed-in caller, or 401."""
+    """The signed-in caller, or 401.
+
+    A refused request is audited before it is refused. Without a row, the one
+    pattern worth spotting (someone probing for a way in) is the one that leaves
+    nothing behind. There is no identity to attribute it to, so it is recorded
+    against a fixed name, with the header's NAME and whether one arrived, never
+    what it said.
+    """
+    reader = services(request).identity
     try:
-        return services(request).identity.email(request.headers)
+        return reader.email(request.headers)
     except NoIdentityError as exc:
+        deciding = reader.assertion.header if reader.assertion else reader.header
+        audit_recorder(request).record(
+            user_email=UNIDENTIFIED,
+            tool_name="identify",
+            status=DENIED,
+            args={"header": deciding, "present": bool(request.headers.getlist(deciding))},
+            error=str(exc),
+        )
         raise ApiError(401, "no identity") from exc
 
 
@@ -78,12 +105,6 @@ def require_secrets(request: Request) -> Any:
     if secrets is None:
         raise ApiError(503, "OpenBao is not configured for this deployment")
     return secrets
-
-
-def audit_recorder(request: Request) -> AuditRecorder:
-    """An auditor that writes outside the request's transaction, so a failed
-    operation still leaves a row."""
-    return AuditRecorder(services(request).session_factory)
 
 
 def db(request: Request) -> Iterator[Session]:

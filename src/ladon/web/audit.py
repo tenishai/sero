@@ -25,24 +25,26 @@ from typing import Any
 from sqlalchemy.orm import Session, sessionmaker
 
 from ladon.datastore import repositories as repo
-from ladon.mcp.server import AccessDeniedError
-from ladon.web.errors import ApiError
+from ladon.hygiene import WriteRefused
+from ladon.mcp.server import AccessDeniedError, WrongEnvironment
 from ladon.web.reveal import RevealDeniedError
 
 log = logging.getLogger(__name__)
 
-# A refusal we made on purpose, as opposed to something that broke. Both are
-# audited; the status tells an investigator which kind of event they are reading.
+# Three kinds of unhappy ending, so an investigator can tell them apart at a
+# glance: we would not let you (denied), you asked for something we do not do
+# (refused), or we broke (error).
 DENIED = "denied"
+REFUSED = "refused"
 ERROR = "error"
 
 
 def status_for(exc: BaseException) -> str:
-    """Whether an exception represents a refusal or a failure."""
+    """Which kind of unhappy ending an exception represents."""
     if isinstance(exc, AccessDeniedError | RevealDeniedError):
         return DENIED
-    if isinstance(exc, ApiError) and exc.status_code in (401, 403):
-        return DENIED
+    if isinstance(exc, WriteRefused | WrongEnvironment):
+        return REFUSED
     return ERROR
 
 

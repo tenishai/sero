@@ -1,6 +1,6 @@
 """Tests for the redact hygiene primitive."""
 
-from ladon.hygiene import REDACTED, redact
+from ladon.hygiene import REDACTED, redact, redact_text
 
 
 def test_redacts_by_key_name_case_insensitive():
@@ -44,3 +44,26 @@ def test_returns_a_copy():
     out = redact(original)
     assert original == {"password": "p"}  # unchanged
     assert out is not original
+
+
+def test_redact_text_removes_a_token_shaped_word():
+    message = "login failed for token AbCdEf0123456789AbCdEf0123456789AbCdEf01 at the mount"
+    cleaned = redact_text(message)
+    assert "AbCdEf0123456789" not in cleaned
+    assert REDACTED in cleaned
+    # The sentence still says what happened.
+    assert cleaned.startswith("login failed for token ")
+    assert cleaned.endswith(" at the mount")
+
+
+def test_redact_text_leaves_ordinary_prose_alone():
+    message = "refusing to leave team-a/app empty; delete the path instead"
+    assert redact_text(message) == message
+
+
+def test_redact_text_removes_credentials_embedded_in_a_url():
+    assert "hunter2" not in redact_text("could not reach https://user:hunter2@vault.example.com")
+
+
+def test_redact_text_handles_no_message():
+    assert redact_text("") == ""

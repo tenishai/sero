@@ -869,3 +869,74 @@ def test_updating_a_path_ending_in_reveal_is_refused(client, store):
     )
     assert resp.status_code == 400
     assert "reserved" in resp.json()["error"]
+
+
+# ── Audit coverage ─────────────────────────────────────────────────────
+
+
+def test_a_refused_listing_leaves_a_denied_row(client, sessions):
+    resp = client.get("/api/namespaces/team-a/secrets", headers={HEADER: STRANGER})
+    assert resp.status_code == 403
+    (row,) = audit_rows(sessions, "list_secrets")
+    assert row.status == "denied"
+    assert row.user_email == STRANGER
+    assert row.redacted_args["namespace"] == "team-a"
+
+
+def test_a_refused_detail_read_leaves_a_denied_row(client, sessions):
+    client.get("/api/namespaces/team-a/secrets/app?env=dev", headers={HEADER: STRANGER})
+    (row,) = audit_rows(sessions, "get_secret")
+    assert row.status == "denied"
+
+
+def test_a_namespace_listing_off_the_allow_list_leaves_a_denied_row(sessions, store):
+    client = build_client(sessions, store)
+    assert as_member(client, "GET", "/api/namespaces").status_code == 403
+    (row,) = audit_rows(sessions, "list_my_namespaces")
+    assert row.status == "denied"
+    assert "allow list" in row.error
+
+
+def test_a_request_with_no_identity_is_audited(client, sessions):
+    client.get("/api/namespaces")
+    (row,) = audit_rows(sessions, "identify")
+    assert row.status == "denied"
+    assert row.user_email == "unidentified"
+    # The header NAME, and whether it was there. Never a value.
+    assert row.redacted_args["header"] == HEADER
+    assert row.redacted_args["present"] is False
+
+
+def test_duplicate_identity_headers_are_audited_as_present(client, sessions):
+    client.get("/api/me", headers=[(HEADER, MEMBER), (HEADER, "attacker@example.com")])
+    (row,) = audit_rows(sessions, "identify")
+    assert row.status == "denied"
+    assert row.redacted_args["present"] is True
+    assert "more than one" in row.error
+    # The addresses that were sent are not the backend's to record here.
+    assert "attacker@example.com" not in str(row.redacted_args)
+
+
+def test_a_refusal_is_audited_as_refused_not_as_an_error(client, sessions):
+    resp = as_member(
+        client,
+        "POST",
+        "/api/namespaces/team-a/secrets",
+        json={"path": "new", "env": "dev", "values": {"TOKEN": "changeme"}, "apply": True},
+    )
+    assert resp.status_code == 400
+    (row,) = audit_rows(sessions, "create_secret")
+    # A refusal is a decision, not a fault: an operator reading the log should
+    # be able to tell "we said no" from "we broke".
+    assert row.status == "refused"
+
+
+def test_a_wrong_environment_is_audited_as_refused(client, sessions):
+    as_member(
+        client,
+        "POST",
+        "/api/namespaces/team-a/secrets",
+        json={"path": "new", "env": "prod", "values": {"TOKEN": "dummy"}, "apply": True},
+    )
+    (row,) = audit_rows(sessions, "create_secret")
+    assert row.status == "refused"
