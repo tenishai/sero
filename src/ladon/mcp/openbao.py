@@ -15,9 +15,10 @@ client and free of any connection concern:
   config file) is pluggable; this layer does not assume a provider.
 
 The read path masks every value through ``ladon.hygiene.mask`` before returning,
-so the port's value-free contract holds at the boundary: a plaintext value read
-from OpenBao never leaves this module. The write path takes values and writes
-them, but returns only key names.
+so the port's value-free contract holds at the boundary. The write path takes
+values and writes them, but returns only key names. ``reveal_value`` is the one
+deliberate exception, for the reveal route only; it is named so that a search
+for plaintext exits finds exactly one.
 """
 
 from __future__ import annotations
@@ -133,6 +134,11 @@ class OpenBaoSecrets:
         merged.update(values)
         for key in remove_keys:
             merged.pop(key, None)
+        if not merged:
+            # An empty secret still exists, which reads as a path with nothing in
+            # it and is almost never what was meant. Deleting the path is a
+            # separate, explicit operation.
+            raise ValueError(f"refusing to leave {namespace}/{path} empty; delete the path instead")
         client.secrets.kv.v2.create_or_update_secret(
             path=path, secret=merged, mount_point=self._mount
         )
@@ -144,6 +150,22 @@ class OpenBaoSecrets:
             written_keys=list(values),
             removed_keys=[k for k in remove_keys if k in current],
         )
+
+    # ── Reveal (the one plaintext exit, gated above this layer) ──────────
+
+    def reveal_value(self, user_email: str, namespace: str, path: str, env: str, key: str) -> str:
+        """Return one key's plaintext value.
+
+        The single call in this module that returns an unmasked value. It exists
+        only for the reveal route, which is itself behind a gate that a
+        deployment must switch on (the default refuses). The value is returned
+        to the caller and never logged, stored, or put in an audit row.
+        """
+        client = self._client_for(namespace)
+        current = self._read_raw(client, path)
+        if key not in current:
+            raise KeyError(f"no key {key!r} at {namespace}/{path}")
+        return str(current[key])
 
     def _read_raw(self, client: Any, path: str) -> dict[str, str]:
         """Read the current plaintext for a merge. Never returned or logged."""

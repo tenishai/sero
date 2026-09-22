@@ -236,3 +236,23 @@ def test_request_namespace_denied_off_allow_list(session):
         request_namespace_impl(
             session, user_email=USER, team_name="t", environments=["dev"], members=[]
         )
+
+
+def test_update_refuses_a_key_in_both_values_and_remove_keys(session, allowed):
+    # Naming one key on both sides is ambiguous, so it is refused rather than
+    # resolved by an ordering the caller cannot see.
+    reader, writer = FakeReader(), FakeWriter()
+    with pytest.raises(ValueError, match="both"):
+        update_secret_impl(
+            reader,
+            writer,
+            session,
+            user_email=USER,
+            namespace="team-a",
+            path="team-a/app",
+            env="dev",
+            values={"API_KEY": "fresh-dummy-value"},
+            remove_keys=["API_KEY"],
+            apply=True,
+        )
+    assert writer.calls == []

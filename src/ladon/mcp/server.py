@@ -278,7 +278,9 @@ def update_secret_impl(
     """Merge ``values`` into a path and delete ``remove_keys``. Dry-run unless apply.
 
     Merges: only the named keys change; other existing keys are untouched. Gated
-    and placeholder-refusing like create. A dry-run writes nothing.
+    and placeholder-refusing like create. A key named in both ``values`` and
+    ``remove_keys`` is refused. A dry-run writes nothing. Emptying a path is
+    refused by the writer, which is where the merged result is known.
     """
     values = values or {}
     remove_keys = remove_keys or []
@@ -287,6 +289,11 @@ def update_secret_impl(
     _reject_placeholders(values)
     if not values and not remove_keys:
         raise ValueError("update_secret needs at least one of 'values' or 'remove_keys'")
+    # A key on both sides is ambiguous: written then deleted, or the reverse,
+    # depending on an order the caller cannot see. Refuse instead of guessing.
+    both = sorted(set(values) & set(remove_keys))
+    if both:
+        raise ValueError(f"keys named in both 'values' and 'remove_keys': {', '.join(both)}")
     audit_args = {
         "namespace": namespace,
         "path": path,

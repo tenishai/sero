@@ -4,6 +4,8 @@ Exercised with a fake hvac KV v2 surface, so no live OpenBao is needed. The fake
 stores plaintext; the reader must only ever return masked values.
 """
 
+import pytest
+
 from ladon.mcp.openbao import OpenBaoSecrets
 
 
@@ -119,3 +121,28 @@ def test_update_on_absent_path_starts_empty():
     result = obs.update_secret("op@example.com", "team-a", "new", "dev", {"A": "1"}, [])
     assert store["new"] == {"A": "1"}
     assert result.written_keys == ["A"]
+
+
+def test_update_refuses_to_empty_a_path():
+    # Removing the last key would leave an empty secret, which reads as "exists
+    # with nothing in it". Deleting the path is a different, explicit operation.
+    store = {"app": {"ONLY": "1"}}
+    obs = make_secrets(store)
+    with pytest.raises(ValueError, match="empty"):
+        obs.update_secret("op@example.com", "team-a", "app", "dev", {}, ["ONLY"])
+    assert store["app"] == {"ONLY": "1"}
+
+
+def test_reveal_value_returns_one_plaintext_key():
+    store = {"app": {"API_KEY": "dummy-reveal-value", "DB": "dummy-two"}}
+    obs = make_secrets(store)
+    assert obs.reveal_value("op@example.com", "team-a", "app", "dev", "API_KEY") == (
+        "dummy-reveal-value"
+    )
+
+
+def test_reveal_value_unknown_key_is_a_key_error():
+    store = {"app": {"API_KEY": "dummy-reveal-value"}}
+    obs = make_secrets(store)
+    with pytest.raises(KeyError):
+        obs.reveal_value("op@example.com", "team-a", "app", "dev", "ABSENT")

@@ -15,7 +15,8 @@ Covers the five datastore domains:
 * refresh-token families (``create_family``, ``consume``, ``revoke_family``,
   ``revoke_user``), with rotation and replay detection;
 * the namespace-request workflow (``create_namespace_request``,
-  ``mark_request_submitted``, ``mark_request_failed``, ``list_namespace_requests``);
+  ``mark_request_approved``, ``mark_request_rejected``, ``mark_request_submitted``,
+  ``mark_request_failed``, ``list_namespace_requests``);
 * step-up reveal flows and grants (``start_reveal_flow``, ``consume_reveal_flow``,
   ``grant_reveal``, ``active_reveal_grant``, ``revoke_reveal_grant``);
 * background apply jobs (``create_job``, ``mark_job_running``, ``mark_job_done``,
@@ -323,6 +324,33 @@ def mark_request_submitted(
     row = _require_request(session, request_id)
     row.status = "submitted"
     row.ticket_ref = ticket_ref
+    row.updated_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def mark_request_approved(session: Session, *, request_id: int) -> NamespaceRequest:
+    """Move a request to ``approved``: an admin has said yes.
+
+    Approval is the decision, not the provisioning. Creating the namespace is a
+    separate apply run that reads approved requests.
+    """
+    row = _require_request(session, request_id)
+    row.status = "approved"
+    row.updated_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def mark_request_rejected(session: Session, *, request_id: int, reason: str) -> NamespaceRequest:
+    """Move a request to ``rejected`` and record why.
+
+    The reason lands in ``error``, the column that already holds why a request
+    did not proceed, so a rejected request reads the same way as a failed one.
+    """
+    row = _require_request(session, request_id)
+    row.status = "rejected"
+    row.error = reason
     row.updated_at = datetime.now(UTC)
     session.flush()
     return row
