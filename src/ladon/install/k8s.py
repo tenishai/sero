@@ -597,6 +597,37 @@ def _state_after(doc: dict, before: str, *, run: Runner) -> str:
     raise K8sError(f"{kind}/{name} is still on the cluster after kubectl accepted the delete")
 
 
+def list_argv(kind: str, api_group: str, namespace: str) -> list[str]:
+    """Build the ``kubectl get`` command that lists every object of one kind in
+    a namespace. No ``--show-managed-fields``: a listing asks what is there,
+    not who owns it."""
+    resource = f"{kind.lower()}.{api_group}" if api_group else kind.lower()
+    return ["kubectl", "get", resource, "-n", namespace, "-o", "json"]
+
+
+def list_kind(kind: str, api_group: str, namespace: str, *, run: Runner = run) -> list[dict]:
+    """Every live object of ``kind`` in ``namespace``, or an empty list.
+
+    What off-boarding reads before it removes an application's store: an
+    ExternalSecret still pointing at that store is a reason to refuse, and
+    the only way to know is to look. A namespace that is not there holds
+    nothing, so it is an empty list rather than an error."""
+    result = run(list_argv(kind, api_group, namespace))
+    if result.returncode != 0:
+        message = result.stderr or result.stdout
+        if NOT_FOUND_REASON in message:
+            return []
+        raise K8sError(
+            f"listing {kind} in {namespace} failed ({result.returncode}): {_first_line(message)}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise K8sError(f"listing {kind} in {namespace} returned output that is not JSON") from exc
+    items = payload.get("items") if isinstance(payload, dict) else None
+    return [item for item in (items or []) if isinstance(item, dict)]
+
+
 def read_one(doc: dict, *, missing_ok: bool = False, run: Runner = run) -> dict | None:
     """Read one document's live object, or None when it is absent.
 

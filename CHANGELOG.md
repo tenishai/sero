@@ -12,6 +12,20 @@ point of view, not a list of commit subjects.
 
 ### Added
 
+- `DELETE /api/service/app` on the machine lane removes an application's
+  identity: its ClusterSecretStore, its service account in Ladon's namespace,
+  its JWT role and its read-only policy, the four objects `app-onboarding`
+  (or a sync that onboarded implicitly) created. Cluster first, store before
+  service account, then OpenBao, role before policy; every cluster object is
+  read and checked for Ladon's field manager before it is deleted, and one
+  that is not there is `absent`. Refused with a `409` while any ExternalSecret
+  in the application's namespace still reads through the store. A dry run
+  removes nothing. Every name is derived from the caller's pinned namespace
+  and the application, so a caller can remove no identity but its own
+  application's. The deploy manifests grant the two deletes this needs:
+  `clustersecretstores` on the ClusterRole and `serviceaccounts` in Ladon's
+  own namespace.
+
 - The machine lane's `POST /api/service/sync` onboards the application when
   its `ClusterSecretStore` is not there. Until now the store, and the JWT role,
   read-only policy and service account behind it, existed only after an

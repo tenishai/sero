@@ -6,8 +6,9 @@
 # another team owns. Creating them is why `serviceaccounts` is in this list.
 #
 # Secrets and ConfigMaps are namespaced here too, so onboarding writes land in
-# this namespace and nowhere else. There is deliberately no `delete`: Ladon
-# converges state forward, and removal is an operator decision.
+# this namespace and nowhere else. `delete` is granted on service accounts
+# only: the lane's off-boarding call removes the account it created for an
+# application, and nothing else here is ever removed by Ladon.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -22,3 +23,6 @@ rules:
       - configmaps
       - serviceaccounts
     verbs: ["get", "list", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["delete"]
