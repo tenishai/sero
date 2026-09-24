@@ -53,8 +53,20 @@ def test_settings_come_from_the_config():
     assert settings.access.admins == frozenset({"admin@example.com"})
 
 
+def test_the_deployment_may_name_the_cluster_it_serves():
+    text = "deployment:\n  cluster: cluster-a\n"
+    settings = parse_web_settings(load_deployment_config_text(text), env={})
+    assert settings.cluster == "cluster-a"
+
+
+def test_a_cluster_that_is_not_a_string_is_refused():
+    with pytest.raises(ConfigError, match="deployment.cluster"):
+        parse_web_settings(load_deployment_config_text("deployment:\n  cluster: [a]\n"), env={})
+
+
 def test_defaults_when_the_config_says_nothing():
     settings = parse_web_settings(load_deployment_config_text(""), env={})
+    assert settings.cluster is None
     assert settings.identity.header == DEFAULT_IDENTITY_HEADER
     assert settings.identity.allow_dev_identity is False
     # Nothing declared means nothing pinned.

@@ -282,6 +282,20 @@ def external_secret_ref(
     }
 
 
+def cluster_store_ref(*, name: str, api_version: str = DEFAULT_API_VERSION) -> dict:
+    """Just enough of a ClusterSecretStore to name one: kind and name.
+
+    What a read needs before a sync decides whether the application it serves
+    has been onboarded. Cluster-scoped, so there is no namespace to carry.
+    """
+    require(name, "name", context="cluster_store_ref")
+    return {
+        "apiVersion": f"{API_GROUP}/{api_version}",
+        "kind": "ClusterSecretStore",
+        "metadata": {"name": name},
+    }
+
+
 def to_manifest(obj: ClusterSecretStore | dict) -> str:
     """Serialize a rendered resource to a YAML manifest string."""
     manifest = obj.manifest if isinstance(obj, ClusterSecretStore) else obj
