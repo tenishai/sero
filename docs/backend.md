@@ -715,13 +715,38 @@ carries a `deletionTimestamp`, and one still present raises.
 
 It removes the ExternalSecret and only that. The application's
 ClusterSecretStore, its JWT role, its read-only policy and its service account
-stay, and so does the KV path. Those are application off-boarding: they are
-cluster-scoped or namespace-wide, one of them is shared with anything else the
-application runs, and removing them is a decision about an application's whole
-identity rather than about one of its secrets. That is an operator and an apply
-phase, not a per-secret call on this lane. An application the sync onboarded
-on its own is no different here: taking it down through this lane leaves those
-four behind for the operator, the same as one onboarded by hand.
+stay, and so does the KV path. Those are the application's identity, and
+removing them is a separate call:
+
+**`DELETE /api/service/app`** removes exactly those four, derived from the
+caller's pinned namespace and the application by the functions that named
+them at onboarding. Body: `acting_email`, `namespace`, `app`, optional
+`k8s_namespace` (the application's own unless the caller is pinned to
+another), `apply`. Cluster first, store before service account (with the
+store gone nothing can log in as the account), then OpenBao, role before
+policy. Every cluster object is read and checked for the `ladon` field
+manager before it goes, an object that is not there is `absent`, and a dry
+run removes nothing. It is refused with a `409` while any ExternalSecret in
+the application's Kubernetes namespace still reads through the store: remove
+those with `DELETE /service/sync` first, then the identity. The deployment
+must name its cluster (`deployment.cluster`) to name the role's mount.
+
+```json
+{
+  "applied": true,
+  "namespace": "team-a",
+  "app": "sample",
+  "store": "ladon-team-a-sample-<digest>",
+  "k8s_namespace": "sample",
+  "report": [
+    "ClusterSecretStore/ladon-team-a-sample-<digest>: delete",
+    "ServiceAccount/ladon/eso-team-a-sample-<digest>: delete",
+    "openbao auth role eso-team-a-sample-<digest>: delete",
+    "openbao policy eso-sample-readonly: delete"
+  ],
+  "blocked": []
+}
+```
 
 ### What a caller cannot do
 
@@ -765,6 +790,7 @@ against `acting_email`, under a tool name that says which one it was:
 | `GET /api/service/secrets` | `service.get_secret` |
 | `DELETE /api/service/secrets` | `service.delete_secret` |
 | `POST /api/service/sync` | `service.sync_secret` |
+| `DELETE /api/service/app` | `service.offboard_app` |
 | `DELETE /api/service/sync` | `service.delete_sync` |
 
 A dry run is recorded as `dry-run` and an apply as `ok`, so the trail

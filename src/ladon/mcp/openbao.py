@@ -29,6 +29,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import hvac
+
 from ladon.hygiene import mask
 from ladon.mcp.ports import (
     SecretDetail,
@@ -293,6 +295,37 @@ class OpenBaoSecrets:
             raise SecretNotDeleted(
                 f"{namespace}/{path} is still readable after OpenBao accepted the delete"
             )
+
+    # ── Off-boarding (the identity half, see service_lane.offboard_app) ─
+
+    def offboard_identity(
+        self, namespace: str, *, auth_mount: str, role: str, policy: str, apply: bool
+    ) -> list[str]:
+        """Remove an application's JWT role and read-only policy from its
+        team's namespace, role first: a role that names a policy which is
+        gone is a login that fails at the wrong layer. Each line names the
+        object and what happened to it, never a value: ``delete`` when the
+        delete ran (OpenBao answers a delete of a missing role or policy the
+        same way, so this is also what an already-gone one reports),
+        ``absent`` when the server said there was nothing there. A dry run
+        touches nothing and says ``delete`` for both."""
+        role_path = f"auth/{auth_mount}/role/{role}"
+        lines = [f"openbao auth role {role}: ", f"openbao policy {policy}: "]
+        if not apply:
+            return [line + "delete" for line in lines]
+        client = self._client_for(namespace)
+        outcomes = []
+        for attempt in (
+            lambda: client.delete(role_path),
+            lambda: client.sys.delete_policy(name=policy),
+        ):
+            try:
+                attempt()
+            except hvac.exceptions.InvalidPath:
+                outcomes.append("absent")
+            else:
+                outcomes.append("delete")
+        return [line + outcome for line, outcome in zip(lines, outcomes, strict=True)]
 
     # ── Reveal (the one plaintext exit, gated above this layer) ──────────
 

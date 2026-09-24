@@ -152,10 +152,7 @@ proxy authenticating every caller and the backend verifying the signed
 assertion rather than trusting a header.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
-sync; reveal step-up not built (gate denies by default); no application
-off-boarding phase (the lane removes a secret and its ExternalSecret; the
-store, the role, the policy and the service account are still an operator's
-job, including for an application the lane onboarded on its own); no fleet / second cluster; one process, one replica (the job runner and
+sync; reveal step-up not built (gate denies by default); no fleet / second cluster; one process, one replica (the job runner and
 the allow list are per process); the image workflow publishes only once the
 deployer grants its identity.
 

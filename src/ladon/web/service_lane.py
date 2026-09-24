@@ -56,12 +56,14 @@ from ladon.config.apps import (
     DEFAULT_APP_AUDIENCE,
     DEFAULT_SA_NAMESPACE,
     MAX_KV_PATH_LENGTH,
+    app_identity,
     app_store_name,
     checked_app_path,
     checked_apps_path,
     team_label_for_namespace,
 )
 from ladon.config.eso import (
+    API_GROUP,
     K8S_NAMESPACE_NAME_LABEL,
     cluster_store_ref,
     external_secret,
@@ -79,6 +81,7 @@ from ladon.install.k8s import (
     converge_documents,
     delete_documents,
     eso_api_version,
+    list_kind,
     read_one,
     require_managed,
 )
@@ -121,6 +124,7 @@ SYNC_TOOL = "service.sync_secret"
 READ_TOOL = "service.get_secret"
 DELETE_TOOL = "service.delete_secret"
 UNSYNC_TOOL = "service.delete_sync"
+OFFBOARD_TOOL = "service.offboard_app"
 
 # Stamped on every row this lane writes. The tool name says what happened and
 # this says who the "who" is: a row attributed to a person that a machine
@@ -229,6 +233,9 @@ class ClusterSync:
     converge: Callable[..., ApplyReport] = converge_documents
     remove: Callable[..., ApplyReport] = delete_documents
     read: Callable[..., dict[str, Any] | None] = read_one
+    # Every object of one kind in a namespace: what off-boarding checks for
+    # ExternalSecrets still reading through the store it is about to remove.
+    list_kind: Callable[..., list[dict[str, Any]]] = list_kind
     # The CLI's own app-onboarding phase, both halves, for an application whose
     # store is not there when a sync asks for it. The same function the admin
     # endpoint and the CLI run, so the lane never grows a second rendering of
@@ -434,6 +441,21 @@ class ServiceSyncBody(BaseModel):
     apply: bool = False
 
 
+class ServiceOffboardBody(BaseModel):
+    """One application's identity, removed: store, service account, role, policy.
+
+    No names beyond the application's: every object is derived from the team
+    and the application exactly as onboarding derived it, so a caller cannot
+    aim a removal at anything but its own application's identity.
+    """
+
+    acting_email: str = Field(pattern=ACTING_EMAIL_PATTERN, max_length=ACTING_EMAIL_MAX)
+    namespace: str = Field(pattern=NAMESPACE_PATTERN, max_length=NAMESPACE_MAX)
+    app: str = Field(pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    k8s_namespace: str | None = Field(default=None, pattern=LABEL_PATTERN, max_length=LABEL_MAX)
+    apply: bool = False
+
+
 class ServiceUnsyncBody(BaseModel):
     """One ExternalSecret, removed.
 
@@ -515,6 +537,10 @@ def delete_caller(request: Request) -> ServiceCaller:
     return _authenticated(request, DELETE_TOOL)
 
 
+def offboard_caller(request: Request) -> ServiceCaller:
+    return _authenticated(request, OFFBOARD_TOOL)
+
+
 def unsync_caller(request: Request) -> ServiceCaller:
     return _authenticated(request, UNSYNC_TOOL)
 
@@ -524,6 +550,7 @@ SyncCaller = Annotated[ServiceCaller, Depends(sync_caller)]
 ReadCaller = Annotated[ServiceCaller, Depends(read_caller)]
 DeleteCaller = Annotated[ServiceCaller, Depends(delete_caller)]
 UnsyncCaller = Annotated[ServiceCaller, Depends(unsync_caller)]
+OffboardCaller = Annotated[ServiceCaller, Depends(offboard_caller)]
 
 
 # ── Routes ─────────────────────────────────────────────────────────────
@@ -1129,6 +1156,129 @@ def unsync_secret(
 
 
 # ── Internals ──────────────────────────────────────────────────────────
+
+
+@router.delete("/service/app")
+def offboard_app(
+    body: ServiceOffboardBody,
+    request: Request,
+    caller: OffboardCaller,
+    secrets: Secrets,
+    session: DbSession,
+    audit: Auditor,
+) -> dict[str, Any]:
+    """Remove an application's identity: the four objects onboarding made.
+
+    The other half of the sync that onboards an application when its store is
+    absent. An application a consumer creates on its own is one it also takes
+    down on its own, and until now that left its ClusterSecretStore, service
+    account, JWT role and read-only policy behind for an operator to find. This
+    removes exactly those four, derived from the team and the application by
+    the same functions that named them, so nothing else can be named here.
+
+    Cluster first, store before service account: with the store gone nothing
+    on the cluster can log in as the account, and with the account gone the
+    role binds to a subject that does not exist. Then OpenBao, role before
+    policy. Every object is read, checked for Ladon's field manager, and
+    deleted in that order, the way ``DELETE /service/sync`` does; an object
+    that is not there is ``absent`` and no delete runs, so asking twice is not
+    an error.
+
+    Refused while any ExternalSecret in the application's Kubernetes namespace
+    still reads through the store: removing the identity under a live object is
+    the dangling ExternalSecret made on purpose. The caller removes those first.
+
+    A dry run reads and checks and removes nothing. The role's mount is named
+    after the cluster, so a deployment that has not named its cluster cannot
+    say which role, and refuses rather than guess.
+    """
+    k8s_namespace = body.k8s_namespace or body.app
+    args = {
+        **_attribution(caller),
+        "acting_email": body.acting_email,
+        "namespace": body.namespace,
+        "app": body.app,
+        "k8s_namespace": k8s_namespace,
+    }
+    with audit.guard(OFFBOARD_TOOL, body.acting_email, args, session=session):
+        _require_pinned(caller, body.namespace, action="delete in")
+        _require_cluster_target(caller, body.app, k8s_namespace, name=body.app, target=body.app)
+        settings = services(request).settings
+        if not settings.cluster:
+            raise ApiError(
+                503,
+                f"this deployment names no cluster (deployment.cluster), so the JWT role of "
+                f"{body.app!r} cannot be named and its identity cannot be removed from this "
+                "lane; run the removal as an operator",
+            )
+        try:
+            identity = app_identity(
+                team=team_label_for_namespace(body.namespace),
+                app=body.app,
+                cluster=settings.cluster,
+                namespace=body.namespace,
+                k8s_namespace=k8s_namespace,
+                sa_namespace=DEFAULT_SA_NAMESPACE,
+                audience=DEFAULT_APP_AUDIENCE,
+                kv_mount=settings.kv_mount,
+            )
+        except ConfigError as exc:
+            raise WriteRefused(str(exc)) from exc
+        store = identity.store_name
+        args["store"] = store
+        cluster = lane(request).cluster
+        api_version = _cluster_call(cluster.api_version)
+
+        still_reading = [
+            (item.get("metadata") or {}).get("name", "")
+            for item in _cluster_call(cluster.list_kind, "ExternalSecret", API_GROUP, k8s_namespace)
+            if ((item.get("spec") or {}).get("secretStoreRef") or {}).get("name") == store
+        ]
+        if still_reading:
+            raise ApiError(
+                409,
+                f"{len(still_reading)} ExternalSecret(s) in {k8s_namespace!r} still read "
+                f"through {store!r} ({', '.join(sorted(still_reading))}); remove them first, "
+                "then the identity",
+            )
+
+        documents = [
+            cluster_store_ref(name=store, api_version=api_version),
+            {
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": {"name": identity.name, "namespace": identity.sa_namespace},
+            },
+        ]
+        report = _cluster_call(cluster.remove, documents, dry_run=not body.apply)
+        lines = report.lines()
+        lines.extend(
+            secrets.offboard_identity(
+                body.namespace,
+                auth_mount=identity.auth_mount,
+                role=identity.name,
+                policy=identity.policy_name,
+                apply=body.apply,
+            )
+        )
+        _audit(
+            session,
+            user_email=body.acting_email,
+            tool_name=OFFBOARD_TOOL,
+            status="ok" if body.apply else "dry-run",
+            args={**args, "report": lines},
+        )
+    session.commit()
+    return {
+        "applied": body.apply,
+        "namespace": body.namespace,
+        "app": body.app,
+        "store": store,
+        "k8s_namespace": k8s_namespace,
+        # Names and verbs only: what went, or would go, and nothing it held.
+        "report": lines,
+        "blocked": [result.target for result in report.blocked],
+    }
 
 
 def _bearer(authorization: str | None) -> str:

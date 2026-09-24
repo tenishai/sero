@@ -27,10 +27,14 @@
 # of it in the code: the object must record `ladon` as a field manager, and it
 # must belong to the application and namespace the caller named.
 #
-# It is not granted on `ClusterSecretStore`: a store is an application's
-# identity on the cluster, removing one is off-boarding rather than a
-# per-secret call, and a cluster-scoped delete is a blast radius worth not
-# having.
+# `delete` is granted on `ClusterSecretStore` too, for the lane's
+# off-boarding call (`DELETE /api/service/app`): a store is an application's
+# identity on the cluster, and an application a consumer creates on its own
+# is one it also takes down on its own. The same two guards sit in front of
+# it: the object must record `ladon` as a field manager, and the lane refuses
+# while any ExternalSecret in the application's namespace still reads
+# through the store. The name is derived from the caller's pinned namespace
+# and the application, so a caller can name no store but its own.
 #
 # There is no access to Secrets outside Ladon's own namespace: a cluster-wide
 # Secret read would make this role a way to exfiltrate every synced value on
@@ -47,9 +51,10 @@ rules:
       - clustersecretstores
       - externalsecrets
     verbs: ["get", "list", "create", "patch", "update"]
-  # The one delete, on the one kind the lane takes back down.
+  # The deletes, on the two kinds the lane takes back down: an
+  # ExternalSecret per secret, a ClusterSecretStore per application.
   - apiGroups: ["external-secrets.io"]
-    resources: ["externalsecrets"]
+    resources: ["externalsecrets", "clustersecretstores"]
     verbs: ["delete"]
   # Confirm a target namespace exists before applying into it.
   - apiGroups: [""]

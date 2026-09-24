@@ -13,6 +13,7 @@ on the human it names.
 import copy
 from datetime import UTC, datetime, timedelta
 
+import hvac
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -37,6 +38,7 @@ from ladon.install.k8s import (
     ApplyResult,
     converge_documents,
     delete_documents,
+    list_kind,
     read_one,
 )
 from ladon.mcp.openbao import OpenBaoSecrets
@@ -207,10 +209,34 @@ class FakeKvV2:
         self._store.pop(path, None)
 
 
+class FakeSys:
+    """The one system call off-boarding makes: deleting a policy."""
+
+    def __init__(self, client):
+        self._client = client
+
+    def delete_policy(self, *, name):
+        if name in self._client.absent_policies:
+            raise hvac.exceptions.InvalidPath(f"no policy {name}")
+        self._client.deleted_policies.append(name)
+
+
 class FakeClient:
     def __init__(self, store, kv=None):
         self.kv = kv if kv is not None else FakeKvV2(store)
         self.secrets = type("S", (), {"kv": type("K", (), {"v2": self.kv})()})()
+        # Off-boarding's two deletes, recorded by path and by name. A name
+        # in `absent_*` answers the way OpenBao answers a missing object.
+        self.deleted_paths: list[str] = []
+        self.deleted_policies: list[str] = []
+        self.absent_paths: set[str] = set()
+        self.absent_policies: set[str] = set()
+        self.sys = FakeSys(self)
+
+    def delete(self, path):
+        if path in self.absent_paths:
+            raise hvac.exceptions.InvalidPath(f"no path {path}")
+        self.deleted_paths.append(path)
 
 
 class FakeClock:
@@ -333,6 +359,7 @@ def build_client(
     raise_server_exceptions=True,
     cluster_name=CLUSTER,
     onboard=None,
+    openbao=None,
 ):
     settings = WebSettings(
         identity=identity or IdentitySettings(),
@@ -345,8 +372,9 @@ def build_client(
         service_callers=service_callers,
         cluster=cluster_name,
     )
+    bao = openbao if openbao is not None else FakeClient(store, kv=kv)
     secrets = OpenBaoSecrets(
-        client_for=lambda namespace: FakeClient(store, kv=kv),
+        client_for=lambda namespace: bao,
         # The acting human holds nothing. A write that lands proves the lane
         # authorized on the caller's pinned namespaces and not on this.
         namespaces_for=lambda email: [],
@@ -360,6 +388,9 @@ def build_client(
             converge=lambda docs, **kwargs: converge_documents(docs, run=cluster, **kwargs),
             remove=lambda docs, **kwargs: delete_documents(docs, run=cluster, **kwargs),
             read=lambda doc, **kwargs: read_one(doc, run=cluster, **kwargs),
+            list_kind=lambda kind, group, ns, **kwargs: list_kind(
+                kind, group, ns, run=cluster, **kwargs
+            ),
             onboard=onboard if onboard is not None else FakeOnboarding(),
         ),
         now=clock or (lambda: 0.0),
@@ -2056,3 +2087,173 @@ def test_the_delete_runs_whether_or_not_the_read_found_anything(client, store):
     response = erase(client, erase_body(path=f"apps/{APP}/nowhere", apply=True))
     assert response.status_code == 200
     assert response.json()["deleted"] is False
+
+
+# ── Off-boarding: the application's identity, taken down ──────────────
+
+
+def offboard(client, body=None, *, headers=None):
+    return client.request(
+        "DELETE",
+        "/api/service/app",
+        json=offboard_body() if body is None else body,
+        headers=bearer() if headers is None else headers,
+    )
+
+
+def offboard_body(**overrides):
+    body = {"acting_email": ACTING, "namespace": NAMESPACE, "app": APP, "apply": True}
+    body.update(overrides)
+    return body
+
+
+def live_service_account(name=None, *, managers=("ladon",)):
+    return {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "name": name or f"eso-{NAMESPACE}-{APP}-{_digest()}",
+            "namespace": "ladon",
+            "managedFields": [managed_field_entry(m) for m in managers],
+        },
+        "automountServiceAccountToken": False,
+    }
+
+
+def _digest():
+    return app_store_name(team=NAMESPACE, app=APP).rsplit("-", 1)[-1]
+
+
+def _identity_name():
+    return f"eso-{NAMESPACE}-{APP}-{_digest()}"
+
+
+def managed_store(*, managers=("ladon",), admits=(DEFAULT_K8S_NAMESPACE,)):
+    doc = live_store(admits=admits)
+    doc["metadata"]["managedFields"] = [managed_field_entry(m) for m in managers]
+    return doc
+
+
+def lane_holding_an_identity(sessions, store, *, extra_live=(), openbao=None, **overrides):
+    """A lane whose cluster holds the onboarded application: its store and
+    its service account, both applied by Ladon, and nothing reading through
+    the store unless a test adds one."""
+    live = [managed_store(), live_service_account(), *extra_live]
+    cluster = FakeCluster(live=live)
+    bao = openbao if openbao is not None else FakeClient(store)
+    client = build_client(
+        sessions, store, cluster, service_callers=callers(**overrides), openbao=bao
+    )
+    return client, cluster, bao
+
+
+def test_offboard_removes_the_four_objects_cluster_first(sessions, store):
+    client, cluster, bao = lane_holding_an_identity(sessions, store)
+    response = offboard(client)
+    assert response.status_code == 200
+    answer = response.json()
+    assert answer["applied"] is True
+    assert answer["store"] == app_store_name(team=NAMESPACE, app=APP)
+    # The store goes before the service account: with the store gone nothing
+    # can log in as the account, whatever order the rest lands in.
+    assert answer["report"][:2] == [
+        f"ClusterSecretStore/{app_store_name(team=NAMESPACE, app=APP)}: delete",
+        f"ServiceAccount/ladon/{_identity_name()}: delete",
+    ]
+    assert answer["report"][2:] == [
+        f"openbao auth role {_identity_name()}: delete",
+        f"openbao policy eso-{APP}-readonly: delete",
+    ]
+    assert cluster.objects == {}
+    assert bao.deleted_paths == [f"auth/jwt-{CLUSTER}/role/{_identity_name()}"]
+    assert bao.deleted_policies == [f"eso-{APP}-readonly"]
+
+
+def test_a_dry_run_offboard_removes_nothing_and_says_what_it_would(sessions, store):
+    client, cluster, bao = lane_holding_an_identity(sessions, store)
+    response = offboard(client, offboard_body(apply=False))
+    assert response.status_code == 200
+    assert response.json()["applied"] is False
+    assert len(response.json()["report"]) == 4
+    assert len(cluster.objects) == 2
+    assert cluster.deletes == []
+    assert bao.deleted_paths == [] and bao.deleted_policies == []
+
+
+def test_offboard_refuses_while_an_external_secret_still_reads_through_the_store(sessions, store):
+    """Taking the identity away from under a live ExternalSecret is the
+    dangling object again, made on purpose. The caller removes the
+    ExternalSecrets first (`DELETE /service/sync`), then the identity."""
+    theirs = live_external_secret()
+    client, cluster, bao = lane_holding_an_identity(sessions, store, extra_live=[theirs])
+    response = offboard(client)
+    assert response.status_code == 409
+    assert "sample-demo" in response.json()["error"]
+    assert len(cluster.objects) == 3
+    assert bao.deleted_paths == [] and bao.deleted_policies == []
+
+
+def test_offboard_of_an_application_that_was_never_onboarded_is_a_quiet_success(sessions, store):
+    bao = FakeClient(store)
+    bao.absent_paths.add(f"auth/jwt-{CLUSTER}/role/{_identity_name()}")
+    bao.absent_policies.add(f"eso-{APP}-readonly")
+    client = build_client(sessions, store, FakeCluster(), service_callers=callers(), openbao=bao)
+    response = offboard(client)
+    assert response.status_code == 200
+    assert response.json()["report"] == [
+        f"ClusterSecretStore/{app_store_name(team=NAMESPACE, app=APP)}: absent",
+        f"ServiceAccount/ladon/{_identity_name()}: absent",
+        f"openbao auth role {_identity_name()}: absent",
+        f"openbao policy eso-{APP}-readonly: absent",
+    ]
+
+
+def test_offboard_refuses_a_store_ladon_did_not_apply(sessions, store):
+    live = [managed_store(managers=("kubectl-client-side-apply",)), live_service_account()]
+    cluster = FakeCluster(live=live)
+    bao = FakeClient(store)
+    client = build_client(sessions, store, cluster, service_callers=callers(), openbao=bao)
+    response = offboard(client)
+    assert response.status_code == 409
+    assert len(cluster.objects) == 2
+    assert bao.deleted_paths == []
+
+
+def test_offboard_refuses_a_namespace_the_caller_is_not_pinned_to(sessions, store):
+    client, cluster, bao = lane_holding_an_identity(sessions, store)
+    response = offboard(client, offboard_body(namespace=OTHER_NAMESPACE))
+    assert response.status_code == 403
+    assert len(cluster.objects) == 2
+
+
+def test_offboard_refuses_a_kubernetes_namespace_the_caller_is_not_pinned_to(sessions, store):
+    client, cluster, bao = lane_holding_an_identity(sessions, store)
+    response = offboard(client, offboard_body(k8s_namespace=PINNED_K8S_NAMESPACE))
+    assert response.status_code == 403
+    assert len(cluster.objects) == 2
+
+
+def test_offboard_needs_the_deployment_to_name_its_cluster(sessions, store):
+    """The role lives on `jwt-<cluster>`; without the cluster's name the lane
+    cannot say which role, and refuses rather than guess."""
+    live = [managed_store(), live_service_account()]
+    client = build_client(
+        sessions, store, FakeCluster(live=live), service_callers=callers(), cluster_name=None
+    )
+    response = offboard(client)
+    assert response.status_code == 503
+    assert "deployment.cluster" in response.json()["error"]
+
+
+def test_offboard_needs_a_service_token(client):
+    assert client.request("DELETE", "/api/service/app", json=offboard_body()).status_code == 401
+
+
+def test_an_offboard_is_audited(sessions, store):
+    client, _, _ = lane_holding_an_identity(sessions, store)
+    offboard(client)
+    (row,) = rows(sessions, "service.offboard_app")
+    assert row.status == "ok"
+    assert row.redacted_args["app"] == APP
+    assert row.redacted_args["store"] == app_store_name(team=NAMESPACE, app=APP)
+    assert row.redacted_args["via"] == CALLER

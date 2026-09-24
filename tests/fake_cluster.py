@@ -113,6 +113,8 @@ class FakeCluster:
         return self.objects.get(self.key(doc))
 
     def _get(self, argv: list[str]) -> Result:
+        if "/" not in argv[2]:
+            return self._list(argv)
         obj = self.objects.get(_identity(argv))
         if obj is None:
             resource, _, name = argv[2].partition("/")
@@ -126,6 +128,19 @@ class FakeCluster:
             obj = copy.deepcopy(obj)
             obj.get("metadata", {}).pop("managedFields", None)
         return Result(argv, stdout=json.dumps(obj))
+
+    def _list(self, argv: list[str]) -> Result:
+        """``kubectl get <resource> -n <ns> -o json``: every stored object of
+        that resource in that namespace, as an items list."""
+        resource = argv[2]
+        namespace = argv[argv.index("-n") + 1] if "-n" in argv else None
+        items = [
+            copy.deepcopy(obj)
+            for key, obj in self.objects.items()
+            if key[2].startswith(f"{resource}/")
+            and (key[key.index("-n") + 1] if "-n" in key else None) == namespace
+        ]
+        return Result(argv, stdout=json.dumps({"items": items}))
 
     def _next_uid(self) -> str:
         """A fresh identity, the way the API server issues one per object.
