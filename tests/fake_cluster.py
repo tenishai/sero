@@ -29,6 +29,15 @@ NOT_FOUND = 'Error from server (NotFound): {resource} "{name}" not found'
 CONFLICT = 'error: Apply failed with 1 conflict: conflict with "other-manager"\n'
 
 
+# The flag kubectl needs before ``get -o json`` includes managedFields.
+SHOW_MANAGED_FIELDS = "--show-managed-fields"
+
+
+def _identity(argv) -> tuple[str, ...]:
+    """A read's argv without its output flags: which object, not how printed."""
+    return tuple(arg for arg in argv if arg != SHOW_MANAGED_FIELDS)
+
+
 class Result:
     """The subset of CompletedProcess the k8s helpers read."""
 
@@ -68,8 +77,10 @@ class FakeCluster:
 
     @staticmethod
     def key(doc: dict) -> tuple[str, ...]:
-        """The identity of one object: the same argv a read of it would use."""
-        return tuple(get_argv(doc))
+        """The identity of one object: the argv a read of it would use, minus
+        the output flags, so a read with or without ``--show-managed-fields``
+        finds the same object."""
+        return _identity(get_argv(doc))
 
     def __call__(self, argv, *, stdin=None) -> Result:
         argv = list(argv)
@@ -102,12 +113,18 @@ class FakeCluster:
         return self.objects.get(self.key(doc))
 
     def _get(self, argv: list[str]) -> Result:
-        obj = self.objects.get(tuple(argv))
+        obj = self.objects.get(_identity(argv))
         if obj is None:
             resource, _, name = argv[2].partition("/")
             return Result(
                 argv, returncode=1, stderr=NOT_FOUND.format(resource=resource, name=name) + "\n"
             )
+        if SHOW_MANAGED_FIELDS not in argv:
+            # What kubectl really does: ``get -o json`` drops the managed
+            # fields unless asked. A fake that always returned them hid the
+            # one bug that made every live object look like nobody's.
+            obj = copy.deepcopy(obj)
+            obj.get("metadata", {}).pop("managedFields", None)
         return Result(argv, stdout=json.dumps(obj))
 
     def _next_uid(self) -> str:

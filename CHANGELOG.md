@@ -50,6 +50,15 @@ point of view, not a list of commit subjects.
 
 ### Fixed
 
+- Every read of a live cluster object now passes `--show-managed-fields`.
+  kubectl strips `metadata.managedFields` from `get -o json` unless asked, so
+  the field-manager check behind the lane's ownership gates saw no manager on
+  any live object, including the ExternalSecrets Ladon had applied itself:
+  a second `POST /api/service/sync` over an application's own object, and
+  every `DELETE /api/service/sync`, answered `409` with "managed by no
+  recorded manager". The test double now drops managed fields the way kubectl
+  does, so the gates are exercised against what the cluster really returns.
+
 - The machine lane's `POST /api/service/sync` now has to prove whose
   ExternalSecret it is writing over, the same way the `DELETE` proves whose it
   is removing. `app` is a field in the request body and `k8s_namespace`
