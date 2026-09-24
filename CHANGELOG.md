@@ -10,6 +10,44 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- The machine lane's `POST /api/service/sync` onboards the application when
+  its `ClusterSecretStore` is not there. Until now the store, and the JWT role,
+  read-only policy and service account behind it, existed only after an
+  operator ran `app-onboarding` for that application. A consumer that creates
+  applications on its own (an agent room minting one per agent) had no way to
+  make that call, so its sync rendered an ExternalSecret pointing at a store
+  nothing created: the Secret never arrived and the pod never started. The
+  lane now reads the store first and, when it is absent, runs the same
+  `app-onboarding` phase the CLI and the admin endpoint run, with the same
+  renderers, for the caller's pinned OpenBao namespace and the Kubernetes
+  namespace the sync names. A dry-run sync plans the onboarding and writes
+  nothing. A blocked or failed onboarding is a `409` (or a `503` for a vault or
+  cluster that would not answer) before the ExternalSecret is touched, so a
+  document never points at an identity that did not land. The answer carries
+  what onboarding did under `onboarding`, names and verbs only (and, for a
+  blocked operation, why), and the audit row records `onboarded: true` for an
+  applied onboarding or `would_onboard: true` for a planned one. Whose
+  ExternalSecret an existing object is gets settled before any of this, so a
+  refused sync has not created an identity on the way.
+
+  A store that is already there admits exactly the Kubernetes namespaces
+  onboarding named. A sync for the same application into a namespace the
+  store does not admit is a `409` naming both, rather than an ExternalSecret
+  ESO refuses at refresh time. Widening a store stays an operator's
+  `app-onboarding` decision.
+
+  This needs the deployment to name the cluster whose `jwt-<cluster>` mount the
+  role hangs off: `deployment.cluster` in the config. A deployment that has not
+  said refuses to onboard from the lane, with a message that names the key,
+  rather than guess a mount.
+
+  Off-boarding is unchanged: `DELETE /api/service/sync` still removes the
+  ExternalSecret and only that. An application onboarded this way leaves its
+  store, role, policy and service account behind when its consumer takes it
+  down, exactly as an operator-onboarded one does.
+
 ### Fixed
 
 - The machine lane's `POST /api/service/sync` now has to prove whose

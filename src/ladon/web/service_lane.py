@@ -40,6 +40,7 @@ provisioner that can dismantle an application's identity.
 
 from __future__ import annotations
 
+import argparse
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -50,14 +51,22 @@ import jwt
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
+from ladon.apply.cli import PhaseRun, run_phase
 from ladon.config.apps import (
+    DEFAULT_APP_AUDIENCE,
+    DEFAULT_SA_NAMESPACE,
     MAX_KV_PATH_LENGTH,
     app_store_name,
     checked_app_path,
     checked_apps_path,
     team_label_for_namespace,
 )
-from ladon.config.eso import external_secret, external_secret_ref
+from ladon.config.eso import (
+    K8S_NAMESPACE_NAME_LABEL,
+    cluster_store_ref,
+    external_secret,
+    external_secret_ref,
+)
 from ladon.config.teams import ConfigError
 from ladon.hygiene import WriteRefused
 from ladon.install.k8s import (
@@ -94,6 +103,7 @@ from ladon.web.deps import (
     DeclaredEnvironment,
     Secrets,
     audit_recorder,
+    services,
 )
 from ladon.web.errors import ApiError
 from ladon.web.settings import ServiceCaller
@@ -219,6 +229,11 @@ class ClusterSync:
     converge: Callable[..., ApplyReport] = converge_documents
     remove: Callable[..., ApplyReport] = delete_documents
     read: Callable[..., dict[str, Any] | None] = read_one
+    # The CLI's own app-onboarding phase, both halves, for an application whose
+    # store is not there when a sync asks for it. The same function the admin
+    # endpoint and the CLI run, so the lane never grows a second rendering of
+    # an application's identity.
+    onboard: Callable[..., PhaseRun] = run_phase
 
 
 @dataclass(frozen=True)
@@ -766,6 +781,9 @@ def sync_secret(
         store = _store_for(body.namespace, body.app)
         args["store"] = store
         cluster = lane(request).cluster
+        # Probed, never assumed: a resource rendered at a version the
+        # cluster does not store is rejected on apply.
+        api_version = _cluster_call(cluster.api_version)
         document = external_secret(
             name=body.name,
             namespace=k8s_namespace,
@@ -773,14 +791,14 @@ def sync_secret(
             kv_path=path,
             secret_name=target,
             refresh_interval=body.refresh_interval,
-            # Probed, never assumed: a resource rendered at a version the
-            # cluster does not store is rejected on apply.
-            api_version=_cluster_call(cluster.api_version),
+            api_version=api_version,
         )
         # An object that is not there yet is this caller's to create, and the
         # rules above are the whole check. One that is already there belongs to
         # somebody, and this is where it is established that the somebody is
-        # this application.
+        # this application. Settled BEFORE anything is written: a request that
+        # ends in a refusal here must not have onboarded an identity on the
+        # way, since nothing on this lane takes one back down.
         existing = _cluster_call(cluster.read, document, missing_ok=True)
         if existing is not None:
             _require_ours(
@@ -791,6 +809,28 @@ def sync_secret(
                 name=body.name,
                 k8s_namespace=k8s_namespace,
             )
+        # The identity the ExternalSecret reads through. An application the
+        # room has just created has none yet, and an ExternalSecret pointing
+        # at a store nothing created is a Secret that never arrives and a pod
+        # that never starts. So the store's absence is the signal to onboard
+        # the application here, from the same phase an operator would run,
+        # before the document that depends on it is written. A store that is
+        # there admits exactly the namespaces onboarding named, and a document
+        # in any other namespace would be refused by ESO at refresh time, in
+        # the operator's logs, later: the same dangling object one step on.
+        onboarding: list[str] = []
+        store_ref = cluster_store_ref(name=store, api_version=api_version)
+        live_store = _cluster_call(cluster.read, store_ref, missing_ok=True)
+        if live_store is None:
+            onboarding = _onboard(
+                request, body, k8s_namespace=k8s_namespace, onboard=cluster.onboard
+            )
+            # Recorded once it happened, and as what happened: a dry run
+            # planned an identity, an apply created one. A refusal above
+            # never reaches this line, so its row says neither.
+            args["onboarded" if body.apply else "would_onboard"] = True
+        else:
+            _require_store_admits(live_store, store=store, k8s_namespace=k8s_namespace)
         report = _cluster_call(cluster.converge, [document], dry_run=not body.apply)
         _audit(
             session,
@@ -812,7 +852,135 @@ def sync_secret(
         # Names and verbs only: what was converged, never what it carries.
         "report": report.lines(),
         "blocked": [result.target for result in report.blocked],
+        # What onboarding the application did, in the same vocabulary; empty
+        # when its identity was already there.
+        "onboarding": onboarding,
     }
+
+
+def _onboard(
+    request: Request,
+    body: ServiceSyncBody,
+    *,
+    k8s_namespace: str,
+    onboard: Callable[..., PhaseRun],
+) -> list[str]:
+    """Onboard the application whose store the sync found missing.
+
+    The four objects are the ones ``app-onboarding`` renders, from the same
+    identity: the read-only policy on ``apps/<app>/`` in the team's OpenBao
+    namespace, the JWT role on the cluster's mount bound to the application's
+    own service account, that service account in Ladon's namespace, and the
+    ClusterSecretStore admitted into the one Kubernetes namespace the caller
+    named. Nothing here is rendered a second time: the phase runner is handed
+    the flags an operator would type, with the OpenBao namespace the caller is
+    pinned to (already checked) and the team label that namespace ends in.
+
+    A dry-run sync plans the onboarding and writes nothing, an applied sync
+    applies it. The OpenBao half converges first, and a blocked half, or one
+    the cluster would not take, is a ``409`` before the ExternalSecret is
+    touched: the whole point is to never leave a document pointing at an
+    identity that did not land.
+
+    The cluster the role hangs off is the deployment's, from config. A
+    deployment that names none cannot onboard from this lane, and says so
+    rather than guessing a mount.
+    """
+    settings = services(request).settings
+    if not settings.cluster:
+        raise ApiError(
+            503,
+            f"the application {body.app!r} has no ClusterSecretStore yet and this "
+            "deployment names no cluster (deployment.cluster), so its identity cannot "
+            "be onboarded from this lane; run app-onboarding for it first",
+        )
+    args = argparse.Namespace(
+        phase="app-onboarding",
+        config=None,
+        kv_mount=None,
+        namespace=body.namespace,
+        team=team_label_for_namespace(body.namespace),
+        cluster=settings.cluster,
+        app=body.app,
+        k8s_namespace=k8s_namespace,
+        sa_namespace=DEFAULT_SA_NAMESPACE,
+        audience=DEFAULT_APP_AUDIENCE,
+        server=settings.openbao_address,
+        teams=None,
+        jwt_discovery_url=None,
+        oidc_discovery_url=None,
+        oidc_client_id=None,
+        oidc_client_secret_ref=None,
+    )
+    try:
+        run = onboard(
+            args, config=settings.deployment, apply=body.apply, address=settings.openbao_address
+        )
+    except ConfigError as exc:
+        # Every input here came from the deployment's own config (the team
+        # label, the cluster, the address, the KV mount), never from the
+        # caller, so a refusal from the phase runner is the operator's to fix.
+        raise ApiError(503, f"onboarding {body.app!r} cannot run as deployed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - every failure here is reported, none carries a value
+        # The phase runner raises on a vault it cannot reach, a token it cannot
+        # use, or a cluster that will not answer. None of those is the caller's
+        # mistake, and none of these messages names a secret value: onboarding
+        # writes a policy, a role, a service account and a store, and nothing
+        # in them is one.
+        raise ApiError(503, f"onboarding {body.app!r} did not complete: {exc}") from exc
+    lines = _onboarding_lines(run)
+    if run.blocked or run.error:
+        # The OpenBao half converges before the cluster half, so a blocked
+        # run may well have landed a policy and a role already. The report
+        # says what each operation did; this sentence does not guess.
+        reason = run.error or "an operation in it is blocked; the report names which and why"
+        raise ApiError(
+            409,
+            f"onboarding {body.app!r} is blocked, so its ExternalSecret was not written: {reason}",
+            {"onboarding": lines},
+        )
+    return lines
+
+
+def _require_store_admits(live: dict[str, Any], *, store: str, k8s_namespace: str) -> None:
+    """Refuse a namespace the application's live store does not admit.
+
+    Onboarding fixes a store to the namespaces it names (by the immutable
+    ``kubernetes.io/metadata.name`` label). A store with no conditions admits
+    every namespace and passes; one with conditions admits only those, and an
+    ExternalSecret anywhere else is one ESO refuses at refresh time. Said here,
+    as a ``409`` naming both, rather than discovered later in the operator's
+    logs. Widening a store is off-boarding's sibling: an operator's decision
+    about the application's identity, not a per-secret call on this lane.
+    """
+    conditions = (live.get("spec") or {}).get("conditions") or []
+    admitted = []
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        labels = (condition.get("namespaceSelector") or {}).get("matchLabels") or {}
+        if labels.get(K8S_NAMESPACE_NAME_LABEL):
+            admitted.append(labels[K8S_NAMESPACE_NAME_LABEL])
+    if conditions and k8s_namespace not in admitted:
+        raise ApiError(
+            409,
+            f"the store {store!r} admits only the Kubernetes namespace(s) "
+            f"{', '.join(repr(ns) for ns in admitted) or '(none by name)'}, not "
+            f"{k8s_namespace!r}; an ExternalSecret there would never be read. Widening "
+            "the store is an operator's app-onboarding decision, not this lane's",
+        )
+
+
+def _onboarding_lines(run: PhaseRun) -> list[str]:
+    """The run, op by op: an action, a target and, for a blocked op, why.
+    Never a payload."""
+    lines = [
+        f"openbao {diff.summary}: {diff.action}" + (f" ({diff.reason})" if diff.reason else "")
+        for diff in (run.openbao.diffs if run.openbao is not None else ())
+    ]
+    if run.cluster is not None:
+        lines.extend(run.cluster.lines())
+    return lines
 
 
 @router.delete("/service/sync")

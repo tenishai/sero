@@ -24,11 +24,21 @@ from fake_assertion import SETTINGS as ASSERTION_SETTINGS
 from fake_assertion import token as assertion_token
 from fake_assertion import verifier as assertion_verifier
 from fake_cluster import FakeCluster, Result, eso_status_entry, managed_field_entry
+from ladon.apply.cli import PhaseRun
+from ladon.apply.executor import ApplyResult as OpenBaoResult
+from ladon.apply.executor import OpDiff
 from ladon.config.apps import MAX_KV_PATH_LENGTH, app_store_name
+from ladon.config.eso import K8S_NAMESPACE_NAME_LABEL
 from ladon.config.teams import ConfigError
 from ladon.datastore.models import Base, ToolCallLog
 from ladon.hygiene import mask
-from ladon.install.k8s import converge_documents, delete_documents, read_one
+from ladon.install.k8s import (
+    ApplyReport,
+    ApplyResult,
+    converge_documents,
+    delete_documents,
+    read_one,
+)
 from ladon.mcp.openbao import OpenBaoSecrets
 from ladon.web.app import create_app
 from ladon.web.assertion import STALE_KEYS_MAX_SECONDS
@@ -243,6 +253,72 @@ class DenyingKvV2(FakeKvV2):
         raise Forbidden("permission denied")
 
 
+# The one cluster this test deployment serves, as ``deployment.cluster`` names
+# it. Onboarding an application from the lane hangs its role off ``jwt-<this>``.
+CLUSTER = "cluster-a"
+OPENBAO_ADDRESS = "https://vault.example.com"
+
+
+class FakeOnboarding:
+    """The CLI's app-onboarding phase, behind the lane's seam.
+
+    Records what the lane asked for and answers a run whose shape is the real
+    one: an OpenBao half with a policy and a role, a cluster half with a service
+    account and a store. ``blocked`` makes the OpenBao half refuse, the way a
+    hand-edited policy would; ``fail`` raises, the way an unreachable vault does.
+    """
+
+    def __init__(self, *, blocked=False, fail=None):
+        self.calls = []
+        self._blocked = blocked
+        self._fail = fail
+
+    def __call__(self, args, *, config, apply, address):
+        self.calls.append({"args": args, "config": config, "apply": apply, "address": address})
+        if self._fail is not None:
+            raise self._fail
+        action = "blocked" if self._blocked else "create"
+        openbao = OpenBaoResult(
+            dry_run=not apply,
+            diffs=(
+                OpDiff(f"policy {APP}", action, reason="live differs" if self._blocked else None),
+                OpDiff(f"auth role eso-{NAMESPACE}-{APP}", "create"),
+            ),
+        )
+        if self._blocked:
+            return PhaseRun(openbao=openbao, dry_run=not apply)
+        cluster = ApplyReport(
+            results=(
+                ApplyResult("ServiceAccount", "ladon", f"eso-{NAMESPACE}-{APP}", "create"),
+                ApplyResult(
+                    "ClusterSecretStore",
+                    None,
+                    app_store_name(team=args.team, app=args.app),
+                    "create",
+                ),
+            ),
+            dry_run=not apply,
+        )
+        return PhaseRun(openbao=openbao, cluster=cluster, dry_run=not apply)
+
+
+def live_store(name=None, *, admits=(DEFAULT_K8S_NAMESPACE,)):
+    """An application's ClusterSecretStore as the cluster holds one: admitted
+    into exactly the namespaces onboarding named, the way the renderer
+    writes it."""
+    return {
+        "apiVersion": "external-secrets.io/v1",
+        "kind": "ClusterSecretStore",
+        "metadata": {"name": name or app_store_name(team=NAMESPACE, app=APP)},
+        "spec": {
+            "conditions": [
+                {"namespaceSelector": {"matchLabels": {K8S_NAMESPACE_NAME_LABEL: ns}}}
+                for ns in admits
+            ],
+        },
+    }
+
+
 def build_client(
     sessions,
     store,
@@ -255,16 +331,19 @@ def build_client(
     assertion_verifier=None,
     kv=None,
     raise_server_exceptions=True,
+    cluster_name=CLUSTER,
+    onboard=None,
 ):
     settings = WebSettings(
         identity=identity or IdentitySettings(),
         access=AccessSettings(),
         environment="dev",
-        openbao_address=None,
+        openbao_address=OPENBAO_ADDRESS,
         kv_mount="kv",
         ui_dist=None,
         reveal_enabled=False,
         service_callers=service_callers,
+        cluster=cluster_name,
     )
     secrets = OpenBaoSecrets(
         client_for=lambda namespace: FakeClient(store, kv=kv),
@@ -281,6 +360,7 @@ def build_client(
             converge=lambda docs, **kwargs: converge_documents(docs, run=cluster, **kwargs),
             remove=lambda docs, **kwargs: delete_documents(docs, run=cluster, **kwargs),
             read=lambda doc, **kwargs: read_one(doc, run=cluster, **kwargs),
+            onboard=onboard if onboard is not None else FakeOnboarding(),
         ),
         now=clock or (lambda: 0.0),
     )
@@ -839,6 +919,218 @@ def test_sync_needs_an_acting_email(client):
     body = sync_body()
     del body["acting_email"]
     assert sync(client, body).status_code == 422
+
+
+# ── The application's identity, when its store is not there ────────────
+
+
+def lane_with_onboarding(sessions, store, *, live=(), onboard=None, cluster_name=CLUSTER):
+    onboarding = onboard if onboard is not None else FakeOnboarding()
+    cluster = FakeCluster(live=live)
+    client = build_client(
+        sessions,
+        store,
+        cluster,
+        service_callers=callers(),
+        onboard=onboarding,
+        cluster_name=cluster_name,
+    )
+    return client, cluster, onboarding
+
+
+def test_sync_onboards_the_application_when_its_store_is_absent(sessions, store):
+    client, cluster, onboarding = lane_with_onboarding(sessions, store)
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 200
+    assert len(onboarding.calls) == 1
+    call = onboarding.calls[0]
+    assert call["apply"] is True
+    assert call["address"] == OPENBAO_ADDRESS
+    args = call["args"]
+    assert args.phase == "app-onboarding"
+    assert args.team == NAMESPACE
+    assert args.app == APP
+    assert args.namespace == NAMESPACE
+    assert args.cluster == CLUSTER
+    assert args.k8s_namespace == DEFAULT_K8S_NAMESPACE
+    assert args.server == OPENBAO_ADDRESS
+    # The ExternalSecret still lands, after the identity it reads through.
+    assert response.json()["report"] == ["ExternalSecret/sample/sample-demo: create"]
+    assert response.json()["onboarding"] == [
+        f"openbao policy {APP}: create",
+        f"openbao auth role eso-{NAMESPACE}-{APP}: create",
+        f"ServiceAccount/ladon/eso-{NAMESPACE}-{APP}: create",
+        f"ClusterSecretStore/{app_store_name(team=NAMESPACE, app=APP)}: create",
+    ]
+
+
+def test_sync_onboards_from_the_teams_label_for_a_nested_namespace(sessions, store):
+    onboarding = FakeOnboarding()
+    client = build_client(
+        sessions,
+        store,
+        FakeCluster(),
+        service_callers=callers(namespaces=[NESTED_NAMESPACE]),
+        onboard=onboarding,
+    )
+    response = sync(client, sync_body(namespace=NESTED_NAMESPACE, apply=True))
+    assert response.status_code == 200
+    args = onboarding.calls[0]["args"]
+    assert args.team == NAMESPACE
+    assert args.namespace == NESTED_NAMESPACE
+
+
+def test_sync_leaves_an_onboarded_application_alone(sessions, store):
+    client, cluster, onboarding = lane_with_onboarding(sessions, store, live=[live_store()])
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 200
+    assert onboarding.calls == []
+    assert response.json()["onboarding"] == []
+    assert response.json()["report"] == ["ExternalSecret/sample/sample-demo: create"]
+
+
+def test_a_dry_run_sync_only_plans_the_onboarding(sessions, store):
+    client, cluster, onboarding = lane_with_onboarding(sessions, store)
+    response = sync(client, sync_body())
+    assert response.status_code == 200
+    assert onboarding.calls[0]["apply"] is False
+    assert response.json()["applied"] is False
+    assert [call for call in cluster.applies if "--dry-run=server" not in call] == []
+
+
+def test_a_blocked_onboarding_stops_the_sync_before_the_external_secret(sessions, store):
+    client, cluster, onboarding = lane_with_onboarding(
+        sessions, store, onboard=FakeOnboarding(blocked=True)
+    )
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 409
+    assert APP in response.json()["error"]
+    assert "blocked" in response.json()["error"]
+    # The OpenBao half converges before the cluster half, so a blocked run may
+    # well have written a policy and a role. The answer must not say otherwise.
+    assert "nothing was written" not in response.json()["error"]
+    # The op-by-op report travels with the refusal, reasons included.
+    assert response.json()["onboarding"] == [
+        f"openbao policy {APP}: blocked (live differs)",
+        f"openbao auth role eso-{NAMESPACE}-{APP}: create",
+    ]
+    # Nothing reached the cluster: an ExternalSecret over an identity that did
+    # not land is exactly the dangling object this exists to prevent.
+    assert cluster.applies == []
+
+
+def test_an_onboarding_that_cannot_reach_the_vault_is_a_503(sessions, store):
+    client, cluster, onboarding = lane_with_onboarding(
+        sessions, store, onboard=FakeOnboarding(fail=RuntimeError("vault is sealed"))
+    )
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 503
+    assert "vault is sealed" in response.json()["error"]
+    assert cluster.applies == []
+
+
+def test_sync_refuses_to_onboard_when_the_deployment_names_no_cluster(sessions, store):
+    client, cluster, onboarding = lane_with_onboarding(sessions, store, cluster_name=None)
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 503
+    assert "deployment.cluster" in response.json()["error"]
+    assert onboarding.calls == []
+    assert cluster.applies == []
+
+
+def test_sync_onboards_into_the_pinned_kubernetes_namespace(sessions, store):
+    onboarding = FakeOnboarding()
+    client = build_client(
+        sessions,
+        store,
+        FakeCluster(),
+        service_callers=callers(k8s_namespaces=[PINNED_K8S_NAMESPACE]),
+        onboard=onboarding,
+    )
+    response = sync(client, sync_body(k8s_namespace=PINNED_K8S_NAMESPACE, apply=True))
+    assert response.status_code == 200
+    assert onboarding.calls[0]["args"].k8s_namespace == PINNED_K8S_NAMESPACE
+
+
+def test_sync_does_not_onboard_for_a_namespace_the_caller_is_not_pinned_to(sessions, store):
+    client, cluster, onboarding = lane_with_onboarding(sessions, store)
+    response = sync(client, sync_body(namespace=OTHER_NAMESPACE, apply=True))
+    assert response.status_code == 403
+    assert onboarding.calls == []
+
+
+def test_sync_settles_whose_object_it_is_before_onboarding_anything(sessions, store):
+    """A refused sync must leave nothing behind. The ownership check on an
+    existing ExternalSecret comes first, so a request that ends in a 403 has
+    not written a policy, a role, a service account and a store on the way."""
+    theirs = live_external_secret(store=app_store_name(team="payments", app="sample"))
+    onboarding = FakeOnboarding()
+    client = build_client(
+        sessions, store, FakeCluster(live=[theirs]), service_callers=callers(), onboard=onboarding
+    )
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 403
+    assert onboarding.calls == []
+
+
+def test_a_refused_onboarding_is_not_audited_as_one(sessions, store):
+    client, _, _ = lane_with_onboarding(sessions, store, cluster_name=None)
+    sync(client, sync_body(apply=True))
+    (row,) = rows(sessions, "service.sync_secret")
+    assert row.status != "ok"
+    assert not row.redacted_args.get("onboarded")
+
+
+def test_a_dry_run_onboarding_is_audited_as_planned_not_done(sessions, store):
+    client, _, _ = lane_with_onboarding(sessions, store)
+    sync(client, sync_body())
+    (row,) = rows(sessions, "service.sync_secret")
+    assert not row.redacted_args.get("onboarded")
+    assert row.redacted_args["would_onboard"] is True
+
+
+def test_a_deployment_misconfiguration_found_while_onboarding_is_a_503(sessions, store):
+    """Every input the phase runner refuses here came from the deployment's
+    own config, never from the caller, so it is the operator's to fix."""
+    client, cluster, _ = lane_with_onboarding(
+        sessions,
+        store,
+        onboard=FakeOnboarding(fail=ConfigError("the store must name the OpenBao address")),
+    )
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 503
+    assert "OpenBao address" in response.json()["error"]
+    assert cluster.applies == []
+
+
+def test_sync_refuses_a_namespace_the_stores_conditions_do_not_admit(sessions, store):
+    """The store admits exactly the namespaces onboarding named. A later sync
+    for the same application into another namespace finds the store present,
+    and without this check would write an ExternalSecret ESO refuses at
+    refresh time: the dangling object again, one step later."""
+    fixed_elsewhere = live_store(admits=(PINNED_K8S_NAMESPACE,))
+    client, cluster, onboarding = lane_with_onboarding(sessions, store, live=[fixed_elsewhere])
+    response = sync(client, sync_body(apply=True))
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert DEFAULT_K8S_NAMESPACE in error
+    assert PINNED_K8S_NAMESPACE in error
+    assert app_store_name(team=NAMESPACE, app=APP) in error
+    assert onboarding.calls == []
+    assert cluster.applies == []
+
+
+def test_a_store_with_no_conditions_admits_every_namespace(sessions, store):
+    open_store = live_store(admits=())
+    client, cluster, _ = lane_with_onboarding(sessions, store, live=[open_store])
+    assert sync(client, sync_body(apply=True)).status_code == 200
+
+
+def test_an_onboarding_is_audited_on_the_sync_row(sessions, store):
+    client, _, _ = lane_with_onboarding(sessions, store)
+    sync(client, sync_body(apply=True))
+    row = rows(sessions, "service.sync_secret")[-1]
+    assert row.redacted_args["onboarded"] is True
 
 
 # ── Whose ExternalSecret a sync may write over ─────────────────────────

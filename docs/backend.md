@@ -266,6 +266,11 @@ The lane opens because somebody configured it, never because somebody forgot to.
 ### Configuration
 
 ```yaml
+deployment:
+  # The one cluster this deployment serves, by the label team onboarding used
+  # for its jwt-<cluster> mount. Needed for the lane to onboard an application
+  # whose store is not there yet; without it the lane refuses to, and says so.
+  cluster: cluster-a
 service_callers:
   - name: provisioner
     issuer: https://issuer.example.com
@@ -525,6 +530,43 @@ verbs and object names:
 The store name comes from the same function that named it at onboarding, so a
 typo cannot point a document at a store nothing created.
 
+#### An application that has not been onboarded
+
+The lane reads the store before it renders anything. When the store is not
+there, the application has no identity on the cluster yet, and an
+ExternalSecret pointing at it would be a Secret that never arrives. So the sync
+onboards the application first, from the same `app-onboarding` phase the CLI
+and the admin endpoint run: the read-only policy on `apps/<app>/` in the
+caller's pinned OpenBao namespace, the JWT role on the deployment's
+`jwt-<cluster>` mount bound to the application's own service account, that
+service account in Ladon's namespace, and the ClusterSecretStore admitted into
+the one Kubernetes namespace the sync names (the application's own, or one the
+caller is pinned to). Nothing is rendered twice: the phase runner is handed the
+flags an operator would type.
+
+The OpenBao half converges first. A blocked half, or a cluster document that
+would not land, is a `409` and the ExternalSecret is not written (the report
+in the answer says what each operation did, since a policy and a role may
+already have landed); a vault or a cluster that would not answer, or a
+deployment whose config the phase refuses, is a `503`. A dry-run sync plans
+the onboarding and writes nothing. The answer carries `onboarding`, the run op
+by op in the same names-and-verbs vocabulary as `report`, empty when the store
+was already there, and the audit row for the sync records `onboarded: true`
+for an applied onboarding or `would_onboard: true` for a planned one.
+
+The ownership check on an existing ExternalSecret (below) runs before any of
+this, so a request that ends in a `403` or a `409` has not onboarded an
+identity on the way. And when the store is already there, the sync reads
+which Kubernetes namespaces it admits: onboarding fixes that set, an
+ExternalSecret anywhere else is one ESO refuses at refresh time, so a sync
+into a namespace the store does not admit is a `409` naming both. Widening a
+store is an operator's `app-onboarding` decision, not this lane's.
+
+This is why `deployment.cluster` exists in the config (see
+[Configuration](#configuration)): the role's mount is named after the cluster,
+and a deployment that has not named one refuses to onboard from the lane with a
+message that says so, rather than guess.
+
 An ExternalSecret that is **already there** has to be this application's before
 it is converged, and the check is the one the `DELETE` applies: the live object
 must read through this application's own `ClusterSecretStore` and pull a path
@@ -677,7 +719,9 @@ stay, and so does the KV path. Those are application off-boarding: they are
 cluster-scoped or namespace-wide, one of them is shared with anything else the
 application runs, and removing them is a decision about an application's whole
 identity rather than about one of its secrets. That is an operator and an apply
-phase, not a per-secret call on this lane.
+phase, not a per-secret call on this lane. An application the sync onboarded
+on its own is no different here: taking it down through this lane leaves those
+four behind for the operator, the same as one onboarded by hand.
 
 ### What a caller cannot do
 

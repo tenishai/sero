@@ -155,6 +155,12 @@ class WebSettings:
     # the apply endpoints plan from it. It is the only config they read: a
     # request names a phase and its inputs, never a configuration.
     deployment: DeploymentConfig = field(default_factory=DeploymentConfig)
+    # The one Kubernetes cluster this deployment serves, by the label team
+    # onboarding used for its ``jwt-<cluster>`` mount. The machine lane needs
+    # it to onboard an application whose store is not there yet; None means the
+    # deployment has not said, and the lane then refuses to onboard rather than
+    # guess which mount a role should hang off.
+    cluster: str | None = None
 
 
 def parse_identity(data: object) -> IdentitySettings:
@@ -402,6 +408,9 @@ def parse_web_settings(config: DeploymentConfig, *, env: Mapping[str, str]) -> W
     address = openbao.get("address") or _first(env, ADDRESS_ENV_VARS)
 
     environment = deployment.get("environment")
+    cluster = deployment.get("cluster")
+    if cluster is not None and not isinstance(cluster, str):
+        raise ConfigError("'deployment.cluster' must be a string")
     identity = parse_identity(config.identity)
     return WebSettings(
         identity=identity,
@@ -416,6 +425,7 @@ def parse_web_settings(config: DeploymentConfig, *, env: Mapping[str, str]) -> W
             human_audience=identity.assertion.audience if identity.assertion else None,
         ),
         deployment=config,
+        cluster=cluster or None,
     )
 
 
