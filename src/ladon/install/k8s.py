@@ -279,12 +279,19 @@ def apply_argv(*, field_manager: str = DEFAULT_FIELD_MANAGER, dry_run: bool = Tr
 
 
 def get_argv(doc: dict) -> list[str]:
-    """Build the ``kubectl get`` command that reads one document's live object."""
+    """Build the ``kubectl get`` command that reads one document's live object.
+
+    ``--show-managed-fields`` because kubectl strips ``metadata.managedFields``
+    from ``get -o json`` unless asked, and every ownership decision here
+    (`require_managed`, `field_managers`) reads those entries. Without it a
+    live object Ladon applied itself reads as managed by nobody, and every
+    sync over an existing ExternalSecret and every unsync is refused.
+    """
     _, namespace, name = _identify(doc)
     argv = ["kubectl", "get", f"{_resource_token(doc)}/{name}"]
     if namespace:
         argv += ["-n", namespace]
-    return argv + ["-o", "json"]
+    return argv + ["-o", "json", "--show-managed-fields"]
 
 
 def apply_documents(

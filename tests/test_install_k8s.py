@@ -21,6 +21,7 @@ from ladon.install.k8s import (
     apply_documents,
     detect_eso,
     eso_api_version,
+    get_argv,
     read_back,
     verify,
 )
@@ -381,6 +382,7 @@ def test_read_back_passes_the_namespace_for_a_namespaced_document():
         "ladon",
         "-o",
         "json",
+        "--show-managed-fields",
     ]
 
 
@@ -393,7 +395,18 @@ def test_read_back_omits_the_namespace_for_a_cluster_scoped_document():
         "clustersecretstore.external-secrets.io/ladon-ns-a-sample",
         "-o",
         "json",
+        "--show-managed-fields",
     ]
+
+
+def test_a_read_asks_for_the_managed_fields_kubectl_hides_by_default():
+    """kubectl strips ``metadata.managedFields`` from ``get -o json`` unless
+    told otherwise. Every ownership decision Ladon makes (whose ExternalSecret
+    a sync may write over, what an unsync may delete) reads those entries, so a
+    read without the flag makes every live object look like nobody's and
+    every such call a refusal. Live, 2026-09-24: a sync over Ladon's own
+    ExternalSecret answered "managed by no recorded manager"."""
+    assert "--show-managed-fields" in get_argv(service_account_doc())
 
 
 def test_read_back_returns_the_live_objects_in_order():
