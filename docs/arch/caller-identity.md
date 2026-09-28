@@ -4,7 +4,7 @@ updated: 2026-09-28
 anchor: src/ladon/web/identity.py sha=2ec0dc7f85b1c76414e4c30453ff81c8d3a559e6
 anchor: src/ladon/web/assertion.py sha=a69496d8e10509f35244ef67fd12f893e3957fdd
 ---
-# caller-identity — who the human caller is (D15); no login form
+# caller-identity: who the human caller is (D15 in docs/specs/2026-09-22-platform-vault-design.md); no login form
 
 WHAT / SEAM: `IdentityReader(header, dev_identity, assertion).email(headers)` (web/identity.py:78), used by web/deps.py:caller_email (→ `CallerEmail` dependency; 401 + audit row on failure). `AssertionVerifier` + `JwksCache` (web/assertion.py) verify a proxy-signed JWT; the machine lane reuses the same verifier class with its own settings. Authorization after identity: web/groups.py `GroupSource` (namespaces_for, is_admin), default `ConfigGroupSource` from config `access:`; MCP/web writes also check the datastore allow list (mcp/server.py:_require_allowed).
 OPS / FLOW: if `identity.assertion` configured → read exactly one assertion header (default `x-goog-iap-jwt-assertion`), verify, take email claim; plain header ignored. Else → plain header (a claim, trusted only by network path) → else dev hatch → else 401. `normalize_email` strips `<issuer>:` prefix, lowercases.

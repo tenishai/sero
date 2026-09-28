@@ -35,7 +35,8 @@ src = ["src", "tests"]
 # Alembic writes migration scripts in its own style (long create_table lines,
 # unsorted imports). They are generated, not hand-maintained, so exclude them
 # from lint/format. migrations/env.py and the template are still linted.
-extend-exclude = ["migrations/versions"]
+# scripts/check_arch_cards.py is a vendored copy kept byte-identical with its source.
+extend-exclude = ["migrations/versions", "scripts/check_arch_cards.py"]
 
 [tool.ruff.lint]
 # A sensible, strict-but-quiet default set; expand as the code grows.
