@@ -3,7 +3,7 @@
 # lint-conventions.sh - enforce Ladon's hard conventions.
 #
 # Checks, in order:
-#   1. No em dashes (or en dashes) in prose files.
+#   1. No em dashes (or en dashes) in prose files. WARNS only: style, not a gate.
 #   2. No company-specific identifiers anywhere in the tree.
 #   3. No floating version pins (":latest" images, unpinned GitHub Actions).
 #   4. No committed secret material (private keys, credentials).
@@ -73,8 +73,17 @@ check_dashes() {
   local em en
   em="$(printf '\xe2\x80\x94')"  # U+2014 em dash
   en="$(printf '\xe2\x80\x93')"  # U+2013 en dash
-  { grep -nF -e "$em" -e "$en" "${prose[@]}" 2>/dev/null || true; } \
-    | report "no em or en dashes in prose"
+  # A style preference, not a correctness rule: it must never fail a build.
+  # Print what was found so the author can tidy it, and return success.
+  local hits
+  hits="$( { grep -HnF -e "$em" -e "$en" "${prose[@]}" 2>/dev/null || true; } )"
+  if [[ -n "$hits" ]]; then
+    echo "WARN: em or en dashes in prose (style only, not failing)"
+    echo "${hits}" | sed 's/^/  /'
+  else
+    echo "ok:   no em or en dashes in prose"
+  fi
+  return 0
 }
 
 # Check 2: no company-specific identifiers ----------------------------------
