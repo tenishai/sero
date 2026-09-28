@@ -28,7 +28,6 @@ DEPS: no Python imports of sibling repos. Called by kobo: kobo repo `api/kobo_ap
 HEALTH: 43 tests/test_*.py, ~995 test functions, `uv run pytest` (fakes: tests/fake_openbao.py, fake_cluster.py, fake_secrets.py, fake_assertion.py; no live OpenBao/cluster in tests). UI: vitest (`npm test`) + Playwright smoke. CI .github/workflows/ci.yml on PR + push main: conventions lint (scripts/lint-conventions.sh), helm render + offline kustomize validate, terraform validate, ruff check + format --check + pytest, docker build + /healthz smoke, UI build/test/e2e. image.yml builds+pushes after ci succeeds on main (workflow_run). Runners from `vars.CI_RUNS_ON`. No branch protection: CI reports, never blocks.
 GOTCHAS:
 - ladon is SECRETS, NOT observability (that is argus).
-- July card is stale: no ladon-core/ladon[openbao] split exists (no extras in pyproject); "no live e2e apply" is no longer true per README; test count is ~995, not 250.
 - Datastore "PostgreSQL" (docs/design.md D11) is not installable from the lock: uv.lock has no psycopg/any PG driver. Every shipped deploy uses `sqlite:////data/ladon.db` on a RWO PVC → one replica, one process (gojira.yaml `class: gateway`).
 - Every write surface is dry-run by default: CLI `--apply`, API body `apply: true`.
 - One deployment = one OpenBao = one environment (`deployment.environment`); `env` on a request is a label that is checked, never a selector (mcp/server.py:require_environment).
