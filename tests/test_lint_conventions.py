@@ -71,10 +71,11 @@ def test_a_clean_file_passes_every_check(tmp_path):
     assert "conventions lint passed" in result.stdout
 
 
-def test_an_em_dash_is_still_rejected(tmp_path):
+def test_an_em_dash_warns_and_does_not_fail(tmp_path):
     result = run_lint(tmp_path, "a sentence — with an em dash\n", name="planted.md")
-    assert result.returncode == 1
-    assert "FAIL: no em or en dashes" in result.stdout
+    assert result.returncode == 0, result.stdout
+    assert "WARN: em or en dashes in prose" in result.stdout
+    assert "planted.md" in result.stdout
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the lint is a POSIX shell script")

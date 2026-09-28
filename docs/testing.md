@@ -37,7 +37,7 @@ every pull request.
 
 - YAML, Helm, and Terraform validate and format checks (`helm lint`,
   `helm template` parses, `terraform validate`, `terraform fmt -check`).
-- The conventions lint: no em dashes in prose, no floating version pins, no
+- The conventions lint: em dashes in prose (warns, never fails), no floating version pins, no
   company-specific identifiers, and no cloud region literals. See
   [../scripts/lint-conventions.sh](../scripts/lint-conventions.sh).
 - A secrets-material check: scan the diff and tree for anything that looks like a
