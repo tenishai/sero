@@ -3,7 +3,7 @@ name = "ladon"
 version = "0.0.0"
 description = "Open-source secrets and vault management built on OpenBao"
 requires-python = ">=3.14"
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 # Runtime dependencies, pinned exactly. Bumps are their own reviewed PR.
 dependencies = [
   "PyYAML==6.0.3",

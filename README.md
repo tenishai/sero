@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
   <img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-yellow.svg">
 </p>
 
@@ -25,7 +25,7 @@
 Ladon deploys and operates [OpenBao](https://github.com/openbao/openbao) (the
 open-source fork of HashiCorp Vault) and syncs secrets out to where workloads
 need them. It is a platform you can deploy: brand-neutral defaults, customizable
-per deployment, 100% open source under Apache-2.0.
+per deployment, 100% open source under AGPL-3.0-or-later.
 
 Ladon integrates and operates OpenBao. It is not a fork of OpenBao or Vault, and
 it never stores secret values.
@@ -208,4 +208,4 @@ same secrets-hygiene rules applied to every path.
 
 ## License
 
-[Apache-2.0](LICENSE). Copyright (C) 2026 tenishai.
+[AGPL-3.0-or-later](LICENSE). Copyright (C) 2026 tenishai.
