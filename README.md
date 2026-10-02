@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
   <img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-yellow.svg">
 </p>
 
@@ -25,7 +25,7 @@
 Ladon deploys and operates [OpenBao](https://github.com/openbao/openbao) (the
 open-source fork of HashiCorp Vault) and syncs secrets out to where workloads
 need them. It is a platform you can deploy: brand-neutral defaults, customizable
-per deployment, 100% open source under Apache-2.0.
+per deployment, 100% open source under AGPL-3.0-or-later.
 
 Ladon integrates and operates OpenBao. It is not a fork of OpenBao or Vault, and
 it never stores secret values.
@@ -191,8 +191,6 @@ the others:
 - [**daedalus**](https://github.com/tenishai/daedalus) - an agent construction
   kit: an agent is a directory (persona, agent card, wiring), and daedalus is the
   runtime, with Protocol seams for memory, tools, and checkpoints.
-- [**kaminos**](https://github.com/tenishai/kaminos) - a visual interface builder
-  for daedalus agent bundles.
 - [**cabal**](https://github.com/tenishai/cabal) - a self-hosted agent
   orchestration platform and A2A broker that runs personas as modules.
 - [**liminal**](https://github.com/tenishai/liminal) - an MCP/tool gateway: one
@@ -200,12 +198,14 @@ the others:
   exactly the kind of backend a gateway like this fronts.
 - [**techne**](https://github.com/tenishai/techne) - local-first agentic memory
   (a single SQLite file), the memory seam daedalus agents plug into.
-- [**agents**](https://github.com/tenishai/agents) and
-  [**prudence-memory**](https://github.com/tenishai/prudence-memory) - portable
-  definitions of the agent fleet (Prudence the reviewer, and others) and their
-  shared team-memory corpus.
+- [**agents**](https://github.com/tenishai/agents) - portable definitions of the
+  agent fleet (Prudence the reviewer, and others).
 
 Ladon's place in this picture: it holds the secrets. Human operators use its UI
 (OIDC); workloads read secrets through the External Secrets Operator; and agents
 built on daedalus/cabal reach it through its MCP tools (behind liminal), with the
 same secrets-hygiene rules applied to every path.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE). Copyright (C) 2026 tenishai.

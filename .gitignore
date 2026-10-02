@@ -87,3 +87,7 @@ Thumbs.db
 
 # --- Local agent / tooling state ---
 .claude/settings.local.json
+
+# Local scratch
+scratch*.txt
+CLAUDE.local.md

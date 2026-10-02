@@ -10,6 +10,11 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Changed
+
+- Relicensed from Apache-2.0 to AGPL-3.0-or-later, matching the other tenishai
+  projects. LICENSE, NOTICE, README and package metadata are updated.
+
 ### Added
 
 - `DELETE /api/service/app` on the machine lane removes an application's

@@ -1,10 +1,11 @@
 Ladon
-Copyright 2026 The Ladon Authors
+Copyright (C) 2026 tenishai
 
-This product includes software developed by The Ladon Authors.
+This product includes software developed by tenishai.
 
-Licensed under the Apache License, Version 2.0. See the LICENSE file
-for the full license text.
+Licensed under the GNU Affero General Public License, version 3 or (at
+your option) any later version. See the LICENSE file for the full license
+text.
 
 Ladon integrates and operates third-party open-source software,
 including OpenBao (https://github.com/openbao/openbao) and the
