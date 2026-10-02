@@ -191,8 +191,6 @@ the others:
 - [**daedalus**](https://github.com/tenishai/daedalus) - an agent construction
   kit: an agent is a directory (persona, agent card, wiring), and daedalus is the
   runtime, with Protocol seams for memory, tools, and checkpoints.
-- [**kaminos**](https://github.com/tenishai/kaminos) - a visual interface builder
-  for daedalus agent bundles.
 - [**cabal**](https://github.com/tenishai/cabal) - a self-hosted agent
   orchestration platform and A2A broker that runs personas as modules.
 - [**liminal**](https://github.com/tenishai/liminal) - an MCP/tool gateway: one
@@ -200,12 +198,14 @@ the others:
   exactly the kind of backend a gateway like this fronts.
 - [**techne**](https://github.com/tenishai/techne) - local-first agentic memory
   (a single SQLite file), the memory seam daedalus agents plug into.
-- [**agents**](https://github.com/tenishai/agents) and
-  [**prudence-memory**](https://github.com/tenishai/prudence-memory) - portable
-  definitions of the agent fleet (Prudence the reviewer, and others) and their
-  shared team-memory corpus.
+- [**agents**](https://github.com/tenishai/agents) - portable definitions of the
+  agent fleet (Prudence the reviewer, and others).
 
 Ladon's place in this picture: it holds the secrets. Human operators use its UI
 (OIDC); workloads read secrets through the External Secrets Operator; and agents
 built on daedalus/cabal reach it through its MCP tools (behind liminal), with the
 same secrets-hygiene rules applied to every path.
+
+## License
+
+[Apache-2.0](LICENSE). Copyright (C) 2026 tenishai.
