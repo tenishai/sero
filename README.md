@@ -111,10 +111,9 @@ All merged on main:
   their own session including denials and 401s, reveal behind a
   deny-by-default gate, migrations at boot, SQLite or PostgreSQL. (PR #62)
 - Image (pinned by digest, helm/kubectl by checksum, non-root, read-only
-  rootfs), image workflow behind repository variables, deploy contract for
-  the deploy platform (class gateway), standalone manifests, three
-  NetworkPolicies including the link-local DNS rule, a CI image smoke. (PRs
-  #64, #67)
+  rootfs), deploy contract for the deploy platform (class gateway),
+  standalone manifests, three NetworkPolicies including the link-local DNS
+  rule, a CI image smoke. (PRs #64, #67)
 - The role audit (`scripts/ladon audit`). (PR #65)
 - The machine lane: `POST /api/service/secrets` and `/api/service/sync` per
   configured OIDC caller, pinned subject and namespaces, attribution via
@@ -153,8 +152,8 @@ assertion rather than trusting a header.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
 sync; reveal step-up not built (gate denies by default); no fleet / second cluster; one process, one replica (the job runner and
-the allow list are per process); the image workflow publishes only once the
-deployer grants its identity.
+the allow list are per process); no image build in CI, images are built by
+hand from a clean export of a commit and tagged with its short sha.
 
 See [ROADMAP.md](ROADMAP.md) for the phased plan.
 
