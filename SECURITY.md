@@ -34,48 +34,25 @@ testing.
 
 ## Supported versions
 
-techne is pre-1.0. Security fixes go into the **latest release** only; older
+ladon is pre-1.0. Security fixes go into the **latest release** only; older
 releases are not patched. If you're running an older version, upgrade to get
 fixes.
 
 ## Scope
 
-techne is a local memory store and MCP server for AI agents. In scope:
+ladon is the secrets lane: it carries secrets from the vault to the clusters
+and apps that need them, by namespace. In scope:
 
-- the stored memory: anything that lets one agent or project read or change
-  another's memory without being configured to;
-- credential and secret handling: a secret in a format techne's redaction is
-  meant to recognise that still reaches the memory store, an export, or an
-  injected prompt. Redaction is pattern-based and best-effort, not a
-  confidentiality guarantee; a token shape it doesn't recognise yet is a
-  hardening request, not a vulnerability.
-  The architect pattern store, the codex code-graph store, and short
-  structured fields (source, tags, target) are not redacted by design;
-- egress: configuration that is supposed to keep memory local but doesn't.
-  Only `/etc/techne/config.operator.yaml` is a lock, and only while the process
-  reading it cannot write it. `$TECHNE_OPERATOR_CONFIG` and
-  `<techne_home>/config.operator.yaml` are conveniences an agent can bypass
-  (`env -u`, or a different `TECHNE_HOME`), and with no operator layer
-  `config.yaml` keeps full authority. An agent redirecting its own egress in
-  those setups is documented behaviour, not a vulnerability (see "Operator-owned
-  config" in the README);
-- the hooks and the MCP server: anything a tool result, transcript, or
-  repository file can use to run code or change techne's configuration;
-- the shell guard (`techne.security.shell_guard`), a library for callers that
-  run agent-issued commands:
-  - `check_command`: a command string it accepts that a shell would still
-    read as chaining, redirection, or command substitution. Single-command
-    expansion (globs, `~`, `$VAR`, `(` subshells, `!` history, `#`) is
-    accepted by design, since `run_guarded` passes it to the program
-    literally; and a single program that starts others (`bash -c`, `xargs`,
-    `find -exec`) is the caller's allow-list's job, not this check's;
-  - `audit_install`: a `pip install` of a named package with a known
-    vulnerability that it allows while `pip-audit` runs successfully.
-    Install detection is shallow and fails open by design (other pip
-    spellings, `-r`/`-e`, other package managers, audit errors), so gaps
-    there are hardening requests.
+- confidentiality: a secret value leaving the lane in the clear, in a log, an
+  error, a response, or an audit record;
+- isolation: a namespace, app or caller reading or writing secrets it was not
+  granted, including through sync, offboarding, or an implicit onboarding;
+- the lane itself: a sync that falls back to a direct write when the lane
+  refuses, or a refusal that is reported as success;
+- identity: a token or service identity outliving its intended life, or being
+  minted for the wrong principal.
 
 **Out of scope:** vulnerabilities in third-party dependencies (please report
 those upstream, and tell us if we ship an affected version), and problems that
-require an attacker to already control the machine or the operator account
-techne runs under.
+require an attacker to already control the cluster, the operator account, or
+the identity the service runs under.
