@@ -1,7 +1,7 @@
 ---
 card: repo-card:ladon
 updated: 2026-10-02
-anchor: pyproject.toml sha=e473fbb3fa3fdc17555385e0ea762fe551d89935
+anchor: pyproject.toml sha=e7861e0fc209d3147e44b47d788179f0d4de328a
 anchor: src/ladon/web/app.py sha=52e5d37ae1873a15455663273d6815ee9132754f
 ---
 # ladon: repo card
