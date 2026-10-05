@@ -56,7 +56,7 @@ LADON_DATABASE_URL=sqlite:///./ladon.db \
 LADON_CONFIG=./dev-config.yaml \
 LADON_DEV_IDENTITY=you@example.com \
 BAO_TOKEN=<a token you already have> \
-uv run python -m ladon.web
+PYTHONPATH=src uv run python -m ladon.web
 ```
 
 `python -m ladon.web` migrates the datastore and then serves on port 8000.
@@ -89,7 +89,7 @@ router works on a refresh.
 ### Running under uvicorn directly
 
 ```
-uv run uvicorn --factory ladon.web.app:build_default_app --port 8000
+PYTHONPATH=src uv run uvicorn --factory ladon.web.app:build_default_app --port 8000
 ```
 
 This does **not** run migrations. Run them first

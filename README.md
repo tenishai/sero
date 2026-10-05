@@ -40,9 +40,38 @@ it never stores secret values.
 - Sync secrets to targets with the [External Secrets Operator](https://github.com/external-secrets/external-secrets):
   Kubernetes clusters, GCP Secret Manager, and AWS Secrets Manager.
 - Give operators a web UI (secrets view, create/edit with a dry-run preview,
-  namespace requests, admin) and agents an MCP tool surface, both behind OIDC.
+  namespace requests, admin) behind an identity-aware proxy, and agents an MCP
+  tool surface (over stdio today; the OAuth 2.1 HTTP mount is on the roadmap).
 - Enforce secrets hygiene throughout: no secret value is ever logged, printed,
   committed, or shown by default; reveal is explicit and audited.
+
+## Quickstart
+
+Boot the backend on a laptop with SQLite and no OpenBao, in about a minute. You need
+[uv](https://docs.astral.sh/uv/) (it fetches Python 3.14 for you) and Node 22 for the UI.
+
+```
+git clone https://github.com/tenishai/ladon && cd ladon
+uv sync --frozen
+LADON_DATABASE_URL=sqlite:///./ladon.db PYTHONPATH=src uv run python -m ladon.web
+curl localhost:8000/healthz     # {"ok":true}
+```
+
+In a second terminal:
+
+```
+cd ui && npm ci && npm run dev
+```
+
+Open <http://localhost:5173>; the dev server proxies `/api` to the backend. The process migrates
+its datastore and serves, but with nothing else configured it holds no namespaces, knows no
+identity (`/api/me` answers 401) and has no OpenBao to reach. The laptop section of
+[docs/backend.md](docs/backend.md) adds the two things a real run needs, a dev identity
+(`identity.allow_dev_identity` plus `LADON_DEV_IDENTITY`) and an OpenBao address and token, and
+[deploy/openbao/README.md](deploy/openbao/README.md) installs a dev-shaped OpenBao on a cluster
+with Helm.
+
+Tests: `uv run pytest` for the backend and `cd ui && npm test` for the UI, the same gates CI runs.
 
 ## Stack
 
