@@ -207,4 +207,4 @@ same secrets-hygiene rules applied to every path.
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE). Copyright (C) 2026 tenishai.
+[AGPL-3.0-or-later](LICENSE). Copyright (C) 2026 tenish and the ladon contributors
