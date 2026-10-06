@@ -79,8 +79,8 @@ Tests: `uv run pytest` for the backend and `cd ui && npm test` for the UI, the s
 
 OpenBao on Integrated Storage (Raft) with cloud-KMS auto-unseal; a pinned Helm
 install; configuration and runtime driven through the OpenBao API; the External
-Secrets Operator for sync; a Python apply/agent backend with a SQLite or
-PostgreSQL datastore; and a Svelte 5 web UI that rebrands from two files.
+Secrets Operator for sync; a Python apply/agent backend on a SQLite datastore
+(PostgreSQL with the `postgres` extra); and a Svelte 5 web UI that rebrands from two files.
 Terraform provides only the OpenBao-specific substrate (the auto-unseal key);
 creating the cluster is a separate concern (see
 [Part of a larger platform](#part-of-a-larger-platform)).
@@ -124,7 +124,7 @@ sequence, and the rest of the phases, are in
 Working, on main: apply that converges (dry-run first, diff shown, nothing destroyed) for both
 OpenBao and cluster objects; teams as OpenBao namespaces with per-application identities; sync
 through the External Secrets Operator; the HTTP backend behind an identity-aware proxy, on
-SQLite or PostgreSQL, with every denial audited; a machine lane for other services; the role
+SQLite (PostgreSQL with the `postgres` extra), with every denial audited; a machine lane for other services; the role
 audit. All of it proven live, end to end, on a shared development cluster.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager

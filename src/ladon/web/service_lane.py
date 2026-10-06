@@ -32,10 +32,10 @@ remove one ExternalSecret for one application, in that application's own
 Kubernetes namespace or one its config admits.
 
 What is still somewhere else, behind a person: revealing a value, touching the
-allow list, approving a namespace, running an apply phase, and off-boarding an
-application (its store, its role, its policy and its service account). A
-provisioner that can stand a secret up and take it down again is not a
-provisioner that can dismantle an application's identity.
+allow list, approving a namespace and running an apply phase. Off-boarding an
+application (its store, its role, its policy and its service account) joined the
+lane as ``DELETE /api/service/app`` (PR #78), for the caller whose config admits
+that application, so a provisioner that stood an application up can take it down.
 """
 
 from __future__ import annotations
