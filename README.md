@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/tenishai/ladon/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tenishai/ladon/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
   <img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-yellow.svg">
 </p>
@@ -12,6 +13,7 @@
 <p align="center">
   <a href="#overview">Overview</a> |
   <a href="#how-it-works">How it works</a> |
+  <a href="#quickstart">Quickstart</a> |
   <a href="#stack">Stack</a> |
   <a href="#running">Running</a> |
   <a href="#status">Status</a> |
@@ -119,75 +121,25 @@ sequence, and the rest of the phases, are in
 
 ## Status
 
-All merged on main:
-
-- Apply converges (create / update with a shown diff / already current), reads
-  back every write, blocks instead of destroying; `plan` is offline, `apply`
-  without `--apply` connects and diffs. (PR #59)
-- Teams in config become OpenBao namespaces with the KV mount and team
-  policies inside; team onboarding runs inside the namespace; per-application
-  identities (`app-onboarding`): a read-only policy on the app's prefix, a JWT
-  role pinned to a dedicated service account with no default policy, a
-  ClusterSecretStore scoped to the OpenBao namespace and to the app's
-  Kubernetes namespace by its immutable name label. (PR #61)
-- Cluster documents applied with server-side apply under the `ladon` field
-  manager, read back and verified with strict comparison under
-  `spec.conditions` and the auth block, with an already-current signal; an
-  operator already on the cluster is detected and reused; `install-eso`;
-  `--phase sync` for one ExternalSecret. (PRs #60, #63)
-- The HTTP backend: proxy-header or signed-assertion identity, config group
-  source, the UI's routes, one environment per deployment, audit rows in
-  their own session including denials and 401s, reveal behind a
-  deny-by-default gate, migrations at boot, SQLite or PostgreSQL. (PR #62)
-- Image (pinned by digest, helm/kubectl by checksum, non-root, read-only
-  rootfs), deploy contract for the deploy platform (class gateway),
-  standalone manifests, three NetworkPolicies including the link-local DNS
-  rule, a CI image smoke. (PRs #64, #67)
-- The role audit (`scripts/ladon audit`). (PR #65)
-- The machine lane: `POST /api/service/secrets` and `/api/service/sync` per
-  configured OIDC caller, pinned subject and namespaces, attribution via
-  `acting_email`. (PR #66)
-- The machine lane reads and deletes: `GET /api/service/secrets` for the key
-  names, the version and when a path last changed; `DELETE` on both routes,
-  removing a path with all of its versions and the ExternalSecret in front of
-  it, which takes the Kubernetes Secret it owns with it. Dry run by default,
-  idempotent, and guarded three ways: a cluster object another field manager
-  owns is `409`, one belonging to another application or namespace is `403`,
-  and the answer says whether a workload's Secret goes too. The lane can now
-  delete; the room's destroy step is the remaining half.
-- Apply phases as admin jobs with a restart sweep; namespace-request approval
-  applies the team; MCP denial audit; the SQLite primary-key migration. (PR
-  #68)
-
-Proven live on a shared development cluster: a single-node vault installed
-from the pinned chart; the full configuration rebuilt from config on a fresh
-vault, with a second run writing nothing and a repointed store updated in
-place; a hand-edited policy diffed and repaired; an existing External Secrets
-Operator detected and reused; the round-trip vault -> store -> ExternalSecret
--> Secret, and the same ExternalSecret from another namespace refused; the
-acceptance matrix with real projected tokens (own prefix readable, another
-app's prefix and system paths and writes refused, a different service
-account refused with invalid subject, re-onboarding a no-op); the audit
-clean, then a widened default policy caught as HIGH, then clean after
-repair; the backend deployed from the image in the cluster, migrating at
-boot and serving the UI's routes through a port-forward; app onboarding run
-as a job through the admin endpoint. The platform vault runs on cloud-KMS
-auto-unseal, migrated in place from Shamir on the running vault and proven by
-a pod delete it came back from unsealed on its own. The backend now sits
-behind an identity-aware proxy on that cluster: a cloud external HTTPS load
-balancer terminating a managed certificate at a reserved address, with the
-proxy authenticating every caller and the backend verifying the signed
-assertion rather than trusting a header.
+Working, on main: apply that converges (dry-run first, diff shown, nothing destroyed) for both
+OpenBao and cluster objects; teams as OpenBao namespaces with per-application identities; sync
+through the External Secrets Operator; the HTTP backend behind an identity-aware proxy, on
+SQLite or PostgreSQL, with every denial audited; a machine lane for other services; the role
+audit. All of it proven live, end to end, on a shared development cluster.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
 sync; reveal step-up not built (gate denies by default); no fleet / second cluster; one process, one replica (the job runner and
 the allow list are per process); no image build in CI, images are built by
 hand from a clean export of a commit and tagged with its short sha.
 
-See [ROADMAP.md](ROADMAP.md) for the phased plan.
+The full list, with the PR for each piece and what the live proof covered, is in
+[docs/status.md](docs/status.md); the phased plan is [ROADMAP.md](ROADMAP.md).
 
 ## Docs
 
+- [docs/status.md](docs/status.md) - what is merged, by PR, and the live proof
+- [CHANGELOG.md](CHANGELOG.md) - what shipped
+- [ARCHITECTURE.md](ARCHITECTURE.md) - the repo card and its seams under docs/arch/
 - [CONTRIBUTING.md](CONTRIBUTING.md) - how we work
 - [docs/design.md](docs/design.md) - architecture and decisions
 - [docs/versioning.md](docs/versioning.md) - SemVer, tags, changelog
@@ -200,39 +152,15 @@ See [ROADMAP.md](ROADMAP.md) for the phased plan.
 
 ## Part of a larger platform
 
-Ladon is the secrets and vault member of the **tenish family** of open-source
-platform and agent projects. Each is independent and usable on its own; together
-they cover infrastructure, secrets, and the agent runtime. How Ladon relates to
-the others:
-
-**Infrastructure and platform**
-
-- [**gojira**](https://github.com/tenishai/gojira) - an opinionated GKE deploy
-  platform. It registers an existing cluster and provisions per-app deploy
-  plumbing (service account, workload identity, CI, manifests). Ladon takes the
-  same "run on a cluster someone else created" stance; a separate foundation
-  layer owns cluster, network, and project creation, and both Ladon and gojira
-  run on top of it.
-
-**Agent runtime** (Ladon exposes an MCP tool surface into this world)
-
-- [**daedalus**](https://github.com/tenishai/daedalus) - an agent construction
-  kit: an agent is a directory (persona, agent card, wiring), and daedalus is the
-  runtime, with Protocol seams for memory, tools, and checkpoints.
-- [**cabal**](https://github.com/tenishai/cabal) - a self-hosted agent
-  orchestration platform and A2A broker that runs personas as modules.
-- [**liminal**](https://github.com/tenishai/liminal) - an MCP/tool gateway: one
-  connection per agent, many backend handlers behind it. Ladon's MCP surface is
-  exactly the kind of backend a gateway like this fronts.
-- [**techne**](https://github.com/tenishai/techne) - local-first agentic memory
-  (a single SQLite file), the memory seam daedalus agents plug into.
-- [**agents**](https://github.com/tenishai/agents) - portable definitions of the
-  agent fleet (Prudence the reviewer, and others).
-
-Ladon's place in this picture: it holds the secrets. Human operators use its UI
-(OIDC); workloads read secrets through the External Secrets Operator; and agents
-built on daedalus/cabal reach it through its MCP tools (behind liminal), with the
-same secrets-hygiene rules applied to every path.
+Ladon is the secrets member of the tenish family of open-source platform and agent projects;
+each is usable on its own. [gojira](https://github.com/tenishai/gojira) is the deploy platform,
+with the same run-on-a-cluster-someone-else-created stance; [daedalus](https://github.com/tenishai/daedalus)
+the agent kit and runtime; [cabal](https://github.com/tenishai/cabal) orchestration and the A2A
+broker; [liminal](https://github.com/tenishai/liminal) the MCP gateway that fronts surfaces like
+ladon's; [techne](https://github.com/tenishai/techne) agent memory; [agents](https://github.com/tenishai/agents)
+the fleet definitions. Ladon's place: it holds the secrets. Operators reach it through the UI,
+workloads through External Secrets, agents through its MCP tools, with the same hygiene rules
+on every path.
 
 ## License
 

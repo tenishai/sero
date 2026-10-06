@@ -12,6 +12,17 @@ point of view, not a list of commit subjects.
 
 ### Changed
 
+- **The README is a two-screen read.** The merged-by-PR status list and the live-proof
+  account moved verbatim to `docs/status.md`; the sibling-project section is one paragraph.
+  A live CI badge joins the header.
+
+### Added
+
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 3.0) and Dependabot updates for the Python
+  lock and the UI's npm packages, not only GitHub Actions.
+
+### Changed
+
 - Relicensed from Apache-2.0 to AGPL-3.0-or-later, matching the other tenishai
   projects. LICENSE, NOTICE, README and package metadata are updated.
 
