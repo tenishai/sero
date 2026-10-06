@@ -12,6 +12,9 @@ point of view, not a list of commit subjects.
 
 ### Changed
 
+- CI runs `scripts/check_arch_cards.py`, so a seam changed without its card fails the PR
+  (a stale anchor merged on 2026-10-05 because nothing ran it). Dependabot's uv and npm
+  groups skip semver-major bumps; majors are a person's PR.
 - **Docs say what ships.** The datastore is SQLite as shipped; PostgreSQL needs the new
   optional `postgres` extra (`psycopg[binary]`), which was never a dependency before. The
   machine-lane module docstring now says off-boarding is on the lane (`DELETE
