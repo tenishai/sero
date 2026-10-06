@@ -7,18 +7,17 @@ name: dco
 #
 # Modelled on tenishai/techne's DCO step, with one difference: techne checks
 # fork PRs in a separate strict job, and this repo has a single job, so the
-# member exemption below also covers a member's PR opened from a fork.
+# write-access exemption below also covers such a person's PR from a fork.
 # Two exemptions:
-# - MEMBER: a PR whose author_association is OWNER, MEMBER or COLLABORATOR
-#   skips the check, so the rule is enforced on PRs from outside the team.
-#   GitHub computes author_association; the PR author cannot set it. It is a
-#   relationship label, not a permission check: COLLABORATOR covers any repo
-#   collaborator, and private org members are reported that way too. Narrow it
-#   to OWNER|MEMBER before anyone outside the org is added as a collaborator
-#   (tenishai/agora issue 51).
+# - WRITE ACCESS: a PR opened by someone with write access to this repo (admin,
+#   maintain or write, from any source: repo, team or org) skips the check;
+#   tenish's members all have it. The workflow asks GitHub's repository-
+#   permission API about the PR author (a login GitHub sets, not the PR).
+#   author_association is not used: the pull_request event payload carried
+#   CONTRIBUTOR for an org admin in some repos. If the lookup fails, the full
+#   check runs.
 # - DEPENDABOT: on a same-repo PR, a commit authored exactly as Dependabot's
-#   noreply address is skipped. Dependabot signs off as
-#   `dependabot[bot] <support@github.com>`, which never matches its author
+#   noreply address is skipped, because Dependabot cannot sign off under that
 #   address. A fork PR can forge any author, so it gets no exemption.
 on:
   pull_request:
@@ -43,13 +42,21 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
-          PR_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          case "${PR_AUTHOR_ASSOCIATION:-}" in
-            OWNER|MEMBER|COLLABORATOR)
-              echo "DCO: skipped, the PR author has write access to this repo ($PR_AUTHOR_ASSOCIATION)"
+          perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$PR_AUTHOR/permission" --jq .permission 2>/dev/null || echo unknown)
+          case "$perm" in
+            admin|maintain|write)
+              echo "DCO: skipped, $PR_AUTHOR has $perm access to this repo"
               exit 0
+              ;;
+            unknown)
+              echo "DCO: the permission lookup for $PR_AUTHOR failed; running the full check"
+              ;;
+            *)
+              echo "DCO: checking, $PR_AUTHOR has $perm access"
               ;;
           esac
           export GIT_NO_REPLACE_OBJECTS=1
