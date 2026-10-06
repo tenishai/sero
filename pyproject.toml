@@ -1,5 +1,5 @@
 [project]
-name = "ladon"
+name = "tenish-ladon"
 version = "0.1.0"
 description = "Open-source secrets and vault management built on OpenBao"
 requires-python = ">=3.14"
