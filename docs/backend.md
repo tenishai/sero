@@ -960,7 +960,8 @@ finishes.
 Migrations run at boot, from `LADON_DATABASE_URL`. SQLite is the development
 target and works with a file path (`sqlite:////data/ladon.db`, four slashes for
 an absolute path); PostgreSQL is the answer for anything shared
-(`postgresql+psycopg://user@host:5432/ladon`). A failed upgrade is fatal: the
+(`postgresql+psycopg://user@host:5432/ladon`; install the driver with
+`uv sync --frozen --extra postgres`, it is not in the base dependencies). A failed upgrade is fatal: the
 process exits non-zero rather than serving against a schema it cannot trust. An
 absent `LADON_DATABASE_URL` is not a failure; the process warns and starts.
 

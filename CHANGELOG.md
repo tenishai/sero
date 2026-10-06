@@ -12,6 +12,11 @@ point of view, not a list of commit subjects.
 
 ### Changed
 
+- **Docs say what ships.** The datastore is SQLite as shipped; PostgreSQL needs the new
+  optional `postgres` extra (`psycopg[binary]`), which was never a dependency before. The
+  machine-lane module docstring now says off-boarding is on the lane (`DELETE
+  /api/service/app`), which PR #78 made true. (#80)
+
 - **The README is a two-screen read.** The merged-by-PR status list and the live-proof
   account moved verbatim to `docs/status.md`; the sibling-project section is one paragraph.
   A live CI badge joins the header.

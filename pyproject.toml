@@ -17,6 +17,10 @@ dependencies = [
   "uvicorn==0.50.2",
 ]
 
+[project.optional-dependencies]
+# PostgreSQL driver for a shared datastore (D11). SQLite needs nothing extra.
+postgres = ["psycopg[binary]==3.3.6"]
+
 [dependency-groups]
 # Dev tooling, pinned exactly. Bumps are their own reviewed PR.
 dev = [

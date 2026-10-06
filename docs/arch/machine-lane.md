@@ -1,7 +1,7 @@
 ---
 card: arch-card:ladon-machine-lane
-updated: 2026-09-28
-anchor: src/ladon/web/service_lane.py sha=17fce52cda5ba6fd1768456340b960ff049695f3
+updated: 2026-10-05
+anchor: src/ladon/web/service_lane.py sha=6be26e141a258e969743093ec289083bc15c588a
 anchor: src/ladon/web/settings.py sha=e6be217110d300f7a8308bded3c5064aa1ceabb6
 ---
 # machine-lane: /api/service/*, a provisioner writing on a person's behalf (D16 in docs/specs/2026-09-22-platform-vault-design.md)
