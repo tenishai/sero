@@ -10,11 +10,11 @@ dependencies = [
   "PyYAML==6.0.3",
   "hvac==2.4.0",
   "SQLAlchemy==2.0.51",
-  "alembic==1.18.5",
-  "mcp==1.28.1",
-  "pyjwt[crypto]==2.13.0",
-  "fastapi==0.141.1",
-  "uvicorn==0.50.2",
+  "alembic==1.20.0",
+  "mcp==2.3.0",
+  "pyjwt[crypto]==2.15.1",
+  "fastapi==0.142.2",
+  "uvicorn==0.54.0",
 ]
 
 [project.optional-dependencies]
@@ -24,8 +24,8 @@ postgres = ["psycopg[binary]==3.3.6"]
 [dependency-groups]
 # Dev tooling, pinned exactly. Bumps are their own reviewed PR.
 dev = [
-  "ruff==0.15.17",
-  "pytest==9.1.0",
+  "ruff==0.16.10",
+  "pytest==9.1.1",
 ]
 
 [tool.uv]
