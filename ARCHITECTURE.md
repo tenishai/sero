@@ -1,13 +1,13 @@
 ---
 card: repo-card:ladon
 updated: 2026-10-05
-anchor: pyproject.toml sha=9e63796c1ae8ca4a8bd383e2074f2813754a43c0
+anchor: pyproject.toml sha=00efa96dd281a3b5c3c751b2ee593e6995cf6be5
 anchor: src/ladon/web/app.py sha=52e5d37ae1873a15455663273d6815ee9132754f
 ---
 # ladon: repo card
 
 WHAT: secrets/vault control plane on OpenBao. Renders + converges OpenBao config (namespaces, policies, JWT/OIDC auth, KV v2) and per-app ESO identities on the cluster it runs on; serves an HTTP backend + Svelte UI for people and a machine lane for provisioners. Never stores secret values (datastore holds audit/jobs/requests/tokens only).
-STATE: main, pyproject `version = "0.1.0"` (bumped 2026-10-05 for the go-public tag), no git tags yet, CHANGELOG all under [Unreleased]. Dev-shape deployment proven live per README Status (unverified here). Active: machine lane (read/delete/unsync #74, implicit onboarding on sync #76, `DELETE /api/service/app` offboard #78), k8s managed-fields reads (#77), front door + NetworkPolicy (#72), KMS seal overlay (#71).
+STATE: main, pyproject `version = "0.1.0"` (optional `postgres` extra = psycopg, 2026-10-05) (bumped 2026-10-05 for the go-public tag), no git tags yet, CHANGELOG all under [Unreleased]. Dev-shape deployment proven live per README Status (unverified here). Active: machine lane (read/delete/unsync #74, implicit onboarding on sync #76, `DELETE /api/service/app` offboard #78), k8s managed-fields reads (#77), front door + NetworkPolicy (#72), KMS seal overlay (#71).
 STACK: Python >=3.14, uv (`package = false`: tooling, not a distributable; no console script). FastAPI+uvicorn, hvac (OpenBao), SQLAlchemy+Alembic, pyjwt[crypto], mcp (FastMCP), PyYAML: all pinned exact. Shells out to `helm` and `kubectl` (pinned + checksummed in Dockerfile). UI: Svelte 5 + Vite in ui/, built into the image at /srv/ladon/ui. Image: Dockerfile, digest-pinned bases, non-root uid 10001. The read-only root filesystem is set by the deployment manifest (deploy/ladon/standalone/deployment.yaml), not by the image.
 ENTRY:
 - CLI `scripts/ladon` → `python -m ladon` → src/ladon/apply/cli.py:main. Subcommands plan | apply (dry-run unless --apply) | install-eso | seal-values | audit; `--phase` ∈ root-config, team-onboarding, app-onboarding, sync (cli.py:234).
