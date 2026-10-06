@@ -202,8 +202,8 @@ without regard to case). To fix it:
 # the last commit only
 git commit --amend --signoff --no-edit
 
-# every commit on your branch that you authored (a sign-off added this way
-# names you, so it can't fix a commit someone else authored)
+# every commit on your branch (this signs every rebased commit as you, which
+# satisfies the check only for commits whose author is you)
 git rebase --signoff origin/main
 
 # sign-off present but under a different name or email than the author:
@@ -213,9 +213,9 @@ git commit --amend --reset-author --signoff --no-edit
 git push --force-with-lease
 ```
 
-Commits already on `main` from before this rule are not re-checked. For now, a
-pull request opened by an owner, a tenishai organization member or a repository
-collaborator skips the check, including one opened from a fork; it is enforced
-on pull requests from everyone else. On a same-repo pull request, commits authored exactly as
-Dependabot's noreply address are skipped too, because Dependabot signs off under
-a different address that can never match.
+Commits already on `main` from before this rule are not re-checked. A pull request
+opened by someone with write access to this repository (admin, maintain or
+write; tenish's members all have it) skips the check, including one opened
+from a fork; it is enforced on pull requests from everyone else. On a same-repo pull request, commits authored exactly as
+Dependabot's noreply address are skipped too, because Dependabot cannot sign off
+under that address.
