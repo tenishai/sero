@@ -10,6 +10,12 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- README "How this was built" and CONTRIBUTING "Using AI tools" (the texts approved in
+  tenishai/agora discussion 42); a test that every self-hosted pull-request job keeps its
+  fork guard; historical banners on `docs/plans/` and `docs/specs/`.
+
 ### Changed
 
 - CI runs `scripts/check_arch_cards.py`, so a seam changed without its card fails the PR
