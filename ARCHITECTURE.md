@@ -1,9 +1,11 @@
 ---
 card: repo-card:ladon
 updated: 2026-10-05
-anchor: pyproject.toml sha=1059e4b3a546c630cf54381ac418d75a55667544
 anchor: src/ladon/web/app.py sha=52e5d37ae1873a15455663273d6815ee9132754f
 ---
+<!-- pyproject.toml is deliberately not anchored: Dependabot moves its pins weekly and the
+     CI card check would fail every one of those PRs. The version named under STATE is kept
+     by hand; the entry points and seams the card describes are anchored by their own files. -->
 # ladon: repo card
 
 WHAT: secrets/vault control plane on OpenBao. Renders + converges OpenBao config (namespaces, policies, JWT/OIDC auth, KV v2) and per-app ESO identities on the cluster it runs on; serves an HTTP backend + Svelte UI for people and a machine lane for provisioners. Never stores secret values (datastore holds audit/jobs/requests/tokens only).
