@@ -14,6 +14,6 @@ INVARIANTS:
 - Algorithms pinned to ES256/RS256 (never from the token header); iss, aud, exp required; leeway 30s. WHY: blocks `none`/HS-with-public-key downgrade.
 - JWKS: https only; TTL 900s; refetch floor 60s (anti-stampede); stale keys usable ≤ 3600s (machine lane: 600s) during key-endpoint outage.
 - Dev hatch (LADON_DEV_IDENTITY) inert unless `identity.allow_dev_identity: true` AND no assertion; warns loudly.
-- No assertion configured → startup warning; the backend must then be reachable only via the authenticating proxy (NetworkPolicy in deploy/ladon/k8s/base/networkpolicy.yaml, front door in deploy/ladon/standalone/front-door/).
+- No assertion configured → startup warning; the backend must then be reachable only via the authenticating proxy (NetworkPolicy in k8s/base/networkpolicy.yaml, front door in deploy/ladon/standalone/front-door/).
 - Tokens never logged, including rejected ones.
 CONSUMERS: web/deps.py (all /api routes except /service/*), web/service_lane.py (AssertionVerifier only), web/app.py wiring. Tests: tests/test_web_identity.py, tests/test_web_assertion.py, tests/fake_assertion.py.

@@ -7,8 +7,9 @@ cluster name, registry, address, and address range is a placeholder to replace.
 
 | Path | What it is |
 | --- | --- |
-| `gojira.yaml` | The deploy contract. The deployment platform's generator reads it and emits the Deployment and the Service. |
-| `k8s/base/` | The manifests that generator preserves: identity, RBAC, the volume, and the network policies. |
+| `gojira.yaml` (repository root) | The deploy contract. The deployment platform's generator reads it from the root and emits the Deployment and the Service. |
+| `k8s/base/` (repository root) | The manifests that generator preserves: identity, the namespaced RBAC, the volume, and the network policies. |
+| `k8s/cluster/` (repository root) | The cluster-scoped objects an operator applies once: the `ClusterRole`, and the `ClusterRoleBinding` the standalone path needs. The generator refuses cluster-scoped kinds in `k8s/base`; on that path the contract's `cluster_roles: [ladon]` has the platform make the binding. |
 | `standalone/` | A plain Deployment and Service, for a cluster where that platform is not in use. |
 | `standalone/front-door/` | The cloud front door: an external HTTPS load balancer with the provider's identity-aware proxy, a managed certificate, and an http-to-https redirect. Optional, and applied by hand. |
 
@@ -269,7 +270,8 @@ The namespaced `Role` covers Secrets, ConfigMaps, and ServiceAccounts in the
 authenticates as: D18a puts them in Ladon's own namespace rather than the
 operator's, so Ladon never writes into a namespace another team owns.
 
-The `ClusterRole` grants only what cannot be namespaced:
+The `ClusterRole` (`k8s/cluster/clusterrole.yaml`) grants only what cannot be
+namespaced:
 `ClusterSecretStore` (a cluster-scoped kind), `ExternalSecret` in any namespace
 (onboarded applications live in their own), `namespaces` and
 `customresourcedefinitions` reads for the API-version probe, and `deployments`
@@ -291,6 +293,15 @@ down is supposed to do, and it is why two checks stand in front of it in the
 code: the live object must record `ladon` as one of its field managers, and it
 must belong to the application and namespace the caller named.
 
+The `ClusterRole` is not part of `k8s/base`, and that is the deployment
+platform's rule rather than ours: a base that carries a cluster-scoped kind is
+refused, so an application cannot grant itself cluster-wide access by
+committing a file. An operator applies the `ClusterRole` once, puts its name on
+the platform's allowlist, and `gojira.yaml` names it under `cluster_roles`; the
+platform then creates and owns the binding to the `ladon` ServiceAccount. The
+standalone path has no platform to do that, so `k8s/cluster/` also carries the
+`ClusterRoleBinding` for an operator to apply alongside.
+
 Neither role can read a Secret outside the `ladon` namespace. A cluster-wide
 Secret read would turn this service account into a way to collect every synced
 value on the cluster, which is the opposite of the point.
@@ -298,10 +309,15 @@ value on the cluster, which is the opposite of the point.
 ## Applying it
 
 ```
-# The preserved manifests (identity, RBAC, volume, network policies):
-kubectl apply -k deploy/ladon/k8s/base
+# The cluster-scoped ClusterRole, once per cluster (an operator; on the
+# deployment platform also add `ladon` to its cluster-role allowlist):
+kubectl apply -f k8s/cluster/clusterrole.yaml
 
-# On a cluster without the deployment platform, the workload too:
+# The preserved manifests (identity, namespaced RBAC, volume, network policies):
+kubectl apply -k k8s/base
+
+# On a cluster without the deployment platform, the binding and the workload too:
+kubectl apply -f k8s/cluster/clusterrolebinding.yaml
 kubectl apply -f deploy/ladon/standalone/
 ```
 

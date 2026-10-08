@@ -331,7 +331,7 @@ project:
 the key and both grants as one unit.
 
 One network rule, already in
-[the manifests](../deploy/ladon/k8s/base/networkpolicy.yaml) and worth knowing
+[the manifests](../k8s/base/networkpolicy.yaml) and worth knowing
 about: workload identity fetches the pod's credentials from the node metadata
 server at `169.254.169.254` over plain TCP 80. Under the default deny, the rule
 next to it opens that address on port 53 for DNS only, so without the port 80
@@ -411,10 +411,22 @@ issuer's keys, and every store reports that it could not create a client.
 
 ### 4. The backend's own objects
 
-Identity, RBAC, the data volume, and the network policies:
+The cluster-scoped `ClusterRole` first, once per cluster. It lives outside
+the base on purpose: the deployment platform refuses a base that carries a
+cluster-scoped kind, and binds the pod to the roles the contract names under
+`cluster_roles` instead, so on that platform also add `ladon` to its
+cluster-role allowlist. On a cluster without the platform, apply the binding
+next to it as well.
 
 ```
-kubectl apply -k deploy/ladon/k8s/base
+kubectl apply -f k8s/cluster/clusterrole.yaml
+kubectl apply -f k8s/cluster/clusterrolebinding.yaml   # standalone path only
+```
+
+Then identity, the namespaced RBAC, the data volume, and the network policies:
+
+```
+kubectl apply -k k8s/base
 ```
 
 Then label two namespaces, or the policies keep out the two things that must
@@ -477,9 +489,11 @@ that OpenBao cannot issue to itself.
 
 ### 6. The backend
 
-On a cluster running the deployment platform, `deploy/ladon/gojira.yaml` is the
-whole of it: the generator emits the Deployment and Service from that contract,
-and the manifests from step 4 are preserved alongside.
+On a cluster running the deployment platform, `gojira.yaml` at the repository
+root is the whole of it: the generator emits the Deployment and Service from
+that contract, the manifests from step 4 are preserved alongside, and the
+`cluster_roles: [ladon]` line has the platform bind the ServiceAccount to the
+`ClusterRole` the operator applied.
 
 On a cluster without it, apply the standalone pair. Set the image to the tag the
 image workflow pushed (the short commit sha) and `BAO_ADDR` to where OpenBao
@@ -560,7 +574,7 @@ already handled in this repository and both worth recognising:
   namespace, so the `ladon.dev/proxy=true` label admits none of it;
   `ladon-backend` carries an `ipBlock` rule for the pair instead. A cluster
   running an older copy of
-  [the manifests](../deploy/ladon/k8s/base/networkpolicy.yaml) will fail here
+  [the manifests](../k8s/base/networkpolicy.yaml) will fail here
   until it is reapplied.
 
 **4. Grant somebody access.** Enabling IAP authenticates callers; it

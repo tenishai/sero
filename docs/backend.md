@@ -310,7 +310,7 @@ routes accept the same shape.
 ### Reaching it from inside the cluster
 
 The trust boundary above says nothing but the proxy may reach this port, and
-`deploy/ladon/k8s/base/networkpolicy.yaml` enforces exactly that. A machine
+`k8s/base/networkpolicy.yaml` enforces exactly that. A machine
 caller running in the cluster is not the proxy, so it is denied until the
 deployment admits it: add an ingress rule naming that workload, alongside the
 proxy rule, and nothing else.
@@ -488,7 +488,7 @@ Two grants this route needs that the write routes do not. The backend's OpenBao
 token needs `delete` on `kv/metadata/<path>`, which is the capability that
 removes the versions rather than soft-deleting one; without it the call reaches
 OpenBao and fails there. And the backend's ServiceAccount needs `delete` on
-`externalsecrets` for the route below, which `deploy/ladon/k8s/base/clusterrole.yaml`
+`externalsecrets` for the route below, which `k8s/cluster/clusterrole.yaml`
 grants on that kind and no other.
 
 **`POST /api/service/sync`** makes sure the Kubernetes Secret exists. Writing

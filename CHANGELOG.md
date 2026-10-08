@@ -10,6 +10,18 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Changed
+
+- **The deploy contract moved to the repository root.** `gojira.yaml` and `k8s/base/`
+  now live where the deployment platform looks for them (it reads the contract at the
+  root, as every other repo on it does); `deploy/ladon/standalone/` and the OpenBao
+  values stay where they were. The `ClusterRole` left `k8s/base` for `k8s/cluster/`:
+  the platform refuses cluster-scoped kinds in a base, and instead binds the pod to the
+  roles the contract names (`cluster_roles: [ladon]`) once an operator has applied the
+  `ClusterRole` and allowlisted it. The standalone path applies the `ClusterRoleBinding`
+  from the same directory. `scripts/validate-deploy.sh` checks all three directories
+  and fails a base that grows a cluster-scoped kind.
+
 ### Added
 
 - README "How this was built" and CONTRIBUTING "Using AI tools" (the texts approved in

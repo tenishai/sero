@@ -2,13 +2,16 @@
 #
 # validate-deploy.sh - contract check for the deploy manifests.
 #
-# Checks both halves of deploy/ladon:
+# Checks the three parts of the deploy layout:
 #   * k8s/base       the manifests the deployment platform's generator
-#                    preserves, as a kustomization.
-#   * standalone/    the Deployment and Service for a cluster where that
-#                    platform is not in use.
+#                    preserves, as a kustomization (repository root, where
+#                    that platform looks for them, next to gojira.yaml).
+#   * k8s/cluster    the cluster-scoped objects an operator applies once: the
+#                    ClusterRole, and the binding the standalone path needs.
+#   * deploy/ladon/standalone/   the Deployment and Service for a cluster
+#                    where that platform is not in use.
 #
-# One directory is deliberately outside both halves: standalone/front-door/.
+# One directory is deliberately outside all three: standalone/front-door/.
 # Neither the kubectl glob below nor "kubectl apply -f <dir>" recurses, so
 # nothing in it is read, and that is on purpose rather than by accident. Its
 # manifests are cloud-provider custom resources whose definitions are not on
@@ -27,7 +30,8 @@
 # reachable it fails on the schema download, not on the manifests. So:
 #
 #   * With a reachable cluster (an operator's laptop), it runs exactly:
-#         kubectl apply --dry-run=client -k deploy/ladon/k8s/base
+#         kubectl apply --dry-run=client -k k8s/base
+#         kubectl apply --dry-run=client -f k8s/cluster/
 #         kubectl apply --dry-run=client -f deploy/ladon/standalone/
 #     which is full schema validation and the real gate.
 #
@@ -50,7 +54,8 @@
 
 set -euo pipefail
 
-BASE_DIR="deploy/ladon/k8s/base"
+BASE_DIR="k8s/base"
+CLUSTER_DIR="k8s/cluster"
 STANDALONE_DIR="deploy/ladon/standalone"
 
 # Every object each half must produce, as "<kind>/<name>". Kept here rather
@@ -60,12 +65,14 @@ BASE_EXPECTED="
 ServiceAccount/ladon
 Role/ladon
 RoleBinding/ladon
-ClusterRole/ladon
-ClusterRoleBinding/ladon
 PersistentVolumeClaim/ladon-data
 NetworkPolicy/ladon-default-deny
 NetworkPolicy/ladon-backend
 NetworkPolicy/ladon-openbao
+"
+CLUSTER_EXPECTED="
+ClusterRole/ladon
+ClusterRoleBinding/ladon
 "
 STANDALONE_EXPECTED="
 Deployment/ladon
@@ -144,6 +151,7 @@ check_inventory() {
 if cluster_reachable; then
   echo "mode: full (schema validated against a reachable cluster)"
   run "kustomize base" kctl apply --dry-run=client -k "$BASE_DIR" || fail=1
+  run "cluster-scoped" kctl apply --dry-run=client -f "$CLUSTER_DIR/" || fail=1
   run "standalone"     kctl apply --dry-run=client -f "$STANDALONE_DIR/" || fail=1
 else
   echo "mode: offline (no cluster reachable; malformed YAML and a missing"
@@ -154,8 +162,9 @@ fi
 # The inventory check runs in both modes: the full mode proves every field is
 # valid, but not that every object is present.
 built="$(mktemp)"
+cluster_all="$(mktemp)"
 standalone_all="$(mktemp)"
-trap 'rm -f "$built" "$standalone_all"' EXIT
+trap 'rm -f "$built" "$cluster_all" "$standalone_all"' EXIT
 
 if kubectl kustomize "$BASE_DIR" >"$built" 2>/dev/null; then
   check_inventory "base inventory" "$built" "$BASE_EXPECTED" || fail=1
@@ -163,6 +172,25 @@ else
   echo "check: base inventory ... FAILED (kustomize build failed)"
   fail=1
 fi
+
+# The base must stay free of cluster-scoped kinds: the deployment platform
+# refuses a base that carries one, and the ClusterRole is applied by an
+# operator from k8s/cluster instead.
+echo -n "check: base has no cluster-scoped kind ... "
+if grep -qE '^(ClusterRole|ClusterRoleBinding)/' "$built"; then
+  echo "FAILED"
+  grep -E '^(ClusterRole|ClusterRoleBinding)/' "$built" | sed 's/^/  found: /'
+  fail=1
+else
+  echo "ok"
+fi
+
+: >"$cluster_all"
+for manifest in "$CLUSTER_DIR"/*.yaml; do
+  echo "---" >>"$cluster_all"
+  cat "$manifest" >>"$cluster_all"
+done
+check_inventory "cluster inventory" "$cluster_all" "$CLUSTER_EXPECTED" || fail=1
 
 : >"$standalone_all"
 for manifest in "$STANDALONE_DIR"/*.yaml; do

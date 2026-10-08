@@ -14,5 +14,5 @@ INVARIANTS:
 - Only `(NotFound)` counts as absent; any other refusal is an error. WHY: "could not look" ≠ "nothing there".
 - Namespaced kinds must set a namespace (CLUSTER_SCOPED_KINDS exempt). WHY: else it lands in whatever the kubectl context points at.
 - Error text: first line of stderr, ≤ MAX_ERROR_CHARS (200). WHY: kubectl can echo object bodies.
-- Ladon manages ONE cluster, its own (in-cluster RBAC: deploy/ladon/k8s/base/{role,clusterrole}.yaml).
+- Ladon manages ONE cluster, its own (in-cluster RBAC: k8s/base/role.yaml, k8s/cluster/clusterrole.yaml).
 CONSUMERS: apply/cli.py run_phase (cluster half), install/eso.py, web/service_lane.py `ClusterSync` defaults. Tests: tests/test_install_k8s.py, tests/fake_cluster.py.
