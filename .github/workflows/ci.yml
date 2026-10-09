@@ -46,7 +46,7 @@ jobs:
           # Pinned Helm version, see docs/versions.md.
           version: v4.2.1
       # Azure/setup-kubectl v5.1.0
-      - uses: Azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d
+      - uses: Azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e
         with:
           # Pinned kubectl version, see docs/versions.md. The same version the
           # image carries, so CI checks the manifests with the client that
