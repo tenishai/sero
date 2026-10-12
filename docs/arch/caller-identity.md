@@ -1,8 +1,8 @@
 ---
-card: arch-card:ladon-caller-identity
+card: arch-card:sero-caller-identity
 updated: 2026-09-28
-anchor: src/ladon/web/identity.py sha=2ec0dc7f85b1c76414e4c30453ff81c8d3a559e6
-anchor: src/ladon/web/assertion.py sha=a69496d8e10509f35244ef67fd12f893e3957fdd
+anchor: src/sero/web/identity.py sha=e4a8dc093aea9a9e2cf3e65de9c188558762e7c8
+anchor: src/sero/web/assertion.py sha=a69496d8e10509f35244ef67fd12f893e3957fdd
 ---
 # caller-identity: who the human caller is (D15 in docs/specs/2026-09-22-platform-vault-design.md); no login form
 
@@ -13,7 +13,7 @@ INVARIANTS:
 - Exactly one instance of the deciding header; two = refusal. WHY: duplicates mean something in the path is injecting headers.
 - Algorithms pinned to ES256/RS256 (never from the token header); iss, aud, exp required; leeway 30s. WHY: blocks `none`/HS-with-public-key downgrade.
 - JWKS: https only; TTL 900s; refetch floor 60s (anti-stampede); stale keys usable ≤ 3600s (machine lane: 600s) during key-endpoint outage.
-- Dev hatch (LADON_DEV_IDENTITY) inert unless `identity.allow_dev_identity: true` AND no assertion; warns loudly.
-- No assertion configured → startup warning; the backend must then be reachable only via the authenticating proxy (NetworkPolicy in k8s/base/networkpolicy.yaml, front door in deploy/ladon/standalone/front-door/).
+- Dev hatch (SERO_DEV_IDENTITY) inert unless `identity.allow_dev_identity: true` AND no assertion; warns loudly.
+- No assertion configured → startup warning; the backend must then be reachable only via the authenticating proxy (NetworkPolicy in k8s/base/networkpolicy.yaml, front door in deploy/sero/standalone/front-door/).
 - Tokens never logged, including rejected ones.
 CONSUMERS: web/deps.py (all /api routes except /service/*), web/service_lane.py (AssertionVerifier only), web/app.py wiring. Tests: tests/test_web_identity.py, tests/test_web_assertion.py, tests/fake_assertion.py.

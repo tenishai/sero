@@ -10,8 +10,8 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base, McpRefreshToken
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base, McpRefreshToken
 
 
 @pytest.fixture
@@ -30,8 +30,8 @@ def make_family(session):
     return repo.create_family(
         session,
         user_email="op@example.com",
-        client_id="ladon-cli",
-        audience="ladon",
+        client_id="sero-cli",
+        audience="sero",
         scope="read",
         expires_at=_expiry(),
     )

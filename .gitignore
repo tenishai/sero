@@ -1,5 +1,5 @@
-# Ladon .gitignore
-# Secrets hygiene is a first-class rule. Ladon never stores secret values.
+# Sero .gitignore
+# Secrets hygiene is a first-class rule. Sero never stores secret values.
 # The patterns below are a safety net, not a substitute for the CI check
 # that no secret material is committed. Do not rely on this alone.
 

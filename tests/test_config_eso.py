@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-from ladon.config.eso import (
+from sero.config.eso import (
     API_GROUP,
     awssm_store,
     external_secret,
@@ -12,7 +12,7 @@ from ladon.config.eso import (
     to_manifest,
     vault_store,
 )
-from ladon.config.teams import ConfigError
+from sero.config.teams import ConfigError
 
 
 def test_vault_store_shape_and_auth():

@@ -1,11 +1,11 @@
-<h1 align="center">Ladon</h1>
+<h1 align="center">Sero</h1>
 
 <p align="center">
   <strong>Open-source secrets and vault management, built on OpenBao.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/tenishai/ladon/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tenishai/ladon/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/tenishai/sero/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tenishai/sero/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
   <img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-yellow.svg">
 </p>
@@ -24,12 +24,12 @@
 
 ## Overview
 
-Ladon deploys and operates [OpenBao](https://github.com/openbao/openbao) (the
+Sero deploys and operates [OpenBao](https://github.com/openbao/openbao) (the
 open-source fork of HashiCorp Vault) and syncs secrets out to where workloads
 need them. It is a platform you can deploy: brand-neutral defaults, customizable
 per deployment, 100% open source under AGPL-3.0-or-later.
 
-Ladon integrates and operates OpenBao. It is not a fork of OpenBao or Vault, and
+Sero integrates and operates OpenBao. It is not a fork of OpenBao or Vault, and
 it never stores secret values.
 
 ## How it works
@@ -37,7 +37,7 @@ it never stores secret values.
 - Provision and operate OpenBao across environments via pinned Helm installs,
   with cloud-KMS auto-unseal (GCP, AWS, or Azure) or Shamir.
 - Render and apply configuration (namespaces, policies, JWT and OIDC auth, KV
-  mounts) through the OpenBao API, dry-run first, from a `ladon` CLI or a
+  mounts) through the OpenBao API, dry-run first, from a `sero` CLI or a
   deployment config file.
 - Sync secrets to targets with the [External Secrets Operator](https://github.com/external-secrets/external-secrets):
   Kubernetes clusters, GCP Secret Manager, and AWS Secrets Manager.
@@ -53,9 +53,9 @@ Boot the backend on a laptop with SQLite and no OpenBao, in about a minute. You 
 [uv](https://docs.astral.sh/uv/) (it fetches Python 3.14 for you) and Node 22 for the UI.
 
 ```
-git clone https://github.com/tenishai/ladon && cd ladon
+git clone https://github.com/tenishai/sero && cd sero
 uv sync --frozen
-LADON_DATABASE_URL=sqlite:///./ladon.db PYTHONPATH=src uv run python -m ladon.web
+SERO_DATABASE_URL=sqlite:///./sero.db PYTHONPATH=src uv run python -m sero.web
 curl localhost:8000/healthz     # {"ok":true}
 ```
 
@@ -69,7 +69,7 @@ Open <http://localhost:5173>; the dev server proxies `/api` to the backend. The 
 its datastore and serves, but with nothing else configured it holds no namespaces, knows no
 identity (`/api/me` answers 401) and has no OpenBao to reach. The laptop section of
 [docs/backend.md](docs/backend.md) adds the two things a real run needs, a dev identity
-(`identity.allow_dev_identity` plus `LADON_DEV_IDENTITY`) and an OpenBao address and token, and
+(`identity.allow_dev_identity` plus `SERO_DEV_IDENTITY`) and an OpenBao address and token, and
 [deploy/openbao/README.md](deploy/openbao/README.md) installs a dev-shaped OpenBao on a cluster
 with Helm.
 
@@ -90,28 +90,28 @@ The architecture and the decisions behind it are in
 
 ## Running
 
-The apply layers run from a checkout through the `ladon` CLI wrapper. Every
+The apply layers run from a checkout through the `sero` CLI wrapper. Every
 command is a dry-run until `--apply` is passed, and every apply converges: a
 second run reports each object already current and writes nothing.
 
 ```
 # Put the External Secrets Operator on the cluster, or reuse the one already
 # running on it:
-scripts/ladon install-eso --apply
+scripts/sero install-eso --apply
 
 # Onboard one application: its OpenBao policy and role, then its service
 # account and secret store on the cluster, in one command:
-scripts/ladon apply --phase app-onboarding --config deployment.yaml \
+scripts/sero apply --phase app-onboarding --config deployment.yaml \
   --team TEAM --app APP --cluster CLUSTER --k8s-namespace NAMESPACE --apply
 
 # Sync one path into the Kubernetes Secret a workload already reads:
-scripts/ladon apply --phase sync --team TEAM --app APP \
+scripts/sero apply --phase sync --team TEAM --app APP \
   --path apps/APP/PURPOSE --name NAME --apply
 
 # Check that nothing has been widened since: every JWT role, the default
 # policy, and every per-application policy. Read-only; exits 3 on a high
 # finding, so a scheduled run can fail on it:
-scripts/ladon audit --config deployment.yaml
+scripts/sero audit --config deployment.yaml
 ```
 
 The OpenBao address and token come from the environment (`BAO_ADDR`/`VAULT_ADDR`
@@ -152,13 +152,13 @@ The full list, with the PR for each piece and what the live proof covered, is in
 
 ## Part of a larger platform
 
-Ladon is the secrets member of the tenish family of open-source platform and agent projects;
+Sero is the secrets member of the tenish family of open-source platform and agent projects;
 each is usable on its own. [gojira](https://github.com/tenishai/gojira) is the deploy platform,
 with the same run-on-a-cluster-someone-else-created stance; [daedalus](https://github.com/tenishai/daedalus)
 the agent kit and runtime; [cabal](https://github.com/tenishai/cabal) orchestration and the A2A
 broker; [liminal](https://github.com/tenishai/liminal) the MCP gateway that fronts surfaces like
-ladon's; [techne](https://github.com/tenishai/techne) agent memory; [agents](https://github.com/tenishai/agents)
-the fleet definitions. Ladon's place: it holds the secrets. Operators reach it through the UI,
+sero's; [techne](https://github.com/tenishai/techne) agent memory; [agents](https://github.com/tenishai/agents)
+the fleet definitions. Sero's place: it holds the secrets. Operators reach it through the UI,
 workloads through External Secrets, agents through its MCP tools, with the same hygiene rules
 on every path.
 
@@ -174,4 +174,4 @@ have had AI help.
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE). Copyright (C) 2026 tenish and the ladon contributors
+[AGPL-3.0-or-later](LICENSE). Copyright (C) 2026 tenish and the sero contributors

@@ -17,7 +17,7 @@ test("app renders without console errors and navigates the core views", async ({
 
   // The shell rendered: the product wordmark and the Namespaces landing are shown
   // (not a blank page).
-  await expect(page.getByText("Ladon", { exact: true })).toBeVisible();
+  await expect(page.getByText("Sero", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Namespaces" })).toBeVisible();
 
   // Admin nav appears once the mock user (an admin) loads, then its view

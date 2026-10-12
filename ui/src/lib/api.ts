@@ -1,5 +1,5 @@
 /**
- * Typed API client for the Ladon backend.
+ * Typed API client for the Sero backend.
  *
  * A thin wrapper over `fetch` with typed responses, mapping to the backend's
  * read/write contract (the same operations the MCP tools expose). The transport

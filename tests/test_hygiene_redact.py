@@ -1,6 +1,6 @@
 """Tests for the redact hygiene primitive."""
 
-from ladon.hygiene import REDACTED, redact, redact_text
+from sero.hygiene import REDACTED, redact, redact_text
 
 
 def test_redacts_by_key_name_case_insensitive():

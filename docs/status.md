@@ -15,7 +15,7 @@ All merged on main:
   role pinned to a dedicated service account with no default policy, a
   ClusterSecretStore scoped to the OpenBao namespace and to the app's
   Kubernetes namespace by its immutable name label. (PR #61)
-- Cluster documents applied with server-side apply under the `ladon` field
+- Cluster documents applied with server-side apply under the `sero` field
   manager, read back and verified with strict comparison under
   `spec.conditions` and the auth block, with an already-current signal; an
   operator already on the cluster is detected and reused; `install-eso`;
@@ -28,7 +28,7 @@ All merged on main:
   rootfs), deploy contract for the deploy platform (class gateway),
   standalone manifests, three NetworkPolicies including the link-local DNS
   rule, a CI image smoke. (PRs #64, #67)
-- The role audit (`scripts/ladon audit`). (PR #65)
+- The role audit (`scripts/sero audit`). (PR #65)
 - The machine lane: `POST /api/service/secrets` and `/api/service/sync` per
   configured OIDC caller, pinned subject and namespaces, attribution via
   `acting_email`. (PR #66)

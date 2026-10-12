@@ -1,7 +1,7 @@
 /**
  * Branding and deployment configuration: the ONE place a new client edits.
  *
- * Ladon ships unbranded. To make the UI a client's own, edit this file (product
+ * Sero ships unbranded. To make the UI a client's own, edit this file (product
  * name, wordmark, admin-namespace concept, environments, doc links, storage
  * prefix) and the palette/fonts in `app.css`. Components and views must never
  * hardcode any of these; they import from here. That is the whole "drop it in,
@@ -41,10 +41,10 @@ export interface Branding {
  * and carry no company, cloud, or product-specific identity.
  */
 export const branding: Branding = {
-  productName: "Ladon",
+  productName: "Sero",
   tagline: "Secrets platform",
   adminNamespace: "platform-admin",
   environments: ["dev", "qa", "prod"],
-  storagePrefix: "ladon",
+  storagePrefix: "sero",
   docs: {},
 };

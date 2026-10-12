@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ladon.config import (
+from sero.config import (
     ConfigError,
     DeploymentConfig,
     load_deployment_config,

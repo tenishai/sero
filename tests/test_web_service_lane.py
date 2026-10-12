@@ -25,15 +25,15 @@ from fake_assertion import SETTINGS as ASSERTION_SETTINGS
 from fake_assertion import token as assertion_token
 from fake_assertion import verifier as assertion_verifier
 from fake_cluster import FakeCluster, Result, eso_status_entry, managed_field_entry
-from ladon.apply.cli import PhaseRun
-from ladon.apply.executor import ApplyResult as OpenBaoResult
-from ladon.apply.executor import OpDiff
-from ladon.config.apps import MAX_KV_PATH_LENGTH, app_store_name
-from ladon.config.eso import K8S_NAMESPACE_NAME_LABEL
-from ladon.config.teams import ConfigError
-from ladon.datastore.models import Base, ToolCallLog
-from ladon.hygiene import mask
-from ladon.install.k8s import (
+from sero.apply.cli import PhaseRun
+from sero.apply.executor import ApplyResult as OpenBaoResult
+from sero.apply.executor import OpDiff
+from sero.config.apps import MAX_KV_PATH_LENGTH, app_store_name
+from sero.config.eso import K8S_NAMESPACE_NAME_LABEL
+from sero.config.teams import ConfigError
+from sero.datastore.models import Base, ToolCallLog
+from sero.hygiene import mask
+from sero.install.k8s import (
     ApplyReport,
     ApplyResult,
     converge_documents,
@@ -41,17 +41,17 @@ from ladon.install.k8s import (
     list_kind,
     read_one,
 )
-from ladon.mcp.openbao import OpenBaoSecrets
-from ladon.web.app import create_app
-from ladon.web.assertion import STALE_KEYS_MAX_SECONDS
-from ladon.web.service_lane import (
+from sero.mcp.openbao import OpenBaoSecrets
+from sero.web.app import create_app
+from sero.web.assertion import STALE_KEYS_MAX_SECONDS
+from sero.web.service_lane import (
     ACTING_EMAIL_MAX,
     MAX_SERVICE_TOKEN_AGE_SECONDS,
     SERVICE_STALE_KEYS_MAX_SECONDS,
     ClusterSync,
     build_service_lane,
 )
-from ladon.web.settings import (
+from sero.web.settings import (
     DEFAULT_IDENTITY_HEADER,
     DEFAULT_SERVICE_RATE_LIMIT,
     DEFAULT_SERVICE_READ_LIMIT,
@@ -70,8 +70,8 @@ def now_epoch():
 WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
 
 CALLER = "provisioner"
-SUBJECT = "system:serviceaccount:ladon:provisioner"
-SERVICE_AUDIENCE = "https://ladon.example.com/service"
+SUBJECT = "system:serviceaccount:sero:provisioner"
+SERVICE_AUDIENCE = "https://sero.example.com/service"
 ACTING = "op@example.com"
 NAMESPACE = "team-a"
 NESTED_NAMESPACE = "platform/team-a"
@@ -81,7 +81,7 @@ PATH = f"apps/{APP}/demo"
 # Where an ExternalSecret lands unless the caller is pinned to somewhere else:
 # the application's own name, which is what onboarding defaults to.
 DEFAULT_K8S_NAMESPACE = APP
-PINNED_K8S_NAMESPACE = "ladon-sample"
+PINNED_K8S_NAMESPACE = "sero-sample"
 
 CALLER_CONFIG = {
     "name": CALLER,
@@ -262,7 +262,7 @@ def store():
 def sessions(tmp_path):
     # A file, not ":memory:": the audit path opens a second connection while the
     # request's is still open, and only a real file shows whether that works.
-    engine = create_engine(f"sqlite:///{tmp_path / 'ladon.db'}")
+    engine = create_engine(f"sqlite:///{tmp_path / 'sero.db'}")
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 
@@ -273,7 +273,7 @@ def cluster():
 
 
 class DenyingKvV2(FakeKvV2):
-    """A store that refuses every read. Not a 404: Ladon could not look."""
+    """A store that refuses every read. Not a 404: Sero could not look."""
 
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
         raise Forbidden("permission denied")
@@ -315,7 +315,7 @@ class FakeOnboarding:
             return PhaseRun(openbao=openbao, dry_run=not apply)
         cluster = ApplyReport(
             results=(
-                ApplyResult("ServiceAccount", "ladon", f"eso-{NAMESPACE}-{APP}", "create"),
+                ApplyResult("ServiceAccount", "sero", f"eso-{NAMESPACE}-{APP}", "create"),
                 ApplyResult(
                     "ClusterSecretStore",
                     None,
@@ -590,7 +590,7 @@ def test_a_token_for_the_human_lane_is_refused(client):
 
 
 def test_a_token_for_another_audience_is_refused(client):
-    stray = service_token(audience="https://ladon.example.com/other")
+    stray = service_token(audience="https://sero.example.com/other")
     assert put(client, token_value=stray).status_code == 401
 
 
@@ -600,7 +600,7 @@ def test_a_token_from_another_issuer_is_refused(client):
 
 
 def test_a_token_naming_another_subject_is_refused(client):
-    stray = service_token(claims={"sub": "system:serviceaccount:ladon:something-else"})
+    stray = service_token(claims={"sub": "system:serviceaccount:sero:something-else"})
     assert put(client, token_value=stray).status_code == 401
 
 
@@ -636,7 +636,7 @@ def test_the_development_hatch_is_not_a_way_into_the_machine_lane(sessions, stor
         cluster,
         service_callers=callers(),
         identity=IdentitySettings(allow_dev_identity=True),
-        env={"LADON_DEV_IDENTITY": ACTING},
+        env={"SERO_DEV_IDENTITY": ACTING},
     )
     assert hatched.post("/api/service/secrets", json=put_body()).status_code == 401
 
@@ -686,7 +686,7 @@ def test_the_lane_keeps_signing_keys_for_a_shorter_grace_than_the_human_lane():
 def test_a_token_matching_two_callers_is_refused(sessions, store, cluster):
     # One token naming both audiences: whose subject and namespaces apply is
     # not a question this lane guesses at.
-    second_audience = "https://ladon.example.com/service-two"
+    second_audience = "https://sero.example.com/service-two"
     pair = parse_service_callers(
         [
             CALLER_CONFIG,
@@ -744,7 +744,7 @@ def test_a_path_that_climbs_out_of_the_prefix_is_refused(client):
 
 
 def test_a_path_that_percent_decodes_to_a_relative_segment_is_refused(client):
-    # A hop that decodes before Ladon sees it would read this as "apps/..".
+    # A hop that decodes before Sero sees it would read this as "apps/..".
     response = put(client, put_body(path="apps/%2e%2e/platform/demo"))
     assert response.status_code == 400
 
@@ -923,7 +923,7 @@ def test_sync_points_at_the_applications_own_store(client, cluster):
     document = cluster.streams[0]
     assert "kind: ExternalSecret" in document
     assert f"key: {PATH}" in document
-    assert "ladon-team-a-sample-" in document
+    assert "sero-team-a-sample-" in document
 
 
 def test_sync_refuses_a_path_outside_the_applications_prefix(client, cluster):
@@ -990,7 +990,7 @@ def test_sync_onboards_the_application_when_its_store_is_absent(sessions, store)
     assert response.json()["onboarding"] == [
         f"openbao policy {APP}: create",
         f"openbao auth role eso-{NAMESPACE}-{APP}: create",
-        f"ServiceAccount/ladon/eso-{NAMESPACE}-{APP}: create",
+        f"ServiceAccount/sero/eso-{NAMESPACE}-{APP}: create",
         f"ClusterSecretStore/{app_store_name(team=NAMESPACE, app=APP)}: create",
     ]
 
@@ -1169,9 +1169,9 @@ def test_an_onboarding_is_audited_on_the_sync_row(sessions, store):
 
 def test_sync_refuses_to_write_over_another_applications_object(sessions, store):
     # The two-call takeover this gate exists for. Step one would be a POST
-    # naming another team's application: the object is real, Ladon manages it,
-    # and a server-side apply under Ladon's own field manager takes the fields
-    # from Ladon's own earlier apply without a conflict, because as far as the
+    # naming another team's application: the object is real, Sero manages it,
+    # and a server-side apply under Sero's own field manager takes the fields
+    # from Sero's own earlier apply without a conflict, because as far as the
     # API server can tell it is the manager doing its job. Repointing it at a
     # store this caller does control would then make step two, the DELETE, pass
     # a gate the caller had just satisfied itself.
@@ -1280,7 +1280,7 @@ def test_sync_defaults_the_kubernetes_namespace_to_the_application(client, clust
 
 def test_sync_refuses_a_kubernetes_namespace_the_caller_is_not_pinned_to(client, cluster):
     # The store's selector gates what ESO may READ. It does nothing about where
-    # an object may be WRITTEN, and the field manager is Ladon's, so an
+    # an object may be WRITTEN, and the field manager is Sero's, so an
     # unpinned namespace here would let one caller create or replace an
     # ExternalSecret anywhere on the cluster.
     response = sync(client, sync_body(k8s_namespace="kube-system", apply=True))
@@ -1392,7 +1392,7 @@ def test_a_sync_is_audited(client, sessions):
 
 
 def test_a_denial_with_no_matching_caller_is_audited_as_unknown(client, sessions):
-    stray = service_token(audience="https://ladon.example.com/somewhere-else")
+    stray = service_token(audience="https://sero.example.com/somewhere-else")
     put(client, token_value=stray)
     (row,) = rows(sessions, "service.put_secret")
     assert row.status == "denied"
@@ -1660,7 +1660,7 @@ def external_secret_is_live(client, cluster):
 
 def live_external_secret(
     *,
-    managers=("ladon",),
+    managers=("sero",),
     store=None,
     key=PATH,
     k8s_namespace=DEFAULT_K8S_NAMESPACE,
@@ -1821,8 +1821,8 @@ def test_an_absent_object_is_answered_without_a_second_look(client, cluster):
 
 def test_unsync_refuses_an_object_a_client_side_apply_has_taken_over(sessions, store):
     # The application's own ExternalSecret, but `kubectl apply` without
-    # --server-side has replaced Ladon's managed-fields entry with its own.
-    # Whatever maintains it now is not Ladon, and removing it would take the
+    # --server-side has replaced Sero's managed-fields entry with its own.
+    # Whatever maintains it now is not Sero, and removing it would take the
     # workload's Secret with it.
     taken = live_external_secret(managers=("kubectl-client-side-apply",))
     client, cluster = lane_over(sessions, store, [taken])
@@ -1841,7 +1841,7 @@ def test_a_dry_run_unsync_refuses_a_taken_over_object_too(sessions, store):
 
 
 def test_esos_status_entry_does_not_make_the_object_esos(sessions, store):
-    # Every ExternalSecret Ladon applies carries an external-secrets entry for
+    # Every ExternalSecret Sero applies carries an external-secrets entry for
     # the status subresource. Reading that as ownership would refuse every
     # object on the cluster.
     client, cluster = lane_over(sessions, store, [live_external_secret()])
@@ -1855,7 +1855,7 @@ def test_esos_status_entry_does_not_make_the_object_esos(sessions, store):
 def test_unsync_refuses_another_applications_object_in_this_callers_reach(sessions, store):
     # The finding this check exists for. `app` is a body field and
     # k8s_namespace defaults to it, so a caller pinned to one OpenBao namespace
-    # names another team's application: the object is real, Ladon manages it,
+    # names another team's application: the object is real, Sero manages it,
     # and the ownership check alone would let it through. Removing it takes a
     # running workload's Secret with it.
     theirs = live_external_secret(
@@ -1965,9 +1965,9 @@ def test_unsync_refuses_a_namespace_the_caller_is_not_pinned_to(client, cluster)
 
 
 def test_unsync_refuses_a_kubernetes_namespace_the_caller_is_not_pinned_to(client, cluster):
-    # The same gate the POST has: this process holds the ladon field manager,
+    # The same gate the POST has: this process holds the sero field manager,
     # so an unpinned namespace here would let one caller remove an
-    # ExternalSecret anywhere on the cluster that Ladon happens to manage.
+    # ExternalSecret anywhere on the cluster that Sero happens to manage.
     response = unsync(client, unsync_body(k8s_namespace="kube-system", apply=True))
     assert response.status_code == 403
     assert cluster.calls == []
@@ -2107,13 +2107,13 @@ def offboard_body(**overrides):
     return body
 
 
-def live_service_account(name=None, *, managers=("ladon",)):
+def live_service_account(name=None, *, managers=("sero",)):
     return {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
         "metadata": {
             "name": name or f"eso-{NAMESPACE}-{APP}-{_digest()}",
-            "namespace": "ladon",
+            "namespace": "sero",
             "managedFields": [managed_field_entry(m) for m in managers],
         },
         "automountServiceAccountToken": False,
@@ -2128,7 +2128,7 @@ def _identity_name():
     return f"eso-{NAMESPACE}-{APP}-{_digest()}"
 
 
-def managed_store(*, managers=("ladon",), admits=(DEFAULT_K8S_NAMESPACE,)):
+def managed_store(*, managers=("sero",), admits=(DEFAULT_K8S_NAMESPACE,)):
     doc = live_store(admits=admits)
     doc["metadata"]["managedFields"] = [managed_field_entry(m) for m in managers]
     return doc
@@ -2136,7 +2136,7 @@ def managed_store(*, managers=("ladon",), admits=(DEFAULT_K8S_NAMESPACE,)):
 
 def lane_holding_an_identity(sessions, store, *, extra_live=(), openbao=None, **overrides):
     """A lane whose cluster holds the onboarded application: its store and
-    its service account, both applied by Ladon, and nothing reading through
+    its service account, both applied by Sero, and nothing reading through
     the store unless a test adds one."""
     live = [managed_store(), live_service_account(), *extra_live]
     cluster = FakeCluster(live=live)
@@ -2158,7 +2158,7 @@ def test_offboard_removes_the_four_objects_cluster_first(sessions, store):
     # can log in as the account, whatever order the rest lands in.
     assert answer["report"][:2] == [
         f"ClusterSecretStore/{app_store_name(team=NAMESPACE, app=APP)}: delete",
-        f"ServiceAccount/ladon/{_identity_name()}: delete",
+        f"ServiceAccount/sero/{_identity_name()}: delete",
     ]
     assert answer["report"][2:] == [
         f"openbao auth role {_identity_name()}: delete",
@@ -2202,13 +2202,13 @@ def test_offboard_of_an_application_that_was_never_onboarded_is_a_quiet_success(
     assert response.status_code == 200
     assert response.json()["report"] == [
         f"ClusterSecretStore/{app_store_name(team=NAMESPACE, app=APP)}: absent",
-        f"ServiceAccount/ladon/{_identity_name()}: absent",
+        f"ServiceAccount/sero/{_identity_name()}: absent",
         f"openbao auth role {_identity_name()}: absent",
         f"openbao policy eso-{APP}-readonly: absent",
     ]
 
 
-def test_offboard_refuses_a_store_ladon_did_not_apply(sessions, store):
+def test_offboard_refuses_a_store_sero_did_not_apply(sessions, store):
     live = [managed_store(managers=("kubectl-client-side-apply",)), live_service_account()]
     cluster = FakeCluster(live=live)
     bao = FakeClient(store)

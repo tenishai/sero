@@ -1,8 +1,8 @@
 ---
-card: arch-card:ladon-machine-lane
+card: arch-card:sero-machine-lane
 updated: 2026-10-05
-anchor: src/ladon/web/service_lane.py sha=6be26e141a258e969743093ec289083bc15c588a
-anchor: src/ladon/web/settings.py sha=e6be217110d300f7a8308bded3c5064aa1ceabb6
+anchor: src/sero/web/service_lane.py sha=f4ec281969d63d71e1af15401503049049d778c1
+anchor: src/sero/web/settings.py sha=cd102cd7cc660d9be579b36d303ff3f6cb5b846c
 ---
 # machine-lane: /api/service/*, a provisioner writing on a person's behalf (D16 in docs/specs/2026-09-22-platform-vault-design.md)
 
@@ -21,7 +21,7 @@ INVARIANTS:
 - Authorization rests ONLY on subject + pinned namespaces; acting_email is recorded, never trusted.
 - No plain identity header, no dev hatch on this lane; zero configured callers → every call 401.
 - Paths confined to `apps/` (and `apps/<app>/` for sync). Store name derived by config/apps.py, same function onboarding uses: never taken from the body.
-- Existing cluster objects must carry field manager `ladon` (install/k8s.py:require_managed) before sync converges or unsync/offboard deletes (409 if foreign, 403 if another app's). WHY: SSA under the same manager name silently takes fields; the ownership check is what makes the delete gate mean anything.
+- Existing cluster objects must carry field manager `sero` (install/k8s.py:require_managed) before sync converges or unsync/offboard deletes (409 if foreign, 403 if another app's). WHY: SSA under the same manager name silently takes fields; the ownership check is what makes the delete gate mean anything.
 - Every 401/429 is audited before answering.
 - Budgets are in-process: a second replica gets a second bucket (by design).
 CONSUMERS: the room (its client lives in its own repo, not checked here). Changing a route, body field, or status code breaks the room. Tests: tests/test_web_service_lane.py.

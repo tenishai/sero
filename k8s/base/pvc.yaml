@@ -1,19 +1,19 @@
 # The datastore volume.
 #
-# SQLite at /data/ladon.db is the development target, and a single writer on one
+# SQLite at /data/sero.db is the development target, and a single writer on one
 # replica is the shape that suits: ReadWriteOnce, 1Gi, which is generous for
 # audit rows and namespace requests. Anything shared uses PostgreSQL through
-# LADON_DATABASE_URL instead, and then this volume holds nothing that matters.
+# SERO_DATABASE_URL instead, and then this volume holds nothing that matters.
 #
 # No storageClassName: the cluster's default is the right answer, and naming one
 # ties this manifest to a particular cluster.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: ladon-data
-  namespace: ladon
+  name: sero-data
+  namespace: sero
   labels:
-    app.kubernetes.io/name: ladon
+    app.kubernetes.io/name: sero
 spec:
   accessModes:
     - ReadWriteOnce

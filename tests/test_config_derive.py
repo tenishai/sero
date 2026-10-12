@@ -2,10 +2,10 @@
 
 import pytest
 
-from ladon.config.derive import kv_mount, team_namespace
-from ladon.config.loader import DeploymentConfig
-from ladon.config.policies import DEFAULT_KV_MOUNT
-from ladon.config.teams import ConfigError, Team
+from sero.config.derive import kv_mount, team_namespace
+from sero.config.loader import DeploymentConfig
+from sero.config.policies import DEFAULT_KV_MOUNT
+from sero.config.teams import ConfigError, Team
 
 
 def make_config(**settings):

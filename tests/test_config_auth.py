@@ -2,7 +2,7 @@
 
 import pytest
 
-from ladon.config import (
+from sero.config import (
     ConfigError,
     jwt_auth,
     jwt_role,
@@ -94,12 +94,12 @@ def test_jwt_auth_carries_roles():
 def test_oidc_auth_client_secret_is_a_reference_not_a_value():
     method = oidc_auth(
         discovery_url="https://idp.example.com",
-        client_id="ladon",
+        client_id="sero",
         client_secret_ref="oidc/operator-client-secret",
     )
     assert method.type == "oidc"
     assert method.config["oidc_discovery_url"] == "https://idp.example.com"
-    assert method.config["oidc_client_id"] == "ladon"
+    assert method.config["oidc_client_id"] == "sero"
     # Reference only: the actual secret never appears in rendered config.
     assert method.config["oidc_client_secret_ref"] == "oidc/operator-client-secret"
     assert "oidc_client_secret" not in method.config
@@ -108,7 +108,7 @@ def test_oidc_auth_client_secret_is_a_reference_not_a_value():
 def test_oidc_auth_default_role_optional():
     method = oidc_auth(
         discovery_url="https://idp.example.com",
-        client_id="ladon",
+        client_id="sero",
         client_secret_ref="ref",
         default_role="operator",
     )
@@ -118,9 +118,9 @@ def test_oidc_auth_default_role_optional():
 @pytest.mark.parametrize(
     ("url", "cid", "ref"),
     [
-        ("", "ladon", "ref"),
+        ("", "sero", "ref"),
         ("https://idp", "", "ref"),
-        ("https://idp", "ladon", ""),
+        ("https://idp", "sero", ""),
     ],
 )
 def test_oidc_auth_requires_public_fields_and_ref(url, cid, ref):
@@ -132,7 +132,7 @@ def test_oidc_role_maps_groups_to_policies():
     role = oidc_role(
         "operators",
         policies=["operator"],
-        allowed_redirect_uris=["https://ladon.example.com/oidc/callback"],
+        allowed_redirect_uris=["https://sero.example.com/oidc/callback"],
         bound_groups=["platform-admins"],
     )
     assert role.data["token_policies"] == ["operator"]
@@ -144,7 +144,7 @@ def test_oidc_role_without_bound_groups_is_not_group_restricted():
     role = oidc_role(
         "any",
         policies=["operator"],
-        allowed_redirect_uris=["https://ladon.example.com/oidc/callback"],
+        allowed_redirect_uris=["https://sero.example.com/oidc/callback"],
     )
     assert "bound_claims" not in role.data
 

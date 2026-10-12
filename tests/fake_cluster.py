@@ -1,6 +1,6 @@
 """A fake cluster behind the kubectl seam, for the apply-layer tests (D18).
 
-Every helper in ``ladon.install.k8s`` takes its subprocess ``run`` as a keyword
+Every helper in ``sero.install.k8s`` takes its subprocess ``run`` as a keyword
 argument, so a test hands it this object instead of a shell. It answers
 ``kubectl get`` from what has been applied to it and prints the per-object lines
 ``kubectl apply`` prints, which is what makes a second converge over the same
@@ -18,9 +18,9 @@ from collections.abc import Callable, Iterable
 
 import yaml
 
-from ladon.install.k8s import get_argv
+from sero.install.k8s import get_argv
 
-# What the API server says when the object is not there. Ladon reads the reason
+# What the API server says when the object is not there. Sero reads the reason
 # code, so the rest of the line is only shape.
 NOT_FOUND = 'Error from server (NotFound): {resource} "{name}" not found'
 
@@ -261,7 +261,7 @@ def _managed_by(doc: dict, manager: str) -> dict:
     """Stamp a stored object the way server-side apply records its owner.
 
     The real API server writes one ``managedFields`` entry per manager, and the
-    delete path reads them to decide whether an object is Ladon's. Without this
+    delete path reads them to decide whether an object is Sero's. Without this
     the fake would answer that question for nobody.
     """
     metadata = doc.setdefault("metadata", {})

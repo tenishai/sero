@@ -1,4 +1,4 @@
-# The deploy contract for the Ladon backend.
+# The deploy contract for the Sero backend.
 #
 # The deployment platform's generator owns the Deployment and the Service; this
 # file, at the repository root where that platform looks for it, is the input
@@ -8,14 +8,14 @@
 # writing its own `environments:` from the registration, so the cluster is
 # not named here.
 #
-# A cluster where that platform is not in use runs `deploy/ladon/standalone/`
+# A cluster where that platform is not in use runs `deploy/sero/standalone/`
 # instead, which carries its own Deployment and Service over the same
-# ConfigMap, Secret, and PersistentVolumeClaim. See deploy/ladon/README.md.
+# ConfigMap, Secret, and PersistentVolumeClaim. See deploy/sero/README.md.
 
-app: ladon
+app: sero
 # `gateway`, not `web`. The two differ in exactly the ways that matter here:
 # gateway recreates the pod instead of rolling it, does not attach a horizontal
-# autoscaler, and probes /healthz. Ladon is a single writer, against a
+# autoscaler, and probes /healthz. Sero is a single writer, against a
 # ReadWriteOnce volume that a second pod cannot attach while the first holds
 # it, and its apply operations are background jobs that assume one process. A
 # rolling update or a scale-out would either wedge on the volume or run two
@@ -24,9 +24,9 @@ class: gateway
 
 environments:
   - name: dev
-    namespace: ladon
+    namespace: sero
 
-service_account: ladon
+service_account: sero
 
 # The ClusterRole in k8s/cluster/clusterrole.yaml, which an operator applies
 # once and allowlists. The platform refuses cluster-scoped kinds inside
@@ -34,44 +34,44 @@ service_account: ladon
 # committing a file), and instead binds the pod's ServiceAccount to the
 # ClusterRoles named here. On the standalone path the operator applies
 # k8s/cluster/clusterrolebinding.yaml as well.
-cluster_roles: [ladon]
+cluster_roles: [sero]
 
 env:
   # The generated workload's port. The image defaults to 8000; 8080 is what
   # this class expects. The NetworkPolicy in k8s/base admits both.
-  LADON_PORT: "8080"
-  # LADON_CONFIG is deliberately NOT set on this path, and setting it is the
+  SERO_PORT: "8080"
+  # SERO_CONFIG is deliberately NOT set on this path, and setting it is the
   # way to break this deployment. See the note on config_from below: the config
-  # arrives inline as LADON_CONFIG_YAML, and the backend reads that only when
-  # no file is configured. Pointing LADON_CONFIG at a path nothing mounts makes
+  # arrives inline as SERO_CONFIG_YAML, and the backend reads that only when
+  # no file is configured. Pointing SERO_CONFIG at a path nothing mounts makes
   # the backend look for a file that is not there.
   #
-  #   LADON_CONFIG: /etc/ladon/config.yaml   # only if something mounts it
+  #   SERO_CONFIG: /etc/sero/config.yaml   # only if something mounts it
   # OpenBao, in this same namespace (D13a). The token is in the Secret, never
   # here.
-  BAO_ADDR: http://ladon-openbao.ladon.svc:8200
+  BAO_ADDR: http://sero-openbao.sero.svc:8200
   # SQLite on the data volume below. Anything shared uses a PostgreSQL URL from
   # the bootstrap Secret instead, which wins over this value.
-  LADON_DATABASE_URL: sqlite:////data/ladon.db
+  SERO_DATABASE_URL: sqlite:////data/sero.db
   # Restated as the image sets them, so the contract is readable without
   # opening the Dockerfile and a generator that drops the image's environment
   # does not silently break the layout.
-  LADON_MIGRATIONS_DIR: /app/migrations
-  LADON_UI_DIST: /srv/ladon/ui
+  SERO_MIGRATIONS_DIR: /app/migrations
+  SERO_UI_DIST: /srv/sero/ui
 
 # The deployment config. This is an envFrom source, not a volume: its keys
 # become environment variables, so a `config.yaml` key would become an
 # environment variable named `config.yaml` and never a file. The ConfigMap on
-# this path therefore carries a single key, `LADON_CONFIG_YAML`, holding the
+# this path therefore carries a single key, `SERO_CONFIG_YAML`, holding the
 # config inline; the backend reads it when no file is configured. The
 # standalone path mounts a file instead. See README.md.
-config_from: [ladon-config]
+config_from: [sero-config]
 
-# LADON_DATABASE_URL and BAO_TOKEN. Created once by an operator, out of band:
-# it is the credential that lets Ladon reach OpenBao, so it cannot come from
+# SERO_DATABASE_URL and BAO_TOKEN. Created once by an operator, out of band:
+# it is the credential that lets Sero reach OpenBao, so it cannot come from
 # OpenBao. Nothing else in the deployment holds a secret value.
-secrets_from: [ladon-bootstrap]
+secrets_from: [sero-bootstrap]
 
-# The development datastore (SQLite at /data/ladon.db). fs_group matches the
+# The development datastore (SQLite at /data/sero.db). fs_group matches the
 # uid the image runs as, so the volume is writable without a root init step.
-data_mount: { pvc: ladon-data, path: /data, fs_group: 10001 }
+data_mount: { pvc: sero-data, path: /data, fs_group: 10001 }

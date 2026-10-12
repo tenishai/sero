@@ -1,4 +1,4 @@
-# Ladon CI - static layer.
+# Sero CI - static layer.
 #
 # This is the static/lint layer described in docs/testing.md: it runs on every
 # pull request and push to main with no build and no infrastructure. It is
@@ -52,7 +52,7 @@ jobs:
           # image carries, so CI checks the manifests with the client that
           # applies them.
           version: v1.37.0
-      - name: Render OpenBao chart with Ladon values
+      - name: Render OpenBao chart with Sero values
         run: bash scripts/validate-helm.sh
       # No cluster here, so this runs in its offline mode: the kustomization
       # builds and every document decodes. Full field-level validation needs a
@@ -116,7 +116,7 @@ jobs:
       # Build only. Nothing is pushed and no registry credential is used, so
       # this runs on a pull request from a fork like any other check.
       - name: Build the image
-        run: docker build --platform linux/amd64 --tag ladon:ci .
+        run: docker build --platform linux/amd64 --tag sero:ci .
       # The other jobs prove the code; this proves the image. A Dockerfile can
       # build and still produce something that cannot start: a missing runtime
       # file, a path the non-root user cannot read, a dependency left in the
@@ -125,25 +125,25 @@ jobs:
       #
       # The flags match how a deployment runs it: unprivileged, read-only root
       # filesystem, writable scratch and data mounts only. So this also proves
-      # the securityContext in deploy/ladon/standalone is one the image can
+      # the securityContext in deploy/sero/standalone is one the image can
       # actually live under.
       - name: Run it and probe /healthz
         run: |
           set -euo pipefail
           cleanup() {
             echo "--- container logs ---"
-            docker logs ladon-ci 2>&1 || true
-            docker rm -f ladon-ci >/dev/null 2>&1 || true
+            docker logs sero-ci 2>&1 || true
+            docker rm -f sero-ci >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
-          docker run --detach --name ladon-ci \
+          docker run --detach --name sero-ci \
             --read-only \
             --tmpfs /tmp \
             --tmpfs /data:uid=10001,gid=10001 \
-            --env LADON_DATABASE_URL=sqlite:////data/ladon.db \
+            --env SERO_DATABASE_URL=sqlite:////data/sero.db \
             --publish 18000:8000 \
-            ladon:ci
+            sero:ci
 
           for _ in $(seq 1 30); do
             code="$(curl -sS -o /dev/null -w '%{http_code}' \

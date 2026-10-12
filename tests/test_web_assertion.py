@@ -24,7 +24,7 @@ from fake_assertion import (
     token,
     verifier,
 )
-from ladon.web.assertion import (
+from sero.web.assertion import (
     STALE_KEYS_MAX_SECONDS,
     AssertionInvalid,
     AssertionSettings,
@@ -32,7 +32,7 @@ from ladon.web.assertion import (
     JwksCache,
     fetch_jwks,
 )
-from ladon.web.identity import IdentityReader, NoIdentityError
+from sero.web.identity import IdentityReader, NoIdentityError
 
 # ── Verification ───────────────────────────────────────────────────────
 

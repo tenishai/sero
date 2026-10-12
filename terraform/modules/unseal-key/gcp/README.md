@@ -32,7 +32,7 @@ module "unseal_key" {
 ```
 
 The `seal_config` output feeds the config layer directly. With the value written
-to a deployment config's `deployment.kms` block, `src/ladon/config/seal.py`
+to a deployment config's `deployment.kms` block, `src/sero/config/seal.py`
 renders the matching OpenBao `seal "gcpckms"` stanza:
 
 ```

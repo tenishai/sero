@@ -884,7 +884,7 @@ wheels = [
 ]
 
 [[package]]
-name = "tenish-ladon"
+name = "tenish-sero"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

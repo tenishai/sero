@@ -1,13 +1,13 @@
-# What Ladon may do outside its own namespace.
+# What Sero may do outside its own namespace.
 #
-# Kept as narrow as the job allows. Ladon needs cluster scope for exactly three
+# Kept as narrow as the job allows. Sero needs cluster scope for exactly three
 # reasons, and this role grants nothing beyond them:
 #
 #   1. `ClusterSecretStore` is a cluster-scoped resource, so there is no
-#      namespaced alternative. Ladon only ever touches stores it named
-#      `ladon-<group>-<app>` (D18a); RBAC cannot express that, so the guard is
+#      namespaced alternative. Sero only ever touches stores it named
+#      `sero-<group>-<app>` (D18a); RBAC cannot express that, so the guard is
 #      in the code and this role is the blast radius if that guard fails.
-#   2. `ExternalSecret` is namespaced, but the applications Ladon onboards live
+#   2. `ExternalSecret` is namespaced, but the applications Sero onboards live
 #      in their own namespaces, so the grant cannot be pinned to one.
 #   3. Detecting an operator that is already installed (D18a) means listing
 #      Deployments across namespaces and reading the CRDs to probe which API
@@ -17,34 +17,34 @@
 # removes the object it created when an application is taken down, and leaving
 # it behind means an operator reconciling a KV path that is gone on purpose.
 #
-# Read that grant as wider than it looks. Ladon renders every ExternalSecret
+# Read that grant as wider than it looks. Sero renders every ExternalSecret
 # with `creationPolicy: Owner`, so the Kubernetes Secret ESO creates carries an
 # owner reference to it, and deleting the ExternalSecret has the garbage
 # collector delete that Secret too. This rule therefore hands the backend the
 # ability to take a running workload's Secret away, in any namespace, without
-# any grant on Secrets outside the `ladon` namespace. That is the intended
+# any grant on Secrets outside the `sero` namespace. That is the intended
 # outcome of taking an application down, and it is why two guards sit in front
-# of it in the code: the object must record `ladon` as a field manager, and it
+# of it in the code: the object must record `sero` as a field manager, and it
 # must belong to the application and namespace the caller named.
 #
 # `delete` is granted on `ClusterSecretStore` too, for the lane's
 # off-boarding call (`DELETE /api/service/app`): a store is an application's
 # identity on the cluster, and an application a consumer creates on its own
 # is one it also takes down on its own. The same two guards sit in front of
-# it: the object must record `ladon` as a field manager, and the lane refuses
+# it: the object must record `sero` as a field manager, and the lane refuses
 # while any ExternalSecret in the application's namespace still reads
 # through the store. The name is derived from the caller's pinned namespace
 # and the application, so a caller can name no store but its own.
 #
-# There is no access to Secrets outside Ladon's own namespace: a cluster-wide
+# There is no access to Secrets outside Sero's own namespace: a cluster-wide
 # Secret read would make this role a way to exfiltrate every synced value on
 # the cluster, which is exactly what the platform exists to prevent.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: ladon
+  name: sero
   labels:
-    app.kubernetes.io/name: ladon
+    app.kubernetes.io/name: sero
 rules:
   - apiGroups: ["external-secrets.io"]
     resources:

@@ -1,7 +1,7 @@
 # OpenBao install layer
 
 This directory holds the OpenBao install layer: the pinned Helm chart reference
-and the opinionated, generic values Ladon installs OpenBao with. It is the D3a
+and the opinionated, generic values Sero installs OpenBao with. It is the D3a
 layer from [../../docs/design.md](../../docs/design.md): a direct Helm install,
 not the Terraform Helm provider, so OpenBao can be installed, upgraded, and
 rolled back independently of the cloud substrate.
@@ -14,12 +14,12 @@ rolled back independently of the cloud substrate.
 - `values/values-dev.yaml` - a dev overlay: single node, TLS disabled, Shamir
   unseal, small volumes. For local clusters only, never production.
 
-The chart itself is not vendored. Ladon installs the upstream `openbao/openbao`
+The chart itself is not vendored. Sero installs the upstream `openbao/openbao`
 chart at the exact version pinned in [../../docs/versions.md](../../docs/versions.md).
 
 ## How it installs
 
-The Ladon tooling composes the base values with an overlay and any
+The Sero tooling composes the base values with an overlay and any
 deployment-specific config, then applies the install in the agent-driven,
 dry-run-first flow:
 
@@ -37,7 +37,7 @@ helm repo add openbao https://openbao.github.io/openbao-helm
 helm repo update
 
 # Dry-run (diff against live) before applying.
-helm upgrade --install ladon-openbao openbao/openbao \
+helm upgrade --install sero-openbao openbao/openbao \
   --version <pinned-chart-version> \
   --namespace openbao --create-namespace \
   -f deploy/openbao/values/values-base.yaml \

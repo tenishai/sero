@@ -1,9 +1,9 @@
 ---
-card: arch-card:ladon-apply-phases
+card: arch-card:sero-apply-phases
 updated: 2026-09-28
-anchor: src/ladon/apply/cli.py sha=a9cecc2512c7f3449a47dd407cd9ba01b4c785e4
-anchor: src/ladon/apply/executor.py sha=18922053cde23e70de3d78580d36f6d82d61b14a
-anchor: src/ladon/apply/plan.py sha=03fb62a3b7ed00b58b7c06bd42ebf9a7e7e42f42
+anchor: src/sero/apply/cli.py sha=47e5d8f195c28124961723ba90a454010e2a74c8
+anchor: src/sero/apply/executor.py sha=1fa175fb1f8ed7bb5627608ef4ac83d6cd4fdd2e
+anchor: src/sero/apply/plan.py sha=cbf5786718abe2a52051d90cf924e238eb8cd2ea
 ---
 # apply-phases: render → plan → diff → write → verify, OpenBao then cluster
 
@@ -19,5 +19,5 @@ INVARIANTS:
 - Op summaries = kind + path only; payloads never printed or logged.
 - Jobs build their own client from env; nothing from the HTTP request reaches the thread (web/jobs.py). One job per kind at a time. The service-lane onboard is not a job (it runs inline in the request), so this line does not describe that path.
 - KV mounted with version pinned "2" (plan.py:KV_VERSION).
-CONSUMERS: apply/cli.py main (`scripts/ladon plan|apply`), web/routes_admin.py `POST /api/admin/apply/{phase}` (+ eso-install), web/service_lane.py sync implicit onboarding. Inputs from config/ renderers (teams.py, policies.py, auth.py, apps.py).
+CONSUMERS: apply/cli.py main (`scripts/sero plan|apply`), web/routes_admin.py `POST /api/admin/apply/{phase}` (+ eso-install), web/service_lane.py sync implicit onboarding. Inputs from config/ renderers (teams.py, policies.py, auth.py, apps.py).
 API: run_phase, run_eso_install, build_plan, apply_plan, supported_kinds; CLI flags in cli.py:_add_plan_flags.

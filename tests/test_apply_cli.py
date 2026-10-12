@@ -15,12 +15,12 @@ import yaml
 
 from fake_cluster import FakeCluster
 from fake_openbao import FakeOpenBao
-from ladon.apply import cli
-from ladon.apply.executor import ApplyResult, OpDiff
-from ladon.config.loader import load_deployment_config
-from ladon.config.teams import ConfigError
-from ladon.install.eso import ESOInstallResult
-from ladon.install.k8s import ESOInstall, K8sError, converge_documents
+from sero.apply import cli
+from sero.apply.executor import ApplyResult, OpDiff
+from sero.config.loader import load_deployment_config
+from sero.config.teams import ConfigError
+from sero.install.eso import ESOInstallResult
+from sero.install.k8s import ESOInstall, K8sError, converge_documents
 
 ISSUER = "https://issuer.example/.well-known/openid-configuration"
 
@@ -59,7 +59,7 @@ def test_plan_root_config_with_oidc():
             "--oidc-discovery-url",
             ISSUER,
             "--oidc-client-id",
-            "ladon",
+            "sero",
             "--oidc-client-secret-ref",
             "secret/oidc",
         ]
@@ -196,7 +196,7 @@ def test_apply_with_flag_connects_and_applies(monkeypatch):
 
 def test_apply_with_flag_reports_connection_error(monkeypatch):
     def boom_connect(*a, **k):
-        from ladon.apply.client import BaoConnectionError
+        from sero.apply.client import BaoConnectionError
 
         raise BaoConnectionError("not authenticated")
 
@@ -451,7 +451,7 @@ def test_plan_app_onboarding_prints_both_halves(tmp_path, monkeypatch):
     ]
     assert "kind: ServiceAccount" in cluster
     assert "kind: ClusterSecretStore" in cluster
-    assert "name: ladon-team-a-sample-a84085" in cluster
+    assert "name: sero-team-a-sample-a84085" in cluster
     # The store is the one the cluster layer applies; nothing here touches it.
     assert "capabilities" not in openbao
 
@@ -486,17 +486,17 @@ def test_app_onboarding_kubernetes_namespaces_are_flags(tmp_path, monkeypatch):
         app_argv(
             write_app_config(tmp_path),
             "--k8s-namespace",
-            "ladon-sample",
+            "sero-sample",
             "--sa-namespace",
-            "ladon-system",
+            "sero-system",
             "--audience",
-            "ladon",
+            "sero",
         )
     )
     assert code == 0
-    assert "kubernetes.io/metadata.name: ladon-sample" in text
-    assert "namespace: ladon-system" in text
-    assert "- ladon" in text
+    assert "kubernetes.io/metadata.name: sero-sample" in text
+    assert "namespace: sero-system" in text
+    assert "- sero" in text
 
 
 def test_app_onboarding_requires_an_app_and_a_team(tmp_path):
@@ -580,13 +580,13 @@ def test_a_blocked_openbao_half_keeps_the_cluster_half_from_being_applied(tmp_pa
 
 # The cluster half -------------------------------------------------------------
 
-# An operator already running on the cluster, which is what Ladon reuses (D18a).
+# An operator already running on the cluster, which is what Sero reuses (D18a).
 ESO_RUNNING = ESOInstall(
     namespace="external-secrets", service_account="external-secrets", version="v0.19.2"
 )
 
 # The store the app-onboarding phase renders and the sync phase points at.
-APP_STORE = "ladon-team-a-sample-a84085"
+APP_STORE = "sero-team-a-sample-a84085"
 
 
 def use_cluster(monkeypatch, cluster, *, api_version="v1"):
@@ -621,7 +621,7 @@ def test_apply_app_onboarding_applies_both_halves_and_converges(tmp_path, monkey
     assert code == 0
     assert "eso-sample-readonly" in client.state("team-a").policies
     assert cluster_lines(first) == [
-        f"[cluster] create ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] create ServiceAccount/sero/{APP_IDENTITY}",
         f"[cluster] create ClusterSecretStore/{APP_STORE}",
     ]
 
@@ -629,7 +629,7 @@ def test_apply_app_onboarding_applies_both_halves_and_converges(tmp_path, monkey
     code, second = run(argv)
     assert code == 0
     assert cluster_lines(second) == [
-        f"[cluster] already current ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] already current ServiceAccount/sero/{APP_IDENTITY}",
         f"[cluster] already current ClusterSecretStore/{APP_STORE}",
     ]
     # A second run writes nothing, to OpenBao or to the cluster.
@@ -648,7 +648,7 @@ def test_app_onboarding_dry_run_diffs_both_halves_and_writes_nothing(tmp_path, m
     assert code == 0
     assert "DRY RUN" in text
     assert cluster_lines(text) == [
-        f"[cluster] create ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] create ServiceAccount/sero/{APP_IDENTITY}",
         f"[cluster] create ClusterSecretStore/{APP_STORE}",
     ]
     assert "--dry-run=server" in cluster.applies[0]
@@ -716,7 +716,7 @@ def test_a_cluster_that_did_not_store_what_was_applied_is_an_error(tmp_path, mon
     # The documents were written, so the report is printed before the failure:
     # an operator has to know what landed.
     assert cluster_lines(text) == [
-        f"[cluster] create ServiceAccount/ladon/{APP_IDENTITY}",
+        f"[cluster] create ServiceAccount/sero/{APP_IDENTITY}",
         f"[cluster] create ClusterSecretStore/{APP_STORE}",
     ]
 
@@ -748,7 +748,7 @@ def sync_argv(*extra):
         "--path",
         "apps/sample/demo",
         "--k8s-namespace",
-        "ladon-sample",
+        "sero-sample",
         "--name",
         "sample-demo",
         *extra,
@@ -761,7 +761,7 @@ def test_plan_sync_renders_an_external_secret_pointing_at_the_app_store():
     assert "kind: ExternalSecret" in text
     assert f"name: {APP_STORE}" in text
     assert "key: apps/sample/demo" in text
-    assert "namespace: ladon-sample" in text
+    assert "namespace: sero-sample" in text
 
 
 def test_apply_sync_converges_the_external_secret(monkeypatch):
@@ -776,13 +776,13 @@ def test_apply_sync_converges_the_external_secret(monkeypatch):
     code, first = run(["apply", *sync_argv(), "--apply"])
     assert code == 0
     assert cluster_lines(first) == [
-        f"[cluster] create ExternalSecret/ladon-sample/sample-demo {note}"
+        f"[cluster] create ExternalSecret/sero-sample/sample-demo {note}"
     ]
 
     code, second = run(["apply", *sync_argv(), "--apply"])
     assert code == 0
     assert cluster_lines(second) == [
-        f"[cluster] already current ExternalSecret/ladon-sample/sample-demo {note}"
+        f"[cluster] already current ExternalSecret/sero-sample/sample-demo {note}"
     ]
     assert len(cluster.applies) == 1
 
@@ -897,7 +897,7 @@ def test_sync_names_the_path_and_the_target_secret_before_applying(monkeypatch):
     code, text = run(["apply", *sync_argv("--target-name", "sample-credentials")])
     assert code == 0
     assert cluster_lines(text) == [
-        "[cluster] create ExternalSecret/ladon-sample/sample-demo "
+        "[cluster] create ExternalSecret/sero-sample/sample-demo "
         "(apps/sample/demo -> Secret/sample-credentials)"
     ]
 
@@ -946,7 +946,7 @@ def phase_args(**fields):
         "app": "sample",
         "cluster": "cluster-a",
         "k8s_namespace": None,
-        "sa_namespace": "ladon",
+        "sa_namespace": "sero",
         "audience": "bao",
         "server": "https://bao.example:8200",
         "jwt_discovery_url": None,

@@ -13,8 +13,8 @@ import yaml
 
 import fake_cluster
 from fake_cluster import FakeCluster, eso_status_entry, managed_field_entry
-from ladon.install import k8s
-from ladon.install.k8s import (
+from sero.install import k8s
+from sero.install.k8s import (
     ESOInstall,
     ESONotInstalledError,
     K8sError,
@@ -68,14 +68,14 @@ class FakeRunner:
 
 
 def service_account_doc():
-    """The per-app service account, in Ladon's own namespace (D18a)."""
+    """The per-app service account, in Sero's own namespace (D18a)."""
     return {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
         "metadata": {
             "name": "eso-ns-a-sample",
-            "namespace": "ladon",
-            "labels": {"app.kubernetes.io/managed-by": "ladon"},
+            "namespace": "sero",
+            "labels": {"app.kubernetes.io/managed-by": "sero"},
         },
         "automountServiceAccountToken": False,
     }
@@ -86,7 +86,7 @@ def store_doc():
     return {
         "apiVersion": "external-secrets.io/v1",
         "kind": "ClusterSecretStore",
-        "metadata": {"name": "ladon-ns-a-sample"},
+        "metadata": {"name": "sero-ns-a-sample"},
         "spec": {
             "provider": {
                 "vault": {
@@ -116,7 +116,7 @@ def test_apply_argv_is_server_side_and_dry_run_by_default():
         "kubectl",
         "apply",
         "--server-side",
-        "--field-manager=ladon",
+        "--field-manager=sero",
         "--dry-run=server",
         "-f",
         "-",
@@ -146,7 +146,7 @@ def test_apply_sends_one_yaml_stream_on_stdin():
     runner = FakeRunner(
         stdout=(
             "serviceaccount/eso-ns-a-sample created\n"
-            "clustersecretstore.external-secrets.io/ladon-ns-a-sample created\n"
+            "clustersecretstore.external-secrets.io/sero-ns-a-sample created\n"
         )
     )
     apply_documents(both_docs(), run=runner)
@@ -157,13 +157,13 @@ def test_report_names_every_document_and_its_action():
     runner = FakeRunner(
         stdout=(
             "serviceaccount/eso-ns-a-sample unchanged\n"
-            "clustersecretstore.external-secrets.io/ladon-ns-a-sample configured\n"
+            "clustersecretstore.external-secrets.io/sero-ns-a-sample configured\n"
         )
     )
     report = apply_documents(both_docs(), run=runner)
     assert report.lines() == [
-        "ServiceAccount/ladon/eso-ns-a-sample: unchanged",
-        "ClusterSecretStore/ladon-ns-a-sample: configured",
+        "ServiceAccount/sero/eso-ns-a-sample: unchanged",
+        "ClusterSecretStore/sero-ns-a-sample: configured",
     ]
     assert report.blocked == ()
 
@@ -208,7 +208,7 @@ def test_a_pure_server_side_apply_conflict_blocks_the_unreported_document():
     assert "conflict" in report.results[1].reason
     # Only the first line of the message is carried through.
     assert "Please review" not in report.results[1].reason
-    assert [r.name for r in report.blocked] == ["ladon-ns-a-sample"]
+    assert [r.name for r in report.blocked] == ["sero-ns-a-sample"]
 
 
 def test_an_aggregated_list_of_conflicts_blocks():
@@ -363,7 +363,7 @@ def test_a_namespaced_kind_without_a_namespace_is_refused():
 
 
 def test_a_cluster_scoped_kind_without_a_namespace_is_accepted():
-    runner = FakeRunner(stdout="clustersecretstore.external-secrets.io/ladon-ns-a-sample created\n")
+    runner = FakeRunner(stdout="clustersecretstore.external-secrets.io/sero-ns-a-sample created\n")
     report = apply_documents([store_doc()], run=runner)
     assert report.results[0].action == "created"
 
@@ -379,7 +379,7 @@ def test_read_back_passes_the_namespace_for_a_namespaced_document():
         "get",
         "serviceaccount/eso-ns-a-sample",
         "-n",
-        "ladon",
+        "sero",
         "-o",
         "json",
         "--show-managed-fields",
@@ -392,7 +392,7 @@ def test_read_back_omits_the_namespace_for_a_cluster_scoped_document():
     assert runner.argv == [
         "kubectl",
         "get",
-        "clustersecretstore.external-secrets.io/ladon-ns-a-sample",
+        "clustersecretstore.external-secrets.io/sero-ns-a-sample",
         "-o",
         "json",
         "--show-managed-fields",
@@ -401,10 +401,10 @@ def test_read_back_omits_the_namespace_for_a_cluster_scoped_document():
 
 def test_a_read_asks_for_the_managed_fields_kubectl_hides_by_default():
     """kubectl strips ``metadata.managedFields`` from ``get -o json`` unless
-    told otherwise. Every ownership decision Ladon makes (whose ExternalSecret
+    told otherwise. Every ownership decision Sero makes (whose ExternalSecret
     a sync may write over, what an unsync may delete) reads those entries, so a
     read without the flag makes every live object look like nobody's and
-    every such call a refusal. Live, 2026-09-24: a sync over Ladon's own
+    every such call a refusal. Live, 2026-09-24: a sync over Sero's own
     ExternalSecret answered "managed by no recorded manager"."""
     assert "--show-managed-fields" in get_argv(service_account_doc())
 
@@ -466,7 +466,7 @@ def test_verify_reports_a_changed_spec_field_and_never_its_value():
     live["spec"]["provider"]["vault"]["server"] = "https://elsewhere.example.com"
     problems = verify([doc], [live])
     assert problems == [
-        "ClusterSecretStore/ladon-ns-a-sample: spec.provider.vault.server differs "
+        "ClusterSecretStore/sero-ns-a-sample: spec.provider.vault.server differs "
         "from the live object"
     ]
     # The field path is named; neither the desired nor the live value is.
@@ -514,20 +514,20 @@ def test_verify_reports_an_extra_condition_on_the_live_object():
     )
     problems = verify([doc], [live])
     assert problems == [
-        "ClusterSecretStore/ladon-ns-a-sample: spec.conditions has 1 entry, the live object has 2"
+        "ClusterSecretStore/sero-ns-a-sample: spec.conditions has 1 entry, the live object has 2"
     ]
 
 
 def test_verify_is_exact_inside_a_store_condition():
-    # A key added beside Ladon's selector keeps the list length and every field
-    # Ladon set, so a subset compare reads clean while the store has been opened
-    # to a namespace Ladon never admitted.
+    # A key added beside Sero's selector keeps the list length and every field
+    # Sero set, so a subset compare reads clean while the store has been opened
+    # to a namespace Sero never admitted.
     doc = store_doc()
     live = live_from(doc)
     live["spec"]["conditions"][0]["namespaces"] = ["ns-other"]
     problems = verify([doc], [live])
     assert problems == [
-        "ClusterSecretStore/ladon-ns-a-sample: spec.conditions[0].namespaces is not set by Ladon"
+        "ClusterSecretStore/sero-ns-a-sample: spec.conditions[0].namespaces is not set by Sero"
     ]
     assert "ns-other" not in problems[0]
 
@@ -539,14 +539,14 @@ def test_verify_is_exact_inside_the_provider_auth_block():
     live["spec"]["provider"]["vault"]["auth"]["tokenSecretRef"] = {"name": "sample"}
     problems = verify([doc], [live])
     assert problems == [
-        "ClusterSecretStore/ladon-ns-a-sample: spec.provider.vault.auth.tokenSecretRef "
-        "is not set by Ladon"
+        "ClusterSecretStore/sero-ns-a-sample: spec.provider.vault.auth.tokenSecretRef "
+        "is not set by Sero"
     ]
 
 
 def test_verify_stays_a_subset_outside_the_strict_paths():
     # Everywhere else a live object may carry what the API server, a controller
-    # or another manager put there; only what Ladon asked for is checked.
+    # or another manager put there; only what Sero asked for is checked.
     doc = store_doc()
     live = live_from(doc)
     live["spec"]["refreshInterval"] = "1h"
@@ -557,7 +557,7 @@ def test_verify_reports_a_document_missing_from_the_read_back():
     docs = both_docs()
     problems = verify(docs, [live_from(docs[0])])
     assert problems == [
-        "ClusterSecretStore/ladon-ns-a-sample: not present in the live objects read back"
+        "ClusterSecretStore/sero-ns-a-sample: not present in the live objects read back"
     ]
 
 
@@ -743,8 +743,8 @@ def test_converge_creates_documents_the_cluster_does_not_hold():
     report = converge(both_docs(), cluster, dry_run=False)
     assert [r.action for r in report.results] == ["create", "create"]
     assert [r.target for r in report.results] == [
-        "ServiceAccount/ladon/eso-ns-a-sample",
-        "ClusterSecretStore/ladon-ns-a-sample",
+        "ServiceAccount/sero/eso-ns-a-sample",
+        "ClusterSecretStore/sero-ns-a-sample",
     ]
 
 
@@ -797,7 +797,7 @@ def test_converge_verifies_what_it_wrote_and_names_the_field():
     cluster = FakeCluster(mutate=drop_the_conditions)
     with pytest.raises(K8sError) as excinfo:
         converge([store_doc()], cluster, dry_run=False)
-    assert "ClusterSecretStore/ladon-ns-a-sample" in str(excinfo.value)
+    assert "ClusterSecretStore/sero-ns-a-sample" in str(excinfo.value)
     assert "spec.conditions" in str(excinfo.value)
 
 
@@ -810,7 +810,7 @@ def test_a_dry_run_verifies_nothing():
 
 
 def test_a_blocked_document_is_reported_and_not_verified():
-    cluster = FakeCluster(blocked=["ladon-ns-a-sample"])
+    cluster = FakeCluster(blocked=["sero-ns-a-sample"])
     report = converge(both_docs(), cluster, dry_run=False)
     assert [r.action for r in report.results] == ["create", "blocked"]
     assert "conflict" in report.results[1].reason
@@ -839,7 +839,7 @@ def test_a_read_that_fails_for_another_reason_is_an_error():
 
 
 def test_a_key_added_inside_a_condition_is_an_update_and_is_re_applied():
-    # The scenario the strict comparison exists for: a namespace Ladon never
+    # The scenario the strict comparison exists for: a namespace Sero never
     # admitted is added beside its selector. Server-side apply treats the
     # condition list as atomic, so re-applying the document removes it.
     tampered = store_doc()
@@ -925,7 +925,7 @@ def test_delete_argv_ignores_absence_and_does_not_wait():
         "delete",
         "serviceaccount/eso-ns-a-sample",
         "-n",
-        "ladon",
+        "sero",
         "--ignore-not-found",
         "--wait=false",
     ]
@@ -934,12 +934,12 @@ def test_delete_argv_ignores_absence_and_does_not_wait():
 def test_delete_argv_omits_the_namespace_for_a_cluster_scoped_document():
     argv = k8s.delete_argv(store_doc())
     assert "-n" not in argv
-    assert argv[2] == "clustersecretstore.external-secrets.io/ladon-ns-a-sample"
+    assert argv[2] == "clustersecretstore.external-secrets.io/sero-ns-a-sample"
 
 
 def test_field_managers_reports_each_manager_once_in_order():
-    live = managed(service_account_doc(), "ladon", "kubectl-client-side-apply", "ladon")
-    assert k8s.field_managers(live) == ("ladon", "kubectl-client-side-apply")
+    live = managed(service_account_doc(), "sero", "kubectl-client-side-apply", "sero")
+    assert k8s.field_managers(live) == ("sero", "kubectl-client-side-apply")
 
 
 def test_field_managers_of_an_object_nobody_has_claimed_is_empty():
@@ -947,28 +947,28 @@ def test_field_managers_of_an_object_nobody_has_claimed_is_empty():
 
 
 def test_a_status_writer_is_not_an_owner():
-    # ESO stamps every ExternalSecret it reconciles, including Ladon's own.
+    # ESO stamps every ExternalSecret it reconciles, including Sero's own.
     # Reading that as ownership would make ESO the owner of the whole cluster.
     live = external_secret_doc()
     live["metadata"]["managedFields"] = [eso_status_entry()]
     assert k8s.field_managers(live) == ()
 
 
-def test_ladons_object_is_still_ladons_once_eso_has_written_its_status():
-    live = managed(external_secret_doc(), "ladon")
+def test_seros_object_is_still_seros_once_eso_has_written_its_status():
+    live = managed(external_secret_doc(), "sero")
     live["metadata"]["managedFields"].append(eso_status_entry())
     cluster = FakeCluster(live=[live])
     report = k8s.delete_documents([external_secret_doc()], run=cluster, dry_run=False)
     assert [r.action for r in report.results] == ["delete"]
 
 
-def test_delete_removes_an_object_ladon_applied():
+def test_delete_removes_an_object_sero_applied():
     cluster = FakeCluster()
     k8s.apply_documents([service_account_doc()], run=cluster, dry_run=False)
 
     report = k8s.delete_documents([service_account_doc()], run=cluster, dry_run=False)
     assert [r.action for r in report.results] == ["delete"]
-    assert report.results[0].target == "ServiceAccount/ladon/eso-ns-a-sample"
+    assert report.results[0].target == "ServiceAccount/sero/eso-ns-a-sample"
     assert cluster.stored(service_account_doc()) is None
 
 
@@ -1005,7 +1005,7 @@ def test_delete_refuses_an_object_another_manager_owns():
 
 def test_delete_refuses_an_object_a_client_side_apply_has_taken_over():
     # `kubectl apply` without --server-side replaces the server-side entry with
-    # its own, so the object Ladon created is no longer recorded as Ladon's.
+    # its own, so the object Sero created is no longer recorded as Sero's.
     # Deleting it anyway would remove whatever that operator now maintains.
     live = external_secret_doc()
     live["metadata"]["managedFields"] = [
@@ -1030,12 +1030,28 @@ def test_delete_refuses_an_object_with_no_recorded_manager():
     assert cluster.deletes == []
 
 
-def test_an_object_ladon_shares_with_another_manager_is_still_deletable():
+def test_an_object_sero_shares_with_another_manager_is_still_deletable():
     cluster = FakeCluster(
-        live=[managed(service_account_doc(), "kubectl-client-side-apply", "ladon")]
+        live=[managed(service_account_doc(), "kubectl-client-side-apply", "sero")]
     )
     report = k8s.delete_documents([service_account_doc()], run=cluster, dry_run=False)
     assert [r.action for r in report.results] == ["delete"]
+
+
+def test_an_object_applied_under_the_old_name_is_still_our_own():
+    """Before 2026-10-12 the field manager was `ladon`; a cluster applied by that
+    release must not read as foreign to this one."""
+    doc = service_account_doc()
+    live = {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "name": "sero",
+            "namespace": "sero",
+            "managedFields": [{"manager": "ladon", "operation": "Apply"}],
+        },
+    }
+    k8s.require_managed(doc, live)  # no ForeignObjectError
 
 
 def test_a_foreign_object_stops_the_documents_after_it():
@@ -1045,7 +1061,7 @@ def test_a_foreign_object_stops_the_documents_after_it():
     # still stops the rest.
     cluster = FakeCluster(
         live=[
-            managed(service_account_doc(), "ladon"),
+            managed(service_account_doc(), "sero"),
             managed(store_doc(), "external-secrets"),
         ]
     )
@@ -1067,7 +1083,7 @@ def test_each_delete_reads_checks_deletes_and_reads_again():
             return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
         if "delete" in order:
             return _Result(argv, returncode=1, stderr=gone + "\n")
-        return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "ladon")))
+        return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "sero")))
 
     k8s.delete_documents([service_account_doc()], run=FakeRunner(handler=handler), dry_run=False)
     assert order == ["get", "delete", "get"]
@@ -1100,7 +1116,7 @@ def reads_then(after):
             return _Result(argv, stdout="serviceaccount/eso-ns-a-sample deleted\n")
         if state["deleted"]:
             return after(argv)
-        return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "ladon")))
+        return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "sero")))
 
     return FakeRunner(handler=handler)
 
@@ -1119,7 +1135,7 @@ def test_an_object_still_present_after_the_delete_raises():
     # kubectl accepting a delete is not the cluster having done it. The same
     # object, with the same uid and no deletion timestamp, is a failure.
     still_there = lambda argv: _Result(  # noqa: E731
-        argv, stdout=json.dumps(managed(service_account_doc(), "ladon"))
+        argv, stdout=json.dumps(managed(service_account_doc(), "sero"))
     )
     with pytest.raises(K8sError, match="still on the cluster"):
         k8s.delete_documents([service_account_doc()], run=reads_then(still_there), dry_run=False)
@@ -1132,7 +1148,7 @@ def test_an_object_held_by_a_finalizer_is_terminating():
     # object owns is still there until the finalizer runs.
     terminating = lambda argv: _Result(  # noqa: E731
         argv,
-        stdout=json.dumps(managed(service_account_doc(), "ladon", terminating=True)),
+        stdout=json.dumps(managed(service_account_doc(), "sero", terminating=True)),
     )
     report = k8s.delete_documents(
         [service_account_doc()], run=reads_then(terminating), dry_run=False
@@ -1145,7 +1161,7 @@ def test_an_object_recreated_under_the_same_name_is_not_a_failure():
     # is gone, which is what was asked; reporting a failure over a stranger's
     # new object would be wrong, and deleting it would be worse.
     recreated = lambda argv: _Result(  # noqa: E731
-        argv, stdout=json.dumps(managed(service_account_doc(), "ladon", uid=OTHER_UID))
+        argv, stdout=json.dumps(managed(service_account_doc(), "sero", uid=OTHER_UID))
     )
     report = k8s.delete_documents([service_account_doc()], run=reads_then(recreated), dry_run=False)
     assert [(r.action, r.state) for r in report.results] == [("delete", "recreated")]
@@ -1161,7 +1177,7 @@ def test_a_dry_run_records_no_state():
 def test_delete_raises_with_only_the_first_stderr_line_when_kubectl_fails():
     def handler(argv, stdin):
         if argv[1] == "get":
-            return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "ladon")))
+            return _Result(argv, stdout=json.dumps(managed(service_account_doc(), "sero")))
         return _Result(argv, returncode=1, stderr="Error from server (Forbidden): no\nmore\n")
 
     with pytest.raises(K8sError) as excinfo:

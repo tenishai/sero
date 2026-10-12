@@ -1,6 +1,6 @@
 """Tests for the baseline OpenBao policy rendering (D3b)."""
 
-from ladon.config import (
+from sero.config import (
     baseline_team_policies,
     external_secrets_read,
     external_secrets_root,

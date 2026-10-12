@@ -1,6 +1,6 @@
 # Testing
 
-Ladon's tests are small, fast, and meaningful. Each test earns its place by
+Sero's tests are small, fast, and meaningful. Each test earns its place by
 catching a real failure mode. We do not chase a coverage number, and we do not
 write tests that only restate the implementation.
 

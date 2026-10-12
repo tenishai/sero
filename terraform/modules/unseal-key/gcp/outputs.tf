@@ -2,7 +2,7 @@
 #
 # These are the shared unseal-key contract (see ../README.md): the values the
 # OpenBao seal stanza needs. They map one-to-one onto the gcpckms fields the
-# config layer renders (see src/ladon/config/seal.py): project, region, key_ring,
+# config layer renders (see src/sero/config/seal.py): project, region, key_ring,
 # crypto_key. No secret material is output.
 
 output "provider" {

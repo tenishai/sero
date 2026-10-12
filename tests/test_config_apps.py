@@ -1,4 +1,4 @@
-"""Tests for per-application ESO identities (D17, ``ladon.config.apps``).
+"""Tests for per-application ESO identities (D17, ``sero.config.apps``).
 
 One app gets one path prefix, one policy scoped to it, one JWT role pinned to a
 dedicated service account, and one store restricted to one Kubernetes namespace.
@@ -10,7 +10,7 @@ are keyed by, so two different applications must never render the same one.
 
 import pytest
 
-from ladon.config.apps import (
+from sero.config.apps import (
     DEFAULT_APP_AUDIENCE,
     DEFAULT_SA_NAMESPACE,
     app_cluster_documents,
@@ -20,8 +20,8 @@ from ladon.config.apps import (
     eso_app_service_account,
     eso_app_store,
 )
-from ladon.config.eso import K8S_NAMESPACE_NAME_LABEL
-from ladon.config.teams import ConfigError
+from sero.config.eso import K8S_NAMESPACE_NAME_LABEL
+from sero.config.teams import ConfigError
 
 SERVER = "https://bao.example:8200"
 
@@ -79,7 +79,7 @@ def test_names_are_team_qualified_where_they_are_cluster_wide():
     # qualified by the team to stop one team's identity naming another's.
     assert ident.policy_name == "eso-sample-readonly"
     assert ident.name == SAMPLE_NAME
-    assert ident.store_name == f"ladon-team-a-sample-{SAMPLE_DIGEST}"
+    assert ident.store_name == f"sero-team-a-sample-{SAMPLE_DIGEST}"
     assert ident.auth_mount == "jwt-cluster-a"
 
 
@@ -106,9 +106,9 @@ def test_a_different_application_in_the_same_team_gets_a_different_name():
     assert identity(app="other").name != identity().name
 
 
-def test_bound_subject_names_the_service_account_in_ladons_own_namespace():
-    assert identity().bound_subject == f"system:serviceaccount:ladon:{SAMPLE_NAME}"
-    assert DEFAULT_SA_NAMESPACE == "ladon"
+def test_bound_subject_names_the_service_account_in_seros_own_namespace():
+    assert identity().bound_subject == f"system:serviceaccount:sero:{SAMPLE_NAME}"
+    assert DEFAULT_SA_NAMESPACE == "sero"
 
 
 def test_openbao_namespace_defaults_to_the_team_and_is_overridable():
@@ -124,7 +124,7 @@ def test_a_nested_openbao_namespace_is_accepted():
 
 def test_kubernetes_namespace_defaults_to_the_app_and_is_overridable():
     assert identity().k8s_namespace == "sample"
-    assert identity(k8s_namespace="ladon-sample").k8s_namespace == "ladon-sample"
+    assert identity(k8s_namespace="sero-sample").k8s_namespace == "sero-sample"
 
 
 # Policy ----------------------------------------------------------------------
@@ -157,7 +157,7 @@ def test_role_is_pinned_to_the_service_account_the_policy_and_no_default():
     assert role.data["role_type"] == "jwt"
     assert role.data["user_claim"] == "sub"
     assert role.data["bound_audiences"] == [DEFAULT_APP_AUDIENCE]
-    assert role.data["bound_subject"] == f"system:serviceaccount:ladon:{SAMPLE_NAME}"
+    assert role.data["bound_subject"] == f"system:serviceaccount:sero:{SAMPLE_NAME}"
     assert role.data["token_policies"] == ["eso-sample-readonly"]
     assert role.data["token_no_default_policy"] is True
     assert role.data["token_ttl"]
@@ -174,10 +174,10 @@ def test_default_audience_is_the_one_the_store_requests():
 
 
 def test_audience_is_a_parameter_and_both_halves_follow_it():
-    ident = identity(audience="ladon")
-    assert eso_app_role(ident).data["bound_audiences"] == ["ladon"]
+    ident = identity(audience="sero")
+    assert eso_app_role(ident).data["bound_audiences"] == ["sero"]
     token = eso_app_store(ident, server=SERVER).manifest["spec"]["provider"]["vault"]["auth"]["jwt"]
-    assert token["kubernetesServiceAccountToken"]["audiences"] == ["ladon"]
+    assert token["kubernetesServiceAccountToken"]["audiences"] == ["sero"]
 
 
 def test_an_empty_audience_is_refused():
@@ -196,20 +196,20 @@ def test_service_account_does_not_automount_its_token():
     assert sa == {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
-        "metadata": {"name": SAMPLE_NAME, "namespace": "ladon"},
+        "metadata": {"name": SAMPLE_NAME, "namespace": "sero"},
         "automountServiceAccountToken": False,
     }
 
 
 def test_service_account_follows_the_service_account_namespace():
-    sa = eso_app_service_account(identity(sa_namespace="ladon-system"))
-    assert sa["metadata"]["namespace"] == "ladon-system"
+    sa = eso_app_service_account(identity(sa_namespace="sero-system"))
+    assert sa["metadata"]["namespace"] == "sero-system"
 
 
 def test_store_reads_the_team_namespace_through_the_clusters_jwt_mount():
     store = eso_app_store(identity(namespace="ns-a"), server=SERVER)
     vault = store.manifest["spec"]["provider"]["vault"]
-    assert store.name == f"ladon-team-a-sample-{SAMPLE_DIGEST}"
+    assert store.name == f"sero-team-a-sample-{SAMPLE_DIGEST}"
     assert vault["server"] == SERVER
     assert vault["namespace"] == "ns-a"
     assert vault["path"] == "kv"
@@ -222,13 +222,13 @@ def test_store_authenticates_as_the_apps_own_service_account():
     ref = store.manifest["spec"]["provider"]["vault"]["auth"]["jwt"][
         "kubernetesServiceAccountToken"
     ]["serviceAccountRef"]
-    assert ref == {"name": SAMPLE_NAME, "namespace": "ladon"}
+    assert ref == {"name": SAMPLE_NAME, "namespace": "sero"}
 
 
 def test_store_admits_only_the_apps_kubernetes_namespace():
-    store = eso_app_store(identity(k8s_namespace="ladon-sample"), server=SERVER)
+    store = eso_app_store(identity(k8s_namespace="sero-sample"), server=SERVER)
     assert store.manifest["spec"]["conditions"] == [
-        {"namespaceSelector": {"matchLabels": {K8S_NAMESPACE_NAME_LABEL: "ladon-sample"}}}
+        {"namespaceSelector": {"matchLabels": {K8S_NAMESPACE_NAME_LABEL: "sero-sample"}}}
     ]
 
 
@@ -261,7 +261,7 @@ def test_namespaces_must_be_dns_labels():
     with pytest.raises(ConfigError, match="k8s_namespace"):
         identity(k8s_namespace="Sample")
     with pytest.raises(ConfigError, match="sa_namespace"):
-        identity(sa_namespace="Ladon")
+        identity(sa_namespace="Sero")
     with pytest.raises(ConfigError, match="namespace"):
         identity(namespace="Team_A")
 

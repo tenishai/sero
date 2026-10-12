@@ -1,9 +1,9 @@
-"""Alembic migration environment for the Ladon datastore (D11).
+"""Alembic migration environment for the Sero datastore (D11).
 
-The database URL comes from the ``LADON_DATABASE_URL`` environment variable (or
+The database URL comes from the ``SERO_DATABASE_URL`` environment variable (or
 from a Config the caller built, which is how the backend migrates at boot), not
 from alembic.ini, so no connection string or credential is ever committed. The
-target metadata is ``ladon.datastore.models.Base.metadata``, so migrations
+target metadata is ``sero.datastore.models.Base.metadata``, so migrations
 autogenerate from the models.
 
 Cloud-neutral: any PostgreSQL reachable by a SQLAlchemy URL works. Cloud-specific
@@ -18,13 +18,13 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from ladon.datastore.models import Base
+from sero.datastore.models import Base
 
 config = context.config
 
 target_metadata = Base.metadata
 
-DB_URL_ENV = "LADON_DATABASE_URL"
+DB_URL_ENV = "SERO_DATABASE_URL"
 
 
 def _database_url() -> str:
@@ -35,7 +35,7 @@ def _database_url() -> str:
     if not url:
         raise RuntimeError(
             f"{DB_URL_ENV} is not set; point it at the target PostgreSQL, e.g. "
-            "postgresql+psycopg://user@host:5432/ladon"
+            "postgresql+psycopg://user@host:5432/sero"
         )
     return url
 

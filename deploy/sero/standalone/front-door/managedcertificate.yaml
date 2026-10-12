@@ -1,0 +1,28 @@
+# The TLS certificate, issued and renewed by the cloud provider.
+#
+# The Ingress refers to this by name in its `networking.gke.io/
+# managed-certificates` annotation. Nothing here holds key material: the
+# provider generates the key, keeps it, and renews the certificate.
+#
+# Provisioning is not instant and it is not independent of DNS. The
+# certificate stays `Provisioning` until the domain below resolves to the
+# load balancer's address and the load balancer is serving, because the
+# issuing authority validates the domain over that path. Fifteen minutes to
+# an hour is normal; a certificate stuck in `FailedNotVisible` means DNS
+# does not point here yet, not that anything about this file is wrong.
+#
+#   kubectl -n sero describe managedcertificate sero
+#
+# REPLACE: the domain. One certificate can carry several, one per list
+# entry, and every one of them has to resolve here before any of them is
+# issued.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: sero
+  namespace: sero
+  labels:
+    app.kubernetes.io/name: sero
+spec:
+  domains:
+    - <hostname>

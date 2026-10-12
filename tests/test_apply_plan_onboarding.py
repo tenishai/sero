@@ -8,17 +8,17 @@ executable by the existing executor.
 
 import pytest
 
-from ladon.apply.executor import supported_kinds
-from ladon.apply.plan import (
+from sero.apply.executor import supported_kinds
+from sero.apply.plan import (
     DEFAULT_ESO_AUDIENCE,
     DEFAULT_ESO_POLICY,
     DEFAULT_ESO_ROLE,
     app_onboarding_plan,
     team_onboarding_plan,
 )
-from ladon.config.apps import app_identity, eso_app_policy
-from ladon.config.policies import external_secrets_read
-from ladon.config.teams import ConfigError
+from sero.config.apps import app_identity, eso_app_policy
+from sero.config.policies import external_secrets_read
+from sero.config.teams import ConfigError
 
 ISSUER = "https://container.example/v1/clusters/team-a"
 
@@ -103,11 +103,11 @@ def test_parameters_override_defaults():
         kv_mount="team-kv",
         policy_name="eso-ro",
         role_name="eso",
-        audience="ladon",
+        audience="sero",
     )
     assert plan.ops[0].path == "sys/auth/jwt-prod-1"
     role = next(o for o in plan.ops if o.kind == "write-auth-role").data
-    assert role["bound_audiences"] == ["ladon"]
+    assert role["bound_audiences"] == ["sero"]
     assert role["token_policies"] == ["eso-ro"]
     policy = next(o for o in plan.ops if o.kind == "write-policy")
     assert policy.path == "sys/policies/acl/eso-ro"
@@ -164,7 +164,7 @@ def test_app_onboarding_ops_carry_the_rendered_policy_and_role():
     plan = app_onboarding_plan(app())
     assert plan.ops[0].data["policy"] == eso_app_policy(app()).hcl
     assert plan.ops[1].data["token_policies"] == ["eso-sample-readonly"]
-    assert plan.ops[1].data["bound_subject"] == f"system:serviceaccount:ladon:{app().name}"
+    assert plan.ops[1].data["bound_subject"] == f"system:serviceaccount:sero:{app().name}"
 
 
 def test_app_onboarding_runs_inside_the_teams_openbao_namespace():

@@ -1,13 +1,13 @@
 """Tests for the datastore connection/session layer (D11).
 
-Exercised against SQLite via LADON_DATABASE_URL, so no PostgreSQL is needed. The
+Exercised against SQLite via SERO_DATABASE_URL, so no PostgreSQL is needed. The
 engine cache is reset around each test.
 """
 
 import pytest
 from sqlalchemy import select, text
 
-from ladon.datastore.engine import (
+from sero.datastore.engine import (
     build_engine,
     database_url,
     engine,
@@ -15,12 +15,12 @@ from ladon.datastore.engine import (
     reset,
     session_factory,
 )
-from ladon.datastore.models import Base, McpAllowListEntry
+from sero.datastore.models import Base, McpAllowListEntry
 
 
 @pytest.fixture(autouse=True)
 def _reset_engine(monkeypatch):
-    monkeypatch.delenv("LADON_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SERO_DATABASE_URL", raising=False)
     reset()
     yield
     reset()
@@ -34,7 +34,7 @@ def test_unconfigured_returns_none(monkeypatch):
 
 
 def test_configured_builds_engine(monkeypatch):
-    monkeypatch.setenv("LADON_DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("SERO_DATABASE_URL", "sqlite:///:memory:")
     assert is_configured() is True
     eng = engine()
     assert eng is not None
@@ -43,7 +43,7 @@ def test_configured_builds_engine(monkeypatch):
 
 
 def test_session_factory_round_trips(monkeypatch):
-    monkeypatch.setenv("LADON_DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("SERO_DATABASE_URL", "sqlite:///:memory:")
     eng = engine()
     Base.metadata.create_all(eng)
     factory = session_factory()
@@ -57,7 +57,7 @@ def test_session_factory_round_trips(monkeypatch):
 
 
 def test_reset_rebuilds_from_current_env(monkeypatch):
-    monkeypatch.setenv("LADON_DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("SERO_DATABASE_URL", "sqlite:///:memory:")
     first = engine()
     reset()
     second = engine()

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lint-conventions.sh - enforce Ladon's hard conventions.
+# lint-conventions.sh - enforce Sero's hard conventions.
 #
 # Checks, in order:
 #   1. No em dashes (or en dashes) in prose files. WARNS only: style, not a gate.
@@ -87,7 +87,7 @@ check_dashes() {
 }
 
 # Check 2: no company-specific identifiers ----------------------------------
-# Ladon is brand-neutral. The denylist token is assembled from fragments so
+# Sero is brand-neutral. The denylist token is assembled from fragments so
 # this script does not match itself, and the script is excluded from the scan.
 check_branding() {
   local a="fu" b="bo"
@@ -182,7 +182,7 @@ check_regions() {
     | report "no cloud region literals"
 }
 
-echo "Ladon conventions lint"
+echo "Sero conventions lint"
 echo "----------------------"
 check_dashes   || fail_count=$((fail_count + 1))
 check_branding || fail_count=$((fail_count + 1))

@@ -1,6 +1,6 @@
 # Skills
 
-Ladon uses Claude Code skills to keep work consistent with the project's
+Sero uses Claude Code skills to keep work consistent with the project's
 conventions. There are two kinds: marketplace skills (installed per machine, not
 committed) and project-local skills (committed to this repo).
 

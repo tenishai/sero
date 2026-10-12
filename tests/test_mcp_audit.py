@@ -14,11 +14,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from ladon.audit import DENIED, ERROR, REFUSED, UNIDENTIFIED
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base
-from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult
-from ladon.mcp.server import AccessDeniedError, build_server
+from sero.audit import DENIED, ERROR, REFUSED, UNIDENTIFIED
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base
+from sero.mcp.ports import SecretDetail, SecretPath, WriteResult
+from sero.mcp.server import AccessDeniedError, build_server
 
 USER = "op@example.com"
 ADMIN = "admin@example.com"
@@ -81,7 +81,7 @@ class Ctx:
 def sessions(tmp_path):
     # A file, not ":memory:": the recorder opens a second connection while the
     # tool's own is still open, and only a real file shows whether that works.
-    engine = create_engine(f"sqlite:///{tmp_path / 'ladon.db'}")
+    engine = create_engine(f"sqlite:///{tmp_path / 'sero.db'}")
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 

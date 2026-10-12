@@ -1,4 +1,4 @@
-# Ladon UI (D7)
+# Sero UI (D7)
 
 A lean, unbranded operator interface for the OpenBao secrets platform, built to
 drop into any deployment and rebrand in two files.
@@ -11,7 +11,7 @@ Versions are pinned exactly (see `package.json` and `docs/versions.md`).
 
 ## Rebranding: two files, no component edits
 
-Ladon ships unbranded. To make the UI a client's own:
+Sero ships unbranded. To make the UI a client's own:
 
 1. **`src/app.css`** - the palette, fonts, and radii, as CSS variables in the
    `@theme` block (and the `html.theme-light` overrides). Components reference
@@ -22,7 +22,7 @@ Ladon ships unbranded. To make the UI a client's own:
    views import from here; they never hardcode identity.
 
 `index.html` carries a static title and a pre-paint theme script for the initial
-render; keep its title and the `ladon:theme` storage key in sync with
+render; keep its title and the `sero:theme` storage key in sync with
 `branding.ts` when rebranding.
 
 Nothing in the rest of the tree hardcodes a company, cloud, product name, or

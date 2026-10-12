@@ -1,16 +1,16 @@
-# Contributing to Ladon
+# Contributing to Sero
 
-Thanks for working on Ladon. This guide covers how we develop: the branching
+Thanks for working on Sero. This guide covers how we develop: the branching
 model, commit style, the review loop, and the bar a change must clear before it
 merges. Read it once; it is short on purpose.
 
-Ladon is a secrets and vault management platform. Two rules sit above
+Sero is a secrets and vault management platform. Two rules sit above
 everything else here and are repeated throughout:
 
 - **Never commit secret values.** Not in code, config, tests, fixtures, commit
   messages, or PR text. See [Secrets hygiene](#secrets-hygiene).
 - **Stay brand-neutral.** No company-specific names, domains, project or account
-  IDs, cluster names, or internal identifiers. Ladon is a product anyone can
+  IDs, cluster names, or internal identifiers. Sero is a product anyone can
   deploy. See [Brand neutrality](#brand-neutrality).
 
 ## Development model
@@ -99,7 +99,7 @@ never silent floats. See [docs/versioning.md](docs/versioning.md).
 
 ### Secrets hygiene
 
-Ladon never stores secret values, and neither do contributions to it.
+Sero never stores secret values, and neither do contributions to it.
 
 - Never commit secret material. The `.gitignore` is a backstop, not permission
   to be careless; the CI check that no secret material is committed is the real
@@ -143,7 +143,7 @@ Coverage theater and speculative generality are not improvements.
 
 ## Developer Certificate of Origin
 
-Ladon uses the [Developer Certificate of Origin](https://developercertificate.org/)
+Sero uses the [Developer Certificate of Origin](https://developercertificate.org/)
 (DCO) instead of a contributor license agreement. Every commit in a pull request
 must carry a `Signed-off-by:` line with your name and email, and they must match
 the commit's author. `git commit -s` adds it from your `user.name` and

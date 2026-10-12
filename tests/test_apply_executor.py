@@ -9,14 +9,14 @@ OpenBao. Convergence against live state has its own file
 import pytest
 
 from fake_openbao import FakeOpenBao as FakeClient
-from ladon.apply.executor import (
+from sero.apply.executor import (
     ApplyError,
     apply_plan,
     supported_kinds,
 )
-from ladon.apply.plan import Plan, WriteOp, root_config_plan
-from ladon.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
-from ladon.config.policies import external_secrets_read, team_readwrite
+from sero.apply.plan import Plan, WriteOp, root_config_plan
+from sero.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
+from sero.config.policies import external_secrets_read, team_readwrite
 
 
 def sample_plan():
@@ -32,7 +32,7 @@ def sample_plan():
     )
     oidc = oidc_auth(
         discovery_url="https://idp.example/.well-known/openid-configuration",
-        client_id="ladon",
+        client_id="sero",
         client_secret_ref="secret/oidc-client",
         roles=[
             oidc_role(

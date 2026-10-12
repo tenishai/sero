@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Something ladon should do, or do differently
+about: Something sero should do, or do differently
 labels: enhancement
 ---
 

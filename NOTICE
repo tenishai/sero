@@ -1,15 +1,15 @@
-Ladon
-Copyright (C) 2026 tenish and the ladon contributors
+Sero
+Copyright (C) 2026 tenish and the sero contributors
 
-This product includes software developed by tenish and the ladon contributors
-(https://github.com/tenishai/ladon).
+This product includes software developed by tenish and the sero contributors
+(https://github.com/tenishai/sero).
 
 Licensed under the GNU Affero General Public License, version 3 or (at
 your option) any later version. See the LICENSE file for the full license
 text.
 
-Ladon integrates and operates third-party open-source software,
+Sero integrates and operates third-party open-source software,
 including OpenBao (https://github.com/openbao/openbao) and the
 External Secrets Operator (https://github.com/external-secrets/external-secrets).
-Ladon does not fork or redistribute those projects; it deploys and
+Sero does not fork or redistribute those projects; it deploys and
 operates them. Each remains under its own license.

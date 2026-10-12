@@ -14,10 +14,10 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
 
-from ladon.web.assertion import AssertionSettings, AssertionVerifier
+from sero.web.assertion import AssertionSettings, AssertionVerifier
 
 ISSUER = "https://proxy.example.com"
-AUDIENCE = "/projects/example/apps/ladon"
+AUDIENCE = "/projects/example/apps/sero"
 JWKS_URL = "https://proxy.example.com/keys"
 KID = "key-one"
 OTHER_KID = "key-two"

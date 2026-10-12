@@ -18,7 +18,7 @@ Azure Verified Module (or the current official Key Vault module) over hand-rolle
 
 - `provider` = `"azurekeyvault"`
 - `seal_config` = `{ tenant_id, vault_name, key_name }` - the `azurekeyvault`
-  fields `src/ladon/config/seal.py` expects in `deployment.kms`.
+  fields `src/sero/config/seal.py` expects in `deployment.kms`.
 - `crypto_key_id` - the key's versionless id.
 
 The OpenBao identity authenticates via a managed identity, so no client secret is

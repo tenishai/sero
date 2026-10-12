@@ -9,18 +9,18 @@ write that does not land.
 import pytest
 
 from fake_openbao import FakeOpenBao
-from ladon.apply.executor import ApplyError, apply_plan
-from ladon.apply.plan import (
+from sero.apply.executor import ApplyError, apply_plan
+from sero.apply.plan import (
     Plan,
     WriteOp,
     app_onboarding_plan,
     root_config_plan,
     team_onboarding_plan,
 )
-from ladon.config.apps import app_identity
-from ladon.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
-from ladon.config.policies import external_secrets_read, team_readwrite
-from ladon.config.teams import Team
+from sero.config.apps import app_identity
+from sero.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
+from sero.config.policies import external_secrets_read, team_readwrite
+from sero.config.teams import Team
 
 ISSUER = "https://issuer.example/.well-known/openid-configuration"
 
@@ -44,13 +44,13 @@ def sample_plan():
 
 
 def plan_with_oidc():
-    """A root plan including OIDC, whose config carries a Ladon-only reference."""
+    """A root plan including OIDC, whose config carries a Sero-only reference."""
     return root_config_plan(
         policies=[team_readwrite()],
         auth_methods=[
             oidc_auth(
                 discovery_url="https://idp.example/.well-known/openid-configuration",
-                client_id="ladon",
+                client_id="sero",
                 client_secret_ref="oidc/operator-client-secret",
                 roles=[
                     oidc_role(
@@ -222,7 +222,7 @@ def test_offline_dry_run_still_needs_no_client():
 class IgnoresUnknownFields(FakeOpenBao):
     """OpenBao keeps only the fields a mount defines and ignores the rest.
 
-    ``oidc_client_secret_ref`` is Ladon's own reference, resolved at execution
+    ``oidc_client_secret_ref`` is Sero's own reference, resolved at execution
     and never stored, so no read of the mount can ever return it.
     """
 
@@ -265,7 +265,7 @@ def role_diff(desired: dict, live: dict):
         ("unrecognised_field", "some value"),
     ],
 )
-def test_a_field_ladon_does_not_recognise_is_never_printed(field, value):
+def test_a_field_sero_does_not_recognise_is_never_printed(field, value):
     # The renderer allows known-safe field names rather than denying a few known
     # dangerous ones, so a field nobody thought about cannot leak its value.
     diff = role_diff({field: value}, {field: "other"})

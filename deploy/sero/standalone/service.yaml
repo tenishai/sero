@@ -1,0 +1,31 @@
+# ClusterIP, and nothing else.
+#
+# The backend trusts an identity header a proxy sets (docs/backend.md), so it
+# must never be reachable from outside the cluster directly. A LoadBalancer or
+# NodePort here would hand anyone on the network the ability to claim any
+# identity. Exposure is the proxy's job, and the NetworkPolicy in ../k8s/base
+# is what enforces that only the proxy gets through.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sero
+  namespace: sero
+  labels:
+    app.kubernetes.io/name: sero
+  annotations:
+    # For the cloud front door in front-door/ only. The first sends the load
+    # balancer straight to the pods, the second binds the BackendConfig that
+    # sets the health check and turns on the identity-aware proxy. Both are
+    # inert on a cluster with no such load balancer, so they are safe to
+    # leave in place; delete them if the front door is an in-cluster proxy.
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "sero"}'
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sero
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

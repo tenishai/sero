@@ -5,8 +5,8 @@ a directory. It resolves a caller to namespaces through direct membership and
 through group membership, and answers whether the caller is an admin.
 """
 
-from ladon.web.groups import ConfigGroupSource
-from ladon.web.settings import parse_access
+from sero.web.groups import ConfigGroupSource
+from sero.web.settings import parse_access
 
 ACCESS = parse_access(
     {

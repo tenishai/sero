@@ -10,8 +10,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def test_consume_flow_returns_fresh_and_is_single_use(session):
 def test_consume_stale_flow_returns_none_but_deletes(session):
     created = datetime.now(UTC) - timedelta(minutes=30)
     # Insert directly with an old created_at to simulate a stale flow.
-    from ladon.datastore.models import RevealFlow
+    from sero.datastore.models import RevealFlow
 
     session.add(
         RevealFlow(

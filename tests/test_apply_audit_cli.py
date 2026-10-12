@@ -13,8 +13,8 @@ import json
 import pytest
 
 from fake_openbao import FakeOpenBao
-from ladon.apply import cli
-from ladon.apply.audit import AUDIT_FINDINGS_EXIT
+from sero.apply import cli
+from sero.apply.audit import AUDIT_FINDINGS_EXIT
 
 MOUNT = "jwt-cluster-a"
 
@@ -94,7 +94,7 @@ def test_a_role_that_inherits_the_default_policy_prints_one_line(monkeypatch):
         "role_type": "jwt",
         "token_policies": ["eso-sample-readonly"],
         "bound_audiences": ["openbao"],
-        "bound_subject": "system:serviceaccount:ladon:eso-team-a-sample-abc123",
+        "bound_subject": "system:serviceaccount:sero:eso-team-a-sample-abc123",
     }
     bao = seed(
         FakeOpenBao(),
