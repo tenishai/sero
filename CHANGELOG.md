@@ -10,6 +10,8 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-12
+
 ### Changed
 
 - **Renamed: Ladon is now Sero.** The repository is `tenishai/sero`, the
