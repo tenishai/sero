@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from ladon.datastore.models import (
+from sero.datastore.models import (
     Base,
     McpAllowListEntry,
     McpRefreshToken,
@@ -68,8 +68,8 @@ def test_refresh_token_recorded_by_identifier_only(session):
             jti="jti-1",
             family_id="fam-1",
             user_email="op@example.com",
-            client_id="ladon-cli",
-            audience="ladon",
+            client_id="sero-cli",
+            audience="sero",
             expires_at=now + timedelta(hours=1),
         )
     )

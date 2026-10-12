@@ -8,7 +8,7 @@
 #                    that platform looks for them, next to gojira.yaml).
 #   * k8s/cluster    the cluster-scoped objects an operator applies once: the
 #                    ClusterRole, and the binding the standalone path needs.
-#   * deploy/ladon/standalone/   the Deployment and Service for a cluster
+#   * deploy/sero/standalone/   the Deployment and Service for a cluster
 #                    where that platform is not in use.
 #
 # One directory is deliberately outside all three: standalone/front-door/.
@@ -32,7 +32,7 @@
 #   * With a reachable cluster (an operator's laptop), it runs exactly:
 #         kubectl apply --dry-run=client -k k8s/base
 #         kubectl apply --dry-run=client -f k8s/cluster/
-#         kubectl apply --dry-run=client -f deploy/ladon/standalone/
+#         kubectl apply --dry-run=client -f deploy/sero/standalone/
 #     which is full schema validation and the real gate.
 #
 #   * With no cluster (CI), it falls back to what can be checked locally, and
@@ -49,42 +49,42 @@
 # this deployment needs, by kind and name. A file dropped from the
 # kustomization, or renamed, fails here rather than at apply time on a cluster.
 #
-# Set LADON_KUBE_CONTEXT to choose a context; otherwise the current one is used.
+# Set SERO_KUBE_CONTEXT to choose a context; otherwise the current one is used.
 # Requires kubectl on the path (pinned version in docs/versions.md).
 
 set -euo pipefail
 
 BASE_DIR="k8s/base"
 CLUSTER_DIR="k8s/cluster"
-STANDALONE_DIR="deploy/ladon/standalone"
+STANDALONE_DIR="deploy/sero/standalone"
 
 # Every object each half must produce, as "<kind>/<name>". Kept here rather
 # than derived from the files, so deleting a file fails the check instead of
 # quietly shrinking what it expects.
 BASE_EXPECTED="
-ServiceAccount/ladon
-Role/ladon
-RoleBinding/ladon
-PersistentVolumeClaim/ladon-data
-NetworkPolicy/ladon-default-deny
-NetworkPolicy/ladon-backend
-NetworkPolicy/ladon-openbao
+ServiceAccount/sero
+Role/sero
+RoleBinding/sero
+PersistentVolumeClaim/sero-data
+NetworkPolicy/sero-default-deny
+NetworkPolicy/sero-backend
+NetworkPolicy/sero-openbao
 "
 CLUSTER_EXPECTED="
-ClusterRole/ladon
-ClusterRoleBinding/ladon
+ClusterRole/sero
+ClusterRoleBinding/sero
 "
 STANDALONE_EXPECTED="
-Deployment/ladon
-Service/ladon
+Deployment/sero
+Service/sero
 "
 
 # kubectl, with the chosen context if there is one. A function rather than an
 # array because bash 3.2 (the default on macOS) rejects an empty array under
 # "set -u".
 kctl() {
-  if [[ -n "${LADON_KUBE_CONTEXT:-}" ]]; then
-    kubectl --context "${LADON_KUBE_CONTEXT}" "$@"
+  if [[ -n "${SERO_KUBE_CONTEXT:-}" ]]; then
+    kubectl --context "${SERO_KUBE_CONTEXT}" "$@"
   else
     kubectl "$@"
   fi
@@ -120,7 +120,7 @@ inventory() {
   # cannot be mistaken for the Role itself.
   kubectl label --local -f "$1" \
     -o go-template='{{.kind}}/{{.metadata.name}}{{"\n"}}' \
-    ladon.dev/validate=1 2>/dev/null \
+    sero.dev/validate=1 2>/dev/null \
     | sort -u
 }
 

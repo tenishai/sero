@@ -18,7 +18,7 @@ module over hand-rolled `aws_kms_*` resources, pinned to a stable version in
 
 - `provider` = `"awskms"`
 - `seal_config` = `{ region, kms_key_id }` - the `awskms` fields
-  `src/ladon/config/seal.py` expects in `deployment.kms`.
+  `src/sero/config/seal.py` expects in `deployment.kms`.
 - `crypto_key_id` - the key ARN.
 
 The OpenBao identity authenticates via IRSA, so no secret is created or output.

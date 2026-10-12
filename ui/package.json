@@ -1,8 +1,8 @@
 {
-  "name": "ladon-ui",
+  "name": "sero-ui",
   "private": true,
   "type": "module",
-  "description": "Ladon UI: a lean, unbranded, rebrandable operator interface for the OpenBao secrets platform.",
+  "description": "Sero UI: a lean, unbranded, rebrandable operator interface for the OpenBao secrets platform.",
   "scripts": {
     "dev": "vite",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",

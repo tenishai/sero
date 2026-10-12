@@ -1,6 +1,6 @@
 # Pinned versions
 
-This file is the single source of truth for every version Ladon pins. If Ladon
+This file is the single source of truth for every version Sero pins. If Sero
 depends on it, operates it, or runs it in CI, its exact version lives here.
 
 ## How to use this file
@@ -18,11 +18,11 @@ Version bumps are their own reviewed PRs. See
 [versioning.md](versioning.md) and [../CONTRIBUTING.md](../CONTRIBUTING.md).
 
 The set of pins in this file at a given release tag is exactly the set of
-versions that release of Ladon was built and tested against.
+versions that release of Sero was built and tested against.
 
 ## Platform components
 
-Core software Ladon deploys and operates. To be populated during the
+Core software Sero deploys and operates. To be populated during the
 architecture phase (see [design.md](design.md)), once each choice is made and
 its latest stable is verified.
 
@@ -31,7 +31,7 @@ its latest stable is verified.
 | OpenBao | 2.5.5 | github.com/openbao/openbao-helm/releases (chart 0.28.4 bundles 2.5.5) | 2026-06-17 | Server and CLI. Image tag pinned in deploy/openbao/values/values-base.yaml. |
 | OpenBao Helm chart | 0.28.4 | github.com/openbao/openbao-helm/releases | 2026-06-17 | `openbao/openbao` chart. Apply with `--version 0.28.4`; never a floating chart. |
 | External Secrets Operator | 2.6.0 | github.com/external-secrets/external-secrets/releases (chart 2.6.0 bundles app v2.6.0) | 2026-06-23 | Image `ghcr.io/external-secrets/external-secrets:v2.6.0`. Installed via the chart (D4a). |
-| ESO Helm chart | 2.6.0 | github.com/external-secrets/external-secrets/releases | 2026-06-23 | `external-secrets/external-secrets` chart from `https://charts.external-secrets.io`. Apply with `--version 2.6.0`; never a floating chart. Pinned in src/ladon/install/eso.py. |
+| ESO Helm chart | 2.6.0 | github.com/external-secrets/external-secrets/releases | 2026-06-23 | `external-secrets/external-secrets` chart from `https://charts.external-secrets.io`. Apply with `--version 2.6.0`; never a floating chart. Pinned in src/sero/install/eso.py. |
 | cert-manager | _tbd_ | | | If adopted |
 
 ## Infrastructure providers
@@ -54,7 +54,7 @@ blocks. Pin each exactly; module bumps are their own reviewed PRs.
 
 ## Container images
 
-Images Ladon builds on or ships. Pin by digest where practical, not only tag.
+Images Sero builds on or ships. Pin by digest where practical, not only tag.
 
 Digests are the multi-architecture index digest, so one pin covers `amd64` and
 `arm64`. A tag moves; a digest does not, and an image that moves under you is an
@@ -87,9 +87,9 @@ Languages and their toolchains. Populated once the language decision in
 | psycopg (optional `postgres` extra) | 3.3.6 | pypi.org/project/psycopg | 2026-10-05 | Optional runtime dependency: the PostgreSQL driver for the backend datastore (D11), installed with `--extra postgres`. Pinned in pyproject and uv.lock. |
 | alembic | 1.18.5 | pypi.org/project/alembic | 2026-07-06 | Runtime dependency: datastore migrations (D11). Pinned in pyproject and uv.lock. |
 | mcp | 1.28.1 | pypi.org/project/mcp | 2026-07-06 | Runtime dependency: MCP server (FastMCP) for the agent surface (D12). v1.x is the recommended production line (2.0 is prerelease). Pinned in pyproject and uv.lock. |
-| PyJWT | 2.13.0 | pypi.org/project/PyJWT | 2026-07-06 | Runtime dependency: verify MCP OAuth 2.1 bearer access tokens (D12) and the proxy's signed identity assertion (D15). Declared with the `crypto` extra, which pulls `cryptography`: ES256 and RS256 verification needs it, and relying on another dependency to supply it would let the assertion path break silently. Also a transitive dep of mcp; pinned directly since Ladon imports it. Pinned in pyproject and uv.lock. |
+| PyJWT | 2.13.0 | pypi.org/project/PyJWT | 2026-07-06 | Runtime dependency: verify MCP OAuth 2.1 bearer access tokens (D12) and the proxy's signed identity assertion (D15). Declared with the `crypto` extra, which pulls `cryptography`: ES256 and RS256 verification needs it, and relying on another dependency to supply it would let the assertion path break silently. Also a transitive dep of mcp; pinned directly since Sero imports it. Pinned in pyproject and uv.lock. |
 | fastapi | 0.141.1 | pypi.org/project/fastapi | 2026-09-22 | Runtime dependency: the HTTP backend serving the UI's routes and the static UI (D14). Chosen over bare Starlette for request-body validation and the typed dependency injection the route gates use. Its Starlette `TestClient` (on the existing transitive httpx) is how the routes are tested, so no test dependency is added. Pinned in pyproject and uv.lock. |
-| uvicorn | 0.50.2 | pypi.org/project/uvicorn | 2026-09-22 | Runtime dependency: the ASGI server that runs the backend (`uvicorn --factory ladon.web.app:build_default_app`) (D14). Pinned in pyproject and uv.lock. |
+| uvicorn | 0.50.2 | pypi.org/project/uvicorn | 2026-09-22 | Runtime dependency: the ASGI server that runs the backend (`uvicorn --factory sero.web.app:build_default_app`) (D14). Pinned in pyproject and uv.lock. |
 
 ## Frontend (UI)
 

@@ -1,6 +1,6 @@
 ---
 name: Question
-about: Ask how ladon works or how to use it
+about: Ask how sero works or how to use it
 labels: question
 ---
 

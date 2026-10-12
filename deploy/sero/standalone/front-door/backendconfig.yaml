@@ -1,0 +1,48 @@
+# The backend service's settings: how it is health checked, and who may
+# reach it.
+#
+# The Service picks this up through its `cloud.google.com/backend-config`
+# annotation (../service.yaml). Applying this file alone changes nothing;
+# the annotation is what binds the two.
+#
+# ## Why the health check has to be spelled out
+#
+# Left to itself the load balancer health checks `/` on the Service's port,
+# and `/` on the backend is the UI's index page, which a deployment serving
+# the API alone does not have. The check then fails, the backend service is
+# UNHEALTHY, and every request gets a 502 while the pod is running and
+# perfectly well. Name the port and the path.
+#
+# `/healthz` is the right target because it is unauthenticated on purpose: a
+# probe carries no identity. Every `/api` route would answer 401 to a health
+# checker, which is also an unhealthy backend.
+#
+# ## Why there are no OAuth client credentials
+#
+# Every guide written before 2026 says the `iap` block needs an
+# `oauthclientCredentials` secret holding a client id and secret created by
+# hand in the cloud console. That is no longer true, and it is no longer
+# possible: the OAuth client administration API was shut down in 2026, so
+# there is no way to mint a per-application client for this purpose. IAP
+# now uses a Google-managed client, and the block below is the whole of the
+# configuration. Adding `oauthclientCredentials` pointing at a Secret you
+# cannot create is the failure this note exists to prevent.
+#
+# Enabling IAP here authenticates callers. It does not authorize them: a
+# person also needs `roles/iap.httpsResourceAccessor` on this backend
+# service, and until somebody has it everybody gets a Google sign-in page
+# followed by a refusal. See docs/deployment-order.md.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: sero
+  namespace: sero
+  labels:
+    app.kubernetes.io/name: sero
+spec:
+  healthCheck:
+    type: HTTP
+    port: 8000
+    requestPath: /healthz
+  iap:
+    enabled: true

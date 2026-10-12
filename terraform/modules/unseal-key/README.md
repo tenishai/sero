@@ -2,13 +2,13 @@
 
 Provision the cloud KMS key OpenBao uses for auto-unseal (D2a), and grant the
 OpenBao identity permission to use it. There is one module per cloud; they share
-a single input/output contract so the rest of Ladon does not care which cloud is
+a single input/output contract so the rest of Sero does not care which cloud is
 underneath. This is the multi-cloud rule applied to the substrate: pluggable from
 the start, not one cloud generalized later.
 
 The substrate layer (Terraform) owns these. Their output feeds the config layer:
 the `seal_config` output maps one-to-one onto the `deployment.kms` block that
-`src/ladon/config/seal.py` renders into the OpenBao seal stanza.
+`src/sero/config/seal.py` renders into the OpenBao seal stanza.
 
 Modules prefer the official cloud-provider registry modules over hand-rolled
 resource blocks, pinned to a stable version in `docs/versions.md`.

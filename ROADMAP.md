@@ -1,6 +1,6 @@
 # Roadmap
 
-This is the phased plan for Ladon at a glance. The architecture and the
+This is the phased plan for Sero at a glance. The architecture and the
 decisions behind it are in [docs/design.md](docs/design.md). The plan is
 deliberately incremental: each phase is releasable and builds on the last.
 Foundations first, quality over velocity.
@@ -29,7 +29,7 @@ the architecture in [docs/design.md](docs/design.md) and this roadmap.
 ## Phase 1: Understand the sources, design the baseline
 
 Read the two existing source repos read-only, document their architecture, and
-design how Ladon pulls the useful parts in and rebuilds them generically. Two
+design how Sero pulls the useful parts in and rebuilds them generically. Two
 mandates apply to everything brought over: scrub all company branding, and
 generalize and slim down to a small handful of generic namespaces, policies, and
 auth methods driven by configuration.

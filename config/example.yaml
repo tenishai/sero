@@ -1,8 +1,8 @@
-# Example Ladon deployment configuration. Copy this, customize it, and keep it
+# Example Sero deployment configuration. Copy this, customize it, and keep it
 # in your own configuration repository. Every value here is a placeholder.
 #
 # This file holds names, paths, and references only. Never put secret values in
-# a Ladon config; secrets live only in OpenBao.
+# a Sero config; secrets live only in OpenBao.
 
 # Platform settings for one deployment. The layers that consume these define
 # their own detailed schemas; the shape below is illustrative.
@@ -15,9 +15,9 @@ deployment:
   # is rejected rather than honoured. BAO_ADDR overrides the address.
   openbao:
     address: https://vault.example.com
-  # Where the built UI lives, for the backend to serve. LADON_UI_DIST overrides
+  # Where the built UI lives, for the backend to serve. SERO_UI_DIST overrides
   # it. Omit both to run the API alone (the UI's dev server proxies to it).
-  ui_dist: /srv/ladon/ui
+  ui_dist: /srv/sero/ui
   # Revealing a plaintext value in the UI. Off unless a deployment turns it on;
   # with it off the reveal route answers 403 for everyone.
   reveal:
@@ -48,7 +48,7 @@ deployment:
 # value may carry an "<issuer>:" prefix, which is stripped.
 identity:
   header: x-goog-authenticated-user-email
-  # The local development hatch: with this true, LADON_DEV_IDENTITY names the
+  # The local development hatch: with this true, SERO_DEV_IDENTITY names the
   # caller and the backend warns at startup that identity is unverified. Leave
   # it false everywhere a second person can reach the process. It is ignored
   # entirely when an assertion is configured below.
@@ -103,8 +103,8 @@ access:
 #   - name: provisioner
 #     issuer: https://issuer.example.com
 #     jwks_url: https://issuer.example.com/keys   # https only
-#     audience: https://ladon.example.com/service
-#     subject: system:serviceaccount:ladon:provisioner
+#     audience: https://sero.example.com/service
+#     subject: system:serviceaccount:sero:provisioner
 #     # OpenBao namespaces this caller may write in. A nested path is fine.
 #     # Two of them may not end in the same segment: store names are built
 #     # from that segment, so `platform/team-a` and `other/team-a` would name
@@ -132,7 +132,7 @@ access:
 # Applications are not listed here; each is onboarded by command, against this
 # same config:
 #
-#   scripts/ladon plan --phase app-onboarding --config config/example.yaml \
+#   scripts/sero plan --phase app-onboarding --config config/example.yaml \
 #     --team team-a --app sample --cluster cluster-a
 #
 # which renders that application's own policy, role, service account and store.

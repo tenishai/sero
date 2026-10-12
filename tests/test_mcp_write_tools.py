@@ -8,11 +8,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base
-from ladon.hygiene import REDACTED, PlaceholderSecretError, WriteRefused, mask
-from ladon.mcp.ports import SecretDetail, SecretPath, WriteResult
-from ladon.mcp.server import (
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base
+from sero.hygiene import REDACTED, PlaceholderSecretError, WriteRefused, mask
+from sero.mcp.ports import SecretDetail, SecretPath, WriteResult
+from sero.mcp.server import (
     AccessDeniedError,
     WrongEnvironment,
     create_secret_impl,

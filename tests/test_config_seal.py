@@ -2,14 +2,14 @@
 
 import pytest
 
-from ladon.config.seal import (
+from sero.config.seal import (
     AWS_KMS,
     AZURE_KEY_VAULT,
     GCP_CKMS,
     SHAMIR,
     render_seal,
 )
-from ladon.config.teams import ConfigError
+from sero.config.teams import ConfigError
 
 
 def test_shamir_when_no_config():

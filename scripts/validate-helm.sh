@@ -2,7 +2,7 @@
 #
 # validate-helm.sh - contract check for the OpenBao install layer.
 #
-# Renders the pinned OpenBao chart with Ladon's values to prove they are valid
+# Renders the pinned OpenBao chart with Sero's values to prove they are valid
 # against that chart version. This is the contract test described in
 # docs/testing.md for the install layer: it does not deploy anything.
 #
@@ -26,7 +26,7 @@ render() {
   # render <label> <values-args...>
   local label="$1"; shift
   echo -n "render: ${label} ... "
-  if helm template ladon-openbao "$CHART" --version "$CHART_VERSION" "$@" >/dev/null; then
+  if helm template sero-openbao "$CHART" --version "$CHART_VERSION" "$@" >/dev/null; then
     echo "ok"
   else
     echo "FAILED"

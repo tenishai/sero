@@ -1,5 +1,5 @@
 [project]
-name = "tenish-ladon"
+name = "tenish-sero"
 version = "0.1.0"
 description = "Open-source secrets and vault management built on OpenBao"
 requires-python = ">=3.14"
@@ -29,7 +29,7 @@ dev = [
 ]
 
 [tool.uv]
-# Ladon's Python code is run as tooling, not built into a distributable
+# Sero's Python code is run as tooling, not built into a distributable
 # package, so uv does not need a build backend for it.
 package = false
 

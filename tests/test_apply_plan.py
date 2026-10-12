@@ -6,7 +6,7 @@ and duplicate rejection, with no live OpenBao required.
 
 import pytest
 
-from ladon.apply.plan import (
+from sero.apply.plan import (
     KV_VERSION,
     Plan,
     WriteOp,
@@ -16,13 +16,13 @@ from ladon.apply.plan import (
     policy_ops,
     root_config_plan,
 )
-from ladon.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
-from ladon.config.policies import (
+from sero.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
+from sero.config.policies import (
     external_secrets_read,
     team_readonly,
     team_readwrite,
 )
-from ladon.config.teams import ConfigError, Team
+from sero.config.teams import ConfigError, Team
 
 
 def sample_auth_methods():
@@ -38,7 +38,7 @@ def sample_auth_methods():
     )
     oidc = oidc_auth(
         discovery_url="https://idp.example/.well-known/openid-configuration",
-        client_id="ladon",
+        client_id="sero",
         client_secret_ref="secret/oidc-client",
         roles=[
             oidc_role(
@@ -55,12 +55,12 @@ def test_write_op_summary_is_value_free():
     op = WriteOp(
         kind="configure-auth-method",
         path="auth/oidc/config",
-        data={"oidc_client_secret_ref": "secret/oidc-client", "oidc_client_id": "ladon"},
+        data={"oidc_client_secret_ref": "secret/oidc-client", "oidc_client_id": "sero"},
     )
     summary = op.summary()
     assert summary == "configure-auth-method auth/oidc/config"
     assert "secret/oidc-client" not in summary
-    assert "ladon" not in summary
+    assert "sero" not in summary
 
 
 def test_kv_mount_op_pins_v2():

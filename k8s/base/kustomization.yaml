@@ -3,14 +3,14 @@
 # The Deployment and the Service are deliberately absent: the generator emits
 # them from gojira.yaml, and a second copy here would be two sources of truth
 # for one object. A cluster running without that platform uses
-# deploy/ladon/standalone, which carries its own pair.
+# deploy/sero/standalone, which carries its own pair.
 #
 # Nothing cluster-scoped lives here: the generator refuses it. The ClusterRole
 # and its standalone binding are in ../cluster, applied once by an operator.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: ladon
+namespace: sero
 
 resources:
   - serviceaccount.yaml

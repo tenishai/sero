@@ -7,8 +7,8 @@ patched out where construction would otherwise build one.
 
 import pytest
 
-from ladon.apply import client as client_mod
-from ladon.apply.client import (
+from sero.apply import client as client_mod
+from sero.apply.client import (
     AppRoleAuth,
     BaoConnection,
     BaoConnectionError,
@@ -16,7 +16,7 @@ from ladon.apply.client import (
     TokenAuth,
     connect,
 )
-from ladon.hygiene import PlaceholderSecretError
+from sero.hygiene import PlaceholderSecretError
 
 
 class FakeApprole:

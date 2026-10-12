@@ -52,14 +52,14 @@ Then:
 
 ```
 uv sync
-LADON_DATABASE_URL=sqlite:///./ladon.db \
-LADON_CONFIG=./dev-config.yaml \
-LADON_DEV_IDENTITY=you@example.com \
+SERO_DATABASE_URL=sqlite:///./sero.db \
+SERO_CONFIG=./dev-config.yaml \
+SERO_DEV_IDENTITY=you@example.com \
 BAO_TOKEN=<a token you already have> \
-PYTHONPATH=src uv run python -m ladon.web
+PYTHONPATH=src uv run python -m sero.web
 ```
 
-`python -m ladon.web` migrates the datastore and then serves on port 8000.
+`python -m sero.web` migrates the datastore and then serves on port 8000.
 Note your own address appears twice on purpose: under `admins` so you can use
 the admin routes, and under `members` so you hold a namespace, because being an
 admin grants none.
@@ -82,31 +82,31 @@ backend serves the API only and the UI comes from Vite.
 
 ### Serving the built UI from the backend
 
-Build it once (`cd ui && npm ci && npm run build`) and point `LADON_UI_DIST` at
+Build it once (`cd ui && npm ci && npm run build`) and point `SERO_UI_DIST` at
 `ui/dist`. Unknown non-`/api` paths then return `index.html` so the client-side
 router works on a refresh.
 
 ### Running under uvicorn directly
 
 ```
-PYTHONPATH=src uv run uvicorn --factory ladon.web.app:build_default_app --port 8000
+PYTHONPATH=src uv run uvicorn --factory sero.web.app:build_default_app --port 8000
 ```
 
 This does **not** run migrations. Run them first
-(`LADON_DATABASE_URL=... uv run alembic upgrade head`) or use `python -m
-ladon.web`, which migrates and then serves.
+(`SERO_DATABASE_URL=... uv run alembic upgrade head`) or use `python -m
+sero.web`, which migrates and then serves.
 
 ## Environment
 
 | Variable | Required | What it does |
 | --- | --- | --- |
-| `LADON_CONFIG` | no | Path to the deployment config (`config/example.yaml` is the template). Without it, and without `LADON_CONFIG_YAML`, nobody holds a namespace and nobody is an admin. |
-| `LADON_CONFIG_YAML` | no | The same document inline, for a deployment that delivers config as environment variables rather than a mounted file. `LADON_CONFIG` wins when both are set. |
-| `LADON_DATABASE_URL` | for anything but a smoke test | The datastore. Without it the routes that need one answer 503. |
-| `LADON_UI_DIST` | no | Directory holding the built UI. Overrides `deployment.ui_dist`. |
-| `LADON_DEV_IDENTITY` | no | The local identity hatch. Inert unless the config sets `identity.allow_dev_identity`, and inert whenever `identity.assertion` is configured. |
-| `LADON_MIGRATIONS_DIR` | **yes, in an image or an installed layout** | Where the Alembic revisions live. The default is computed from the source tree (`<repo>/migrations`), which only exists when the process runs from a checkout. Any layout that installs the package without the repository around it must either set this or copy `migrations/` to the default path, or boot fails with `no migration scripts at ...`. |
-| `LADON_HOST` / `LADON_PORT` | no | What `python -m ladon.web` binds. Defaults to every interface on 8000. |
+| `SERO_CONFIG` | no | Path to the deployment config (`config/example.yaml` is the template). Without it, and without `SERO_CONFIG_YAML`, nobody holds a namespace and nobody is an admin. |
+| `SERO_CONFIG_YAML` | no | The same document inline, for a deployment that delivers config as environment variables rather than a mounted file. `SERO_CONFIG` wins when both are set. |
+| `SERO_DATABASE_URL` | for anything but a smoke test | The datastore. Without it the routes that need one answer 503. |
+| `SERO_UI_DIST` | no | Directory holding the built UI. Overrides `deployment.ui_dist`. |
+| `SERO_DEV_IDENTITY` | no | The local identity hatch. Inert unless the config sets `identity.allow_dev_identity`, and inert whenever `identity.assertion` is configured. |
+| `SERO_MIGRATIONS_DIR` | **yes, in an image or an installed layout** | Where the Alembic revisions live. The default is computed from the source tree (`<repo>/migrations`), which only exists when the process runs from a checkout. Any layout that installs the package without the repository around it must either set this or copy `migrations/` to the default path, or boot fails with `no migration scripts at ...`. |
+| `SERO_HOST` / `SERO_PORT` | no | What `python -m sero.web` binds. Defaults to every interface on 8000. |
 | `BAO_ADDR` or `VAULT_ADDR` | no | OpenBao address, when the config does not give one. |
 | `BAO_TOKEN` or `VAULT_TOKEN` | yes, to reach OpenBao | The token the backend authenticates with. It is never read from the config file, and a config that names one is rejected. |
 
@@ -152,7 +152,7 @@ identity:
     header: x-proxy-assertion
     jwks_url: https://proxy.example.com/keys
     issuer: https://proxy.example.com
-    audience: https://ladon.example.com
+    audience: https://sero.example.com
     email_claim: email
 ```
 
@@ -184,7 +184,7 @@ value gets replaced by an attacker's.
 
 ### The development hatch
 
-Set `identity.allow_dev_identity: true` in the config and `LADON_DEV_IDENTITY`
+Set `identity.allow_dev_identity: true` in the config and `SERO_DEV_IDENTITY`
 in the environment and every request with no header is attributed to that
 address. The backend logs a warning at startup saying identity is unverified.
 Use it on a laptop and nowhere else: with it on, anyone who can set an
@@ -195,7 +195,7 @@ entirely.
 ## One deployment, one environment
 
 `deployment.environment` names the single environment this deployment serves.
-One Ladon talks to one OpenBao, whose KV holds one set of paths, so a request
+One Sero talks to one OpenBao, whose KV holds one set of paths, so a request
 labelled `prod` and a request labelled `dev` would read and write the same
 secrets under different names. Any route taking an `env` refuses another with
 `400 {"error": "this deployment serves environment 'dev'"}`, and `/api/me`
@@ -205,7 +205,7 @@ an MCP client cannot write prod-labelled secrets into a dev vault's paths
 either. An instance that does not declare one pins nothing and says so at
 startup.
 
-Serving two environments means running two Ladons against two OpenBaos.
+Serving two environments means running two Seros against two OpenBaos.
 
 ## Access
 
@@ -275,8 +275,8 @@ service_callers:
   - name: provisioner
     issuer: https://issuer.example.com
     jwks_url: https://issuer.example.com/keys
-    audience: https://ladon.example.com/service
-    subject: system:serviceaccount:ladon:provisioner
+    audience: https://sero.example.com/service
+    subject: system:serviceaccount:sero:provisioner
     namespaces: [team-a]
     k8s_namespaces: []
     acting_email_required: true
@@ -385,7 +385,7 @@ refused, and nothing is written without `apply`.
   "acting_email": "operator@example.com",
   "namespace": "team-a",
   "path": "apps/sample/demo",
-  "values": {"DB_URL": "<the value, never logged or stored by Ladon>"},
+  "values": {"DB_URL": "<the value, never logged or stored by Sero>"},
   "remove_keys": [],
   "apply": false
 }
@@ -481,7 +481,7 @@ the record still says what was destroyed once the path is gone.
 The delete runs whether or not the read found anything, and the path is read
 once more afterwards. OpenBao answers a metadata delete the same either way, so
 skipping it on the strength of a read taken a moment earlier only adds a race;
-and a delete Ladon reported that OpenBao did not perform is worth catching here
+and a delete Sero reported that OpenBao did not perform is worth catching here
 rather than the next time somebody finds the credential still live.
 
 Two grants this route needs that the write routes do not. The backend's OpenBao
@@ -518,7 +518,7 @@ verbs and object names:
   "namespace": "team-a",
   "app": "sample",
   "path": "apps/sample/demo",
-  "store": "ladon-team-a-sample-<digest>",
+  "store": "sero-team-a-sample-<digest>",
   "k8s_namespace": "sample",
   "name": "sample-demo",
   "target_name": "sample-demo",
@@ -539,7 +539,7 @@ onboards the application first, from the same `app-onboarding` phase the CLI
 and the admin endpoint run: the read-only policy on `apps/<app>/` in the
 caller's pinned OpenBao namespace, the JWT role on the deployment's
 `jwt-<cluster>` mount bound to the application's own service account, that
-service account in Ladon's namespace, and the ClusterSecretStore admitted into
+service account in Sero's namespace, and the ClusterSecretStore admitted into
 the one Kubernetes namespace the sync names (the application's own, or one the
 caller is pinned to). Nothing is rendered twice: the phase runner is handed the
 flags an operator would type.
@@ -571,13 +571,13 @@ An ExternalSecret that is **already there** has to be this application's before
 it is converged, and the check is the one the `DELETE` applies: the live object
 must read through this application's own `ClusterSecretStore` and pull a path
 inside `apps/<app>/`, or the answer is `403`, and its live field manager must
-be `ladon`, or the answer is `409`. A name nobody has used is still this
+be `sero`, or the answer is `409`. A name nobody has used is still this
 caller's to create.
 
 This is not belt and braces on top of the delete gate; it is what makes that
 gate mean anything. `app` is a field in the body and `k8s_namespace` defaults
-to it, and a server-side apply under Ladon's own field manager takes the fields
-it sets from Ladon's own earlier apply without a conflict, because as far as
+to it, and a server-side apply under Sero's own field manager takes the fields
+it sets from Sero's own earlier apply without a conflict, because as far as
 the API server can tell that is the manager doing its job. Without this check,
 a caller pinned to one namespace could write over another team's live
 ExternalSecret, repoint it at a store it does control, and then delete the
@@ -597,7 +597,7 @@ being precise about which does what:
   another namespace referencing that store gets nothing.
 - This pinning decides **where an object may be written on the cluster**. That
   is a separate question, and nothing in ESO answers it: the backend holds the
-  `ladon` field manager, so without this an admitted caller could create or
+  `sero` field manager, so without this an admitted caller could create or
   replace an ExternalSecret in any namespace on the cluster. The object would
   read no secrets, but creating and taking ownership of objects in namespaces
   the caller has no business in is its own problem.
@@ -613,7 +613,7 @@ without this leaves an object ESO keeps reconciling: an error in the operator's
 log every interval over a path that is gone on purpose, and the Kubernetes
 Secret it owns still sitting there.
 
-**It takes the Secret with it.** Ladon renders every ExternalSecret with
+**It takes the Secret with it.** Sero renders every ExternalSecret with
 `creationPolicy: Owner`, so the Secret ESO creates carries an owner reference
 back to it, and when the ExternalSecret goes the garbage collector deletes the
 Secret. A pod already running keeps the copy it mounted until it restarts, and
@@ -639,7 +639,7 @@ dry run tells a caller what an apply would take away.
   "applied": true,
   "namespace": "team-a",
   "app": "sample",
-  "store": "ladon-team-a-sample-<digest>",
+  "store": "sero-team-a-sample-<digest>",
   "k8s_namespace": "sample",
   "name": "sample-demo",
   "removes_target_secret": true,
@@ -677,8 +677,8 @@ resolving the way they did when the object was created.
 
 Four rules stand in front of it.
 
-- **It must be Ladon's object.** The live object is read at the moment of the
-  delete, and if its `managedFields` do not record `ladon`, the answer is `409`
+- **It must be Sero's object.** The live object is read at the moment of the
+  delete, and if its `managedFields` do not record `sero`, the answer is `409`
   naming the manager that does own it and nothing is deleted. This is the
   mirror of never passing `--force-conflicts` on the apply side: taking a field
   from another manager is an operator's decision, and so is deleting that
@@ -687,7 +687,7 @@ Four rules stand in front of it.
 - **It must be this application's object, in this caller's namespace.** `app`
   is a field in the body and `k8s_namespace` defaults to it, so the ownership
   check alone would let a caller pinned to one OpenBao namespace name another
-  team's application and reach an ExternalSecret Ladon manages for somebody
+  team's application and reach an ExternalSecret Sero manages for somebody
   else. The live object has to read through this application's own store,
   whose name is derived exactly as the POST derives it, with
   `secretStoreRef.kind` of `ClusterSecretStore` (ESO's default for a ref that
@@ -724,7 +724,7 @@ them at onboarding. Body: `acting_email`, `namespace`, `app`, optional
 `k8s_namespace` (the application's own unless the caller is pinned to
 another), `apply`. Cluster first, store before service account (with the
 store gone nothing can log in as the account), then OpenBao, role before
-policy. Every cluster object is read and checked for the `ladon` field
+policy. Every cluster object is read and checked for the `sero` field
 manager before it goes, an object that is not there is `absent`, and a dry
 run removes nothing. It is refused with a `409` while any ExternalSecret in
 the application's Kubernetes namespace still reads through the store: remove
@@ -736,11 +736,11 @@ must name its cluster (`deployment.cluster`) to name the role's mount.
   "applied": true,
   "namespace": "team-a",
   "app": "sample",
-  "store": "ladon-team-a-sample-<digest>",
+  "store": "sero-team-a-sample-<digest>",
   "k8s_namespace": "sample",
   "report": [
-    "ClusterSecretStore/ladon-team-a-sample-<digest>: delete",
-    "ServiceAccount/ladon/eso-team-a-sample-<digest>: delete",
+    "ClusterSecretStore/sero-team-a-sample-<digest>: delete",
+    "ServiceAccount/sero/eso-team-a-sample-<digest>: delete",
     "openbao auth role eso-team-a-sample-<digest>: delete",
     "openbao policy eso-sample-readonly: delete"
   ],
@@ -762,7 +762,7 @@ must name its cluster (`deployment.cluster`) to name the role's mount.
 - Place a cluster object in a Kubernetes namespace its config does not pin to
   it, or name a target Secret outside one. Also `403`; see above.
 - Read a value. The lane's read returns key names, and the reveal route, the
-  one place a plaintext value leaves Ladon, is not on it.
+  one place a plaintext value leaves Sero, is not on it.
 - Touch the allow list, approve a namespace request, or run an apply phase.
   Those are human routes and stay human.
 - Off-board an application: remove its ClusterSecretStore, its JWT role, its
@@ -803,17 +803,17 @@ carries three arguments saying how it got there:
 | `via` | The caller's configured name: which machine. |
 | `subject` | The identity that machine proved. |
 
-`user_email` is the person the call named, not the person Ladon authenticated,
+`user_email` is the person the call named, not the person Sero authenticated,
 and the difference matters when reading these rows. On the human lane that
 column is an address a proxy verified. Here it is an address a machine supplied,
 and nothing the lane decided depended on it: a caller may name any address at
-all, including one that has never used Ladon. The three arguments above are what
+all, including one that has never used Sero. The three arguments above are what
 is actually proven, so read such a row as "`via` acted, and said it acted for
 `user_email`". A row with no `lane` is a person's own.
 
-Ladon does not require the acting email to be on the allow list, on purpose. The
+Sero does not require the acting email to be on the allow list, on purpose. The
 lane exists to provision secrets for people at the moment they ask an automated
-system for something, and many of those people never touch Ladon directly.
+system for something, and many of those people never touch Sero directly.
 
 Denials are recorded too, including the ones that never got past the token.
 Those carry `via` as the caller the token claimed to be, or `unknown` when it
@@ -902,7 +902,7 @@ GET /api/admin/jobs?kind=app-onboarding&limit=20
     {"surface": "openbao", "action": "create",
      "target": "[team-a] write-policy sys/policies/acl/eso-sample-readonly"},
     {"surface": "cluster", "action": "already current",
-     "target": "ServiceAccount/ladon/eso-team-a-sample-a84085"}
+     "target": "ServiceAccount/sero/eso-team-a-sample-a84085"}
   ],
   "error": null
 }
@@ -957,15 +957,15 @@ finishes.
 
 ## Migrations
 
-Migrations run at boot, from `LADON_DATABASE_URL`. SQLite is the development
-target and works with a file path (`sqlite:////data/ladon.db`, four slashes for
+Migrations run at boot, from `SERO_DATABASE_URL`. SQLite is the development
+target and works with a file path (`sqlite:////data/sero.db`, four slashes for
 an absolute path); PostgreSQL is the answer for anything shared
-(`postgresql+psycopg://user@host:5432/ladon`; install the driver with
+(`postgresql+psycopg://user@host:5432/sero`; install the driver with
 `uv sync --frozen --extra postgres`, it is not in the base dependencies). A failed upgrade is fatal: the
 process exits non-zero rather than serving against a schema it cannot trust. An
-absent `LADON_DATABASE_URL` is not a failure; the process warns and starts.
+absent `SERO_DATABASE_URL` is not a failure; the process warns and starts.
 
-In an image, set `LADON_MIGRATIONS_DIR` or copy `migrations/` where the default
+In an image, set `SERO_MIGRATIONS_DIR` or copy `migrations/` where the default
 expects it. See the environment table.
 
 ## Errors
@@ -1006,7 +1006,7 @@ Arguments and error messages are both redacted before they are stored, so a
 token quoted inside a message does not reach the table.
 
 The agent surface writes the same rows for the same reasons: the recorder lives
-in `ladon.audit`, which neither surface owns, and every tool call runs through
+in `sero.audit`, which neither surface owns, and every tool call runs through
 it. A tool call refused before it starts, or one that fails halfway, leaves a
 `denied` or `error` row there exactly as it does here.
 

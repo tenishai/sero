@@ -1,7 +1,7 @@
 /**
  * Which environments this deployment actually serves.
  *
- * One Ladon talks to one OpenBao, which holds one environment's secrets, so the
+ * One Sero talks to one OpenBao, which holds one environment's secrets, so the
  * backend refuses a request naming any other and reports the one it serves on
  * /api/me. Offering the branding list regardless would show choices that answer
  * 400 on click.

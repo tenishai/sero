@@ -21,15 +21,15 @@ from starlette.testclient import TestClient
 from fake_cluster import FakeCluster
 from fake_openbao import FakeOpenBao
 from fake_secrets import StubSecrets
-from ladon.apply import cli
-from ladon.config.loader import load_deployment_config
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base
-from ladon.install.eso import ESOInstallResult
-from ladon.install.k8s import ESOInstall, converge_documents
-from ladon.web.app import create_app
-from ladon.web.jobs import JobOutcome, JobRunner
-from ladon.web.settings import (
+from sero.apply import cli
+from sero.config.loader import load_deployment_config
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base
+from sero.install.eso import ESOInstallResult
+from sero.install.k8s import ESOInstall, converge_documents
+from sero.web.app import create_app
+from sero.web.jobs import JobOutcome, JobRunner
+from sero.web.settings import (
     DEFAULT_IDENTITY_HEADER,
     IdentitySettings,
     WebSettings,
@@ -53,7 +53,7 @@ teams:
 # The application identity and store the app-onboarding phase renders for
 # team-a's "sample" application; see tests/test_config_apps.py.
 APP_IDENTITY = "eso-team-a-sample-a84085"
-APP_STORE = "ladon-team-a-sample-a84085"
+APP_STORE = "sero-team-a-sample-a84085"
 
 ESO_RUNNING = ESOInstall(
     namespace="external-secrets", service_account="external-secrets", version="v0.19.2"
@@ -64,7 +64,7 @@ ESO_RUNNING = ESOInstall(
 def sessions(tmp_path):
     # A file, not ":memory:": a job runs on its own connection while the
     # request's is still open, which only a real file exercises.
-    engine = create_engine(f"sqlite:///{tmp_path / 'ladon.db'}")
+    engine = create_engine(f"sqlite:///{tmp_path / 'sero.db'}")
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 
@@ -177,7 +177,7 @@ def test_a_dry_run_app_onboarding_job_reports_the_diff(client, vault, cluster):
         {
             "surface": "cluster",
             "action": "create",
-            "target": f"ServiceAccount/ladon/{APP_IDENTITY}",
+            "target": f"ServiceAccount/sero/{APP_IDENTITY}",
         },
         {
             "surface": "cluster",
@@ -356,7 +356,7 @@ def test_an_unknown_phase_is_not_a_job(client):
 
 
 def test_a_request_cannot_name_a_configuration(client):
-    # The deployment's own config is the one Ladon runs with. A body that names
+    # The deployment's own config is the one Sero runs with. A body that names
     # another is refused rather than ignored.
     answer = as_admin(
         client, "POST", "/api/admin/apply/root-config", json={"config": "/tmp/other.yaml"}
@@ -576,14 +576,14 @@ def test_the_audit_row_names_the_inputs_and_not_the_secret_reference(
         teams=["team-b"],
         jwt_discovery_url="https://issuer.example/.well-known/openid-configuration",
         oidc_discovery_url="https://issuer.example/.well-known/openid-configuration",
-        oidc_client_id="ladon",
-        oidc_client_secret_ref="kv/data/ladon/oidc#client_secret",
+        oidc_client_id="sero",
+        oidc_client_secret_ref="kv/data/sero/oidc#client_secret",
     )
     with sessions() as session:
         (row,) = repo.recent_calls(session)
     args = row.redacted_args["args"]
     assert args["teams"] == ["team-b"]
-    assert args["oidc_client_id"] == "ladon"
+    assert args["oidc_client_id"] == "sero"
     # A reference to a secret is still a way to find one, and it is not needed
     # to know what was asked for.
     assert "oidc_client_secret_ref" not in args

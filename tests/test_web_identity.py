@@ -10,14 +10,14 @@ import logging
 import pytest
 from starlette.datastructures import Headers
 
-from ladon.web.identity import (
+from sero.web.identity import (
     DEV_IDENTITY_ENV,
     IdentityReader,
     NoIdentityError,
     normalize_email,
     resolve_dev_identity,
 )
-from ladon.web.settings import DEFAULT_IDENTITY_HEADER, IdentitySettings
+from sero.web.settings import DEFAULT_IDENTITY_HEADER, IdentitySettings
 
 
 def test_normalize_strips_an_issuer_prefix_and_lowercases():

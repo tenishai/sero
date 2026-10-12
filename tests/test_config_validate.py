@@ -2,8 +2,8 @@
 
 import pytest
 
-from ladon.config.teams import ConfigError
-from ladon.config.validate import require, require_all, require_str
+from sero.config.teams import ConfigError
+from sero.config.validate import require, require_all, require_str
 
 
 def test_require_passes_on_truthy():

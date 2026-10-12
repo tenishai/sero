@@ -1,14 +1,14 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: ladon
+  name: sero
   labels:
-    app.kubernetes.io/name: ladon
+    app.kubernetes.io/name: sero
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: ladon
+  name: sero
 subjects:
   - kind: ServiceAccount
-    name: ladon
-    namespace: ladon
+    name: sero
+    namespace: sero

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Ladon are documented in this file.
+All notable changes to Sero (named Ladon until 2026-10-12) are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
@@ -11,6 +11,27 @@ point of view, not a list of commit subjects.
 ## [Unreleased]
 
 ### Changed
+
+- **Renamed: Ladon is now Sero.** The repository is `tenishai/sero`, the
+  distribution is `tenish-sero`, the import package is `sero` and the CLI is
+  `sero` (`scripts/sero` from a checkout, `python -m sero.web` in the image).
+  Everything an installation touches follows the name, so an existing
+  deployment moves deliberately rather than by surprise:
+  - environment variables: `LADON_*` is `SERO_*` (`SERO_DATABASE_URL`,
+    `SERO_CONFIG`, `SERO_CONFIG_YAML`, `SERO_PORT`, `SERO_UI_DIST`,
+    `SERO_MIGRATIONS_DIR`, `SERO_DEV_IDENTITY`);
+  - namespace labels: `ladon.dev/proxy`, `ladon.dev/eso` and
+    `ladon.dev/caller` are `sero.dev/*`; relabel the proxy, ESO and caller
+    namespaces before the new image serves, or its network policies admit
+    nobody;
+  - the namespace, ServiceAccount, Role and ClusterRole are named `sero`, and
+    the deploy contract is `app: sero`;
+  - the default datastore path is `/data/sero.db`; an existing
+    `/data/ladon.db` keeps working when `SERO_DATABASE_URL` names it;
+  - the server-side-apply field manager is `sero`; objects an earlier
+    release applied as `ladon` are still recognised as this service's own.
+  Entries below this one describe the product under its old name and are
+  left as written.
 
 - **The deploy contract moved to the repository root.** `gojira.yaml` and `k8s/base/`
   now live where the deployment platform looks for them (it reads the contract at the

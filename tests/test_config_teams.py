@@ -2,7 +2,7 @@
 
 import pytest
 
-from ladon.config import ConfigError, Team, parse_teams
+from sero.config import ConfigError, Team, parse_teams
 
 
 def test_parse_minimal_team():

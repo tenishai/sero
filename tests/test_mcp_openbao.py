@@ -6,8 +6,8 @@ stores plaintext; the reader must only ever return masked values.
 
 import pytest
 
-from ladon.mcp.openbao import MAX_LISTED_SECRETS, OpenBaoSecrets, SecretNotDeleted
-from ladon.mcp.ports import SecretPathTaken
+from sero.mcp.openbao import MAX_LISTED_SECRETS, OpenBaoSecrets, SecretNotDeleted
+from sero.mcp.ports import SecretPathTaken
 
 # What the store says about when the current version was written.
 WRITTEN_AT = "2026-09-22T10:00:00.000000Z"
@@ -318,7 +318,7 @@ def test_a_delete_that_leaves_the_path_readable_raises():
 
 
 class Denies(FakeKvV2):
-    """A store that refuses the read. Not a 404: Ladon could not look."""
+    """A store that refuses the read. Not a 404: Sero could not look."""
 
     def read_secret_version(self, *, path, mount_point, raise_on_deleted_version=False):
         raise Forbidden("permission denied")

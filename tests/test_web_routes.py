@@ -18,13 +18,13 @@ from fake_assertion import SETTINGS as ASSERTION_SETTINGS
 from fake_assertion import token as assertion_token
 from fake_assertion import verifier as assertion_verifier
 from fake_secrets import StubSecrets
-from ladon.config.teams import ConfigError
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base, ToolCallLog
-from ladon.mcp.openbao import OpenBaoSecrets
-from ladon.web.app import create_app
-from ladon.web.groups import ConfigGroupSource
-from ladon.web.settings import (
+from sero.config.teams import ConfigError
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base, ToolCallLog
+from sero.mcp.openbao import OpenBaoSecrets
+from sero.web.app import create_app
+from sero.web.groups import ConfigGroupSource
+from sero.web.settings import (
     DEFAULT_IDENTITY_HEADER,
     AccessSettings,
     IdentitySettings,
@@ -108,7 +108,7 @@ def store():
 def sessions(tmp_path):
     # A file, not ":memory:": the audit path opens a second connection while the
     # request's is still open, and only a real file shows whether that works.
-    engine = create_engine(f"sqlite:///{tmp_path / 'ladon.db'}")
+    engine = create_engine(f"sqlite:///{tmp_path / 'sero.db'}")
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 
@@ -117,7 +117,7 @@ def sessions(tmp_path):
 def allowed(sessions):
     """The allow list gates the tool functions, so seed everyone the tests use.
 
-    The stranger is on it too: they are allowed to use Ladon and hold no
+    The stranger is on it too: they are allowed to use Sero and hold no
     namespace, which is what makes the namespace gate the thing under test
     rather than the allow list.
     """

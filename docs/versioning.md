@@ -1,13 +1,13 @@
 # Versioning
 
-This document covers how Ladon versions itself, how those versions relate to the
+This document covers how Sero versions itself, how those versions relate to the
 versions of the components it operates (OpenBao, the External Secrets Operator,
 Helm charts, Terraform providers), and the pin-everything rule that keeps builds
 reproducible.
 
-## Ladon's own version
+## Sero's own version
 
-Ladon follows [Semantic Versioning 2.0.0](https://semver.org/): `MAJOR.MINOR.PATCH`.
+Sero follows [Semantic Versioning 2.0.0](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
 - **MAJOR** changes when there is a breaking change to a public interface: the
   configuration schema a deployer provides, the CLI or API surface, the shape of
@@ -16,7 +16,7 @@ Ladon follows [Semantic Versioning 2.0.0](https://semver.org/): `MAJOR.MINOR.PAT
 - **MINOR** changes for backward-compatible features.
 - **PATCH** changes for backward-compatible fixes.
 
-While Ladon is pre-1.0 (`0.y.z`), the public surface is still settling. We treat
+While Sero is pre-1.0 (`0.y.z`), the public surface is still settling. We treat
 `0.MINOR` as the breaking-change axis and `0.y.PATCH` as additive or fixes, and
 we call out breaks loudly in the changelog regardless.
 
@@ -45,25 +45,25 @@ what changed from a deployer's point of view.
 
 ## Component versions
 
-Ladon operates software it does not own: OpenBao, the External Secrets Operator,
+Sero operates software it does not own: OpenBao, the External Secrets Operator,
 their Helm charts, container images, Terraform providers, and the language
 runtimes and GitHub Actions in the toolchain. These have their own version
-numbers, independent of Ladon's.
+numbers, independent of Sero's.
 
 The relationship:
 
-- **Ladon's version describes Ladon**, not the components. Upgrading the OpenBao
-  chart Ladon installs does not, by itself, dictate Ladon's version bump; the
-  bump is decided by how that change affects Ladon's own public surface and
+- **Sero's version describes Sero**, not the components. Upgrading the OpenBao
+  chart Sero installs does not, by itself, dictate Sero's version bump; the
+  bump is decided by how that change affects Sero's own public surface and
   defaults.
 - **Every component version is pinned exactly** and recorded in
   [versions.md](versions.md). That file is the single source of truth for "what
-  versions does this Ladon operate against."
+  versions does this Sero operate against."
 - A component bump is its own reviewed PR. It updates the pin in `versions.md`,
-  adds a `CHANGELOG.md` entry, and bumps Ladon's version per SemVer based on the
+  adds a `CHANGELOG.md` entry, and bumps Sero's version per SemVer based on the
   observable effect (often MINOR or PATCH; MAJOR if a default or interface
   breaks).
-- The compatibility a given Ladon release was tested against is exactly the set
+- The compatibility a given Sero release was tested against is exactly the set
   of pins in `versions.md` at that tag.
 
 ## Pin everything
@@ -83,4 +83,4 @@ runtime:
    verified against.
 
 Bumps are deliberate, reviewed PRs, never silent floats. This is what makes a
-Ladon tag reproducible months later.
+Sero tag reproducible months later.

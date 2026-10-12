@@ -1,12 +1,12 @@
 # Deployment order
 
-This document describes the order in which a Ladon deployment is brought up, from
+This document describes the order in which a Sero deployment is brought up, from
 an empty cloud project to a working platform that teams can use. It is the
-sequence Ladon's agent-driven apply model (D3 in [design.md](design.md))
+sequence Sero's agent-driven apply model (D3 in [design.md](design.md))
 orchestrates, and it follows from the baseline in [baseline.md](baseline.md).
 
 The order matters: most phases have hard prerequisites on earlier ones, and a
-phase started before its prerequisite is met fails, sometimes silently. Ladon's
+phase started before its prerequisite is met fails, sometimes silently. Sero's
 job is to encode this sequence and check each prerequisite before acting, rather
 than leaving an operator to run steps in the right order by hand. Every write is
 dry-run first: a plan or diff against live state, reviewed, then applied.
@@ -28,11 +28,11 @@ OpenBao and recording its recovery material); those are called out explicitly.
 
 ## Phases
 
-### 0. Cloud foundation (prerequisite, outside Ladon)
+### 0. Cloud foundation (prerequisite, outside Sero)
 
 The cloud projects, the network and its subnets, and the cluster-fleet grouping
-exist before Ladon runs. Ladon does not create these; it verifies they are
-present and reachable. This is deliberately out of scope so Ladon stays portable
+exist before Sero runs. Sero does not create these; it verifies they are
+present and reachable. This is deliberately out of scope so Sero stays portable
 across organizations that already manage their cloud foundation their own way.
 
 ### 1. Cloud substrate (Substrate)
@@ -43,7 +43,7 @@ KMS key for auto-unseal, and internal load balancing for the OpenBao endpoint.
 Prerequisite to watch: the identity that the cluster runs as must be granted use
 of the KMS key. In the source this grant lived outside the substrate definition,
 so a missing grant let the cluster come up but silently fail to auto-unseal.
-Ladon checks the grant as part of this phase.
+Sero checks the grant as part of this phase.
 
 ### 2. OpenBao install (Install)
 
@@ -63,7 +63,7 @@ auto-unseal configured in phase 2, the cluster unseals itself on restart
 thereafter; the recovery shares are the break-glass path if KMS is unavailable.
 Any auth plugin is registered here.
 
-This is the one irreducibly manual step. Ladon guides it and verifies the result
+This is the one irreducibly manual step. Sero guides it and verifies the result
 (initialized, unsealed, reachable) but never handles the recovery material or the
 root token beyond what the operator supplies for the next phase.
 
@@ -87,23 +87,23 @@ Independent of the config phases; it needs only a running OpenBao to scrape.
 
 Install ESO from its pinned chart on the platform cluster, and create the secret
 stores it needs: the cross-namespace read store, and one store per enabled cloud
-secret-manager target. ESO does all secret syncing and watching; Ladon installs
+secret-manager target. ESO does all secret syncing and watching; Sero installs
 and configures it but builds no custom sync worker.
 
 Pin ESO to one version across the fleet. The source ran the install at one
 version while some clusters carried a different, separately managed version,
-which produced custom-resource API mismatches; Ladon treats the ESO version as a
+which produced custom-resource API mismatches; Sero treats the ESO version as a
 single fleet-wide pin (see [versions.md](versions.md)).
 
 An operator that is already on the cluster is reused, not replaced. ESO is
 cluster-scoped and singular, so two operators fight over one set of custom
-resource definitions; before installing anything Ladon looks for a deployment
+resource definitions; before installing anything Sero looks for a deployment
 labelled `app.kubernetes.io/name=external-secrets` in any namespace, and when it
 finds one it records that operator's version and namespace and runs no helm
 command at all. You can tell which happened from the install report: it either
 reads `reusing external-secrets <version> in namespace <namespace>`, or names the
 pinned chart version it installed. To check by hand, run `kubectl get deploy -A
--l app.kubernetes.io/name=external-secrets`; Ladon reads the version from the
+-l app.kubernetes.io/name=external-secrets`; Sero reads the version from the
 deployment's `app.kubernetes.io/version` label, falling back to its image tag.
 Reuse means the fleet-wide pin above is not enforced on that cluster, so confirm
 the reported version is one your stores and ExternalSecrets support.
@@ -139,9 +139,9 @@ and reused rather than reinstalled; a team cluster is the likely place to find
 one somebody else owns.
 
 ```
-scripts/ladon install-eso                      # dry-run
-scripts/ladon install-eso --apply              # install, or reuse and report
-scripts/ladon install-eso --namespace NS --apply
+scripts/sero install-eso                      # dry-run
+scripts/sero install-eso --apply              # install, or reuse and report
+scripts/sero install-eso --namespace NS --apply
 ```
 
 The command runs against whatever cluster the current `kubectl` context points
@@ -169,7 +169,7 @@ not exist fails later, at refresh time, somewhere else. Re-running reports every
 object and every document already current and writes nothing.
 
 ```
-scripts/ladon apply --phase app-onboarding --config deployment.yaml \
+scripts/sero apply --phase app-onboarding --config deployment.yaml \
   --team TEAM --app APP --cluster CLUSTER --k8s-namespace NAMESPACE --apply
 ```
 
@@ -182,7 +182,7 @@ already reads, through the store the onboarding created. The path must be inside
 the application's own prefix, which is all its identity can read.
 
 ```
-scripts/ladon apply --phase sync --team TEAM --app APP \
+scripts/sero apply --phase sync --team TEAM --app APP \
   --path apps/APP/PURPOSE --name NAME \
   [--k8s-namespace NAMESPACE] [--target-name SECRET] \
   [--refresh-interval 1h] --apply
@@ -228,13 +228,13 @@ box and cloud KMS by layering one rendered values overlay (step 2a); more
 replicas come later by configuration. Nothing in the consumer contract depends
 on either.
 
-Everything below runs in one namespace, `ladon`, and every angle-bracketed
+Everything below runs in one namespace, `sero`, and every angle-bracketed
 value is a placeholder.
 
 ### 1. The namespace
 
 ```
-kubectl create namespace ladon
+kubectl create namespace sero
 ```
 
 ### 2. OpenBao, from the pinned chart
@@ -247,9 +247,9 @@ chart.
 helm repo add openbao https://openbao.github.io/openbao-helm
 helm repo update openbao
 
-helm upgrade --install ladon-openbao openbao/openbao \
+helm upgrade --install sero-openbao openbao/openbao \
   --version <pinned-chart-version> \
-  --namespace ladon \
+  --namespace sero \
   -f deploy/openbao/values/values-base.yaml \
   -f deploy/openbao/values/values-dev.yaml \
   --dry-run
@@ -262,7 +262,7 @@ cluster-scoped ClusterRoleBinding named after the release, and cluster-scoped
 objects have no namespace to keep two copies apart. A second install of the
 same chart under the same release name in another namespace fails on ownership,
 because the object already exists and belongs to the first release. So: exactly
-one release named `ladon-openbao` per cluster. If you need a second vault on
+one release named `sero-openbao` per cluster. If you need a second vault on
 the same cluster, give it a different release name and expect a second
 ClusterRoleBinding.
 
@@ -292,7 +292,7 @@ Render the values overlay that carries the seal stanza, and the annotation that
 binds the vault's service account to the identity the key is granted to:
 
 ```
-scripts/ladon seal-values \
+scripts/sero seal-values \
   --config <deployment-config.yaml> \
   --base-config deploy/openbao/values/values-dev.yaml \
   --service-account-annotation iam.gke.io/gcp-service-account=<unseal-sa>@<project>.iam.gserviceaccount.com \
@@ -310,9 +310,9 @@ refused with exit 2, because there is no stanza to render.
 Install with the overlay last, so it wins:
 
 ```
-helm upgrade --install ladon-openbao openbao/openbao \
+helm upgrade --install sero-openbao openbao/openbao \
   --version <pinned-chart-version> \
-  --namespace ladon \
+  --namespace sero \
   -f deploy/openbao/values/values-base.yaml \
   -f deploy/openbao/values/values-dev.yaml \
   -f seal-values.yaml
@@ -343,8 +343,8 @@ on the vault's policy alone; the backend holds no cloud identity.
 This is phase 3 above, unchanged and still the one irreducibly manual step.
 
 ```
-kubectl -n ladon exec -it ladon-openbao-0 -- bao operator init
-kubectl -n ladon exec -it ladon-openbao-0 -- bao operator unseal
+kubectl -n sero exec -it sero-openbao-0 -- bao operator init
+kubectl -n sero exec -it sero-openbao-0 -- bao operator unseal
 ```
 
 The second command is the Shamir path, and with Shamir the pod needs unsealing
@@ -365,8 +365,8 @@ worked on the platform vault.
 Take a snapshot first. It is the way back.
 
 ```
-kubectl -n ladon exec ladon-openbao-0 -- bao operator raft snapshot save /tmp/pre-kms.snap
-kubectl -n ladon cp ladon-openbao-0:/tmp/pre-kms.snap ./pre-kms.snap
+kubectl -n sero exec sero-openbao-0 -- bao operator raft snapshot save /tmp/pre-kms.snap
+kubectl -n sero cp sero-openbao-0:/tmp/pre-kms.snap ./pre-kms.snap
 ```
 
 1. Render the overlay and `helm upgrade` with it, exactly as in step 2a. It adds
@@ -377,7 +377,7 @@ kubectl -n ladon cp ladon-openbao-0:/tmp/pre-kms.snap ./pre-kms.snap
    say otherwise.
 
    ```
-   kubectl -n ladon delete pod ladon-openbao-0
+   kubectl -n sero delete pod sero-openbao-0
    ```
 
 3. The vault comes back in seal-migration mode. `bao status` reports
@@ -386,7 +386,7 @@ kubectl -n ladon cp ladon-openbao-0:/tmp/pre-kms.snap ./pre-kms.snap
 4. Unseal once per threshold share, each with `-migrate`:
 
    ```
-   kubectl -n ladon exec -it ladon-openbao-0 -- bao operator unseal -migrate <shamir-share>
+   kubectl -n sero exec -it sero-openbao-0 -- bao operator unseal -migrate <shamir-share>
    ```
 
    The Shamir shares become the recovery keys. Keep them exactly as carefully as
@@ -395,8 +395,8 @@ kubectl -n ladon cp ladon-openbao-0:/tmp/pre-kms.snap ./pre-kms.snap
    ready with nobody typing anything.
 
    ```
-   kubectl -n ladon delete pod ladon-openbao-0
-   kubectl -n ladon exec ladon-openbao-0 -- bao status
+   kubectl -n sero delete pod sero-openbao-0
+   kubectl -n sero exec sero-openbao-0 -- bao status
    ```
 
 ### DNS under the default deny
@@ -414,7 +414,7 @@ issuer's keys, and every store reports that it could not create a client.
 The cluster-scoped `ClusterRole` first, once per cluster. It lives outside
 the base on purpose: the deployment platform refuses a base that carries a
 cluster-scoped kind, and binds the pod to the roles the contract names under
-`cluster_roles` instead, so on that platform also add `ladon` to its
+`cluster_roles` instead, so on that platform also add `sero` to its
 cluster-role allowlist. On a cluster without the platform, apply the binding
 next to it as well.
 
@@ -433,8 +433,8 @@ Then label two namespaces, or the policies keep out the two things that must
 get in:
 
 ```
-kubectl label namespace <proxy-namespace> ladon.dev/proxy=true
-kubectl label namespace <eso-namespace>   ladon.dev/eso=true
+kubectl label namespace <proxy-namespace> sero.dev/proxy=true
+kubectl label namespace <eso-namespace>   sero.dev/eso=true
 ```
 
 Without the first the backend is unreachable; without the second every
@@ -445,7 +445,7 @@ The API-server and https egress rules carry placeholders: the first is an
 address range that routes nowhere, the second is deliberately wide. Replace
 both before the cluster-apply layer is used. A wrong range is accepted by the
 API server and is simply wrong, so that layer hangs rather than failing
-loudly. See [../deploy/ladon/README.md](../deploy/ladon/README.md).
+loudly. See [../deploy/sero/README.md](../deploy/sero/README.md).
 
 ### 5. The config and the bootstrap Secret
 
@@ -454,14 +454,14 @@ edited. On this path the backend mounts it as a file, so the key is
 `config.yaml`:
 
 ```
-kubectl -n ladon create configmap ladon-config \
+kubectl -n sero create configmap sero-config \
   --from-file=config.yaml=config/example.yaml
 ```
 
 On a cluster whose deployment platform delivers the ConfigMap as environment
-variables rather than a volume, the key is `LADON_CONFIG_YAML` instead and the
+variables rather than a volume, the key is `SERO_CONFIG_YAML` instead and the
 backend reads the config inline. That difference, and why it exists, is in
-[../deploy/ladon/README.md](../deploy/ladon/README.md).
+[../deploy/sero/README.md](../deploy/sero/README.md).
 
 While you are editing the config: if your proxy signs what it asserts, set
 `identity.assertion` so the backend verifies the signature rather than trusting
@@ -474,8 +474,8 @@ The Secret holds the two values the backend cannot get from anywhere else: the
 datastore URL, and the token that lets it reach OpenBao.
 
 ```
-kubectl -n ladon create secret generic ladon-bootstrap \
-  --from-literal=LADON_DATABASE_URL=sqlite:////data/ladon.db \
+kubectl -n sero create secret generic sero-bootstrap \
+  --from-literal=SERO_DATABASE_URL=sqlite:////data/sero.db \
   --from-literal=BAO_TOKEN="$(tr -d '\n' < <path-to-a-file-holding-the-token>)"
 ```
 
@@ -492,7 +492,7 @@ that OpenBao cannot issue to itself.
 On a cluster running the deployment platform, `gojira.yaml` at the repository
 root is the whole of it: the generator emits the Deployment and Service from
 that contract, the manifests from step 4 are preserved alongside, and the
-`cluster_roles: [ladon]` line has the platform bind the ServiceAccount to the
+`cluster_roles: [sero]` line has the platform bind the ServiceAccount to the
 `ClusterRole` the operator applied.
 
 On a cluster without it, apply the standalone pair. Set the image to the tag the
@@ -500,8 +500,8 @@ image workflow pushed (the short commit sha) and `BAO_ADDR` to where OpenBao
 answers, then:
 
 ```
-kubectl apply -f deploy/ladon/standalone/
-kubectl -n ladon rollout status deployment/ladon
+kubectl apply -f deploy/sero/standalone/
+kubectl -n sero rollout status deployment/sero
 ```
 
 The image migrates the datastore before it serves, so a schema that cannot be
@@ -517,7 +517,7 @@ Optional, and the step that turns a port-forward into a service people can
 use. This is the cloud provider's own external HTTPS load balancer with its
 identity-aware proxy in front, which is the proxy the backend has been
 assuming all along. The manifests are in
-[../deploy/ladon/standalone/front-door](../deploy/ladon/standalone/front-door)
+[../deploy/sero/standalone/front-door](../deploy/sero/standalone/front-door)
 and each carries its reasoning; this is the order to do things in, which is
 what the manifests cannot say.
 
@@ -547,8 +547,8 @@ record resolves here, and a certificate that was asked for too early sits in
 are what bind the rest to the workload.
 
 ```
-kubectl apply -f deploy/ladon/standalone/service.yaml
-kubectl apply -f deploy/ladon/standalone/front-door/
+kubectl apply -f deploy/sero/standalone/service.yaml
+kubectl apply -f deploy/sero/standalone/front-door/
 ```
 
 Replace the two placeholders first: the address name and the host in
@@ -557,8 +557,8 @@ Ten to twenty minutes for the load balancer, and up to an hour for the
 certificate, is ordinary.
 
 ```
-kubectl -n ladon describe ingress ladon
-kubectl -n ladon describe managedcertificate ladon
+kubectl -n sero describe ingress sero
+kubectl -n sero describe managedcertificate sero
 ```
 
 The failure to expect here is a 502 with a healthy pod. Two causes, both
@@ -571,8 +571,8 @@ already handled in this repository and both worth recognising:
 - The NetworkPolicy. Traffic and health checks arrive from the load
   balancer's own ranges, `130.211.0.0/22` and `35.191.0.0/16`, direct to the
   pod through a container-native network endpoint group. They come from no
-  namespace, so the `ladon.dev/proxy=true` label admits none of it;
-  `ladon-backend` carries an `ipBlock` rule for the pair instead. A cluster
+  namespace, so the `sero.dev/proxy=true` label admits none of it;
+  `sero-backend` carries an `ipBlock` rule for the pair instead. A cluster
   running an older copy of
   [the manifests](../k8s/base/networkpolicy.yaml) will fail here
   until it is reapplied.
@@ -641,7 +641,7 @@ The Service is ClusterIP and the NetworkPolicy admits only the proxy, so the
 way in before a proxy exists is a port-forward:
 
 ```
-kubectl -n ladon port-forward svc/ladon 8000:8000
+kubectl -n sero port-forward svc/sero 8000:8000
 curl -s http://127.0.0.1:8000/healthz
 ```
 
@@ -702,7 +702,7 @@ none of them on day one.
                                 └─ (needs 11 team namespace)
 ```
 
-## What Ladon does differently
+## What Sero does differently
 
 The source platform documented this order but did not enforce it: the substrate
 and config phases were run as a series of manual applies per directory, with no
@@ -710,14 +710,14 @@ orchestration and several prerequisites left implicit (the KMS grant, the plugin
 checksum, the fleet-wide ESO version, and the boundary between the two ways teams
 were created). Each gap was a way for a deployment to end up half-configured.
 
-Ladon's contribution is to make the order a first-class, dry-run-first plan: each
-phase states its prerequisites, Ladon checks them against live state, shows the
+Sero's contribution is to make the order a first-class, dry-run-first plan: each
+phase states its prerequisites, Sero checks them against live state, shows the
 diff, and applies only on confirmation. The sequence above is the backbone the
 apply layers hang from.
 
 ## Running the apply CLI
 
-The SDK config phases (4, 9 and 10) are runnable from a checkout with the `ladon`
+The SDK config phases (4, 9 and 10) are runnable from a checkout with the `sero`
 CLI wrapper. It builds a plan and either renders it or applies it; every apply is
 a dry-run unless `--apply` is passed. Both apply modes connect, because the
 dry-run diffs the plan against live state and reports, per operation, whether it
@@ -729,8 +729,8 @@ one line per document, prefixed `[cluster]`:
 
 ```
 Cluster documents (applied):
-  [cluster] create ServiceAccount/ladon/eso-TEAM-APP-DIGEST
-  [cluster] create ClusterSecretStore/ladon-TEAM-APP-DIGEST
+  [cluster] create ServiceAccount/sero/eso-TEAM-APP-DIGEST
+  [cluster] create ClusterSecretStore/sero-TEAM-APP-DIGEST
 ```
 
 A dry-run sends the documents to the API server as a server-side dry run, so the
@@ -742,21 +742,21 @@ custom-resource version rather than one probed from the target.
 
 ```
 # Render a plan, no connection made:
-scripts/ladon plan --phase root-config --jwt-discovery-url URL
+scripts/sero plan --phase root-config --jwt-discovery-url URL
 
 # Phase 4 root config (dry-run, then apply):
-scripts/ladon apply --phase root-config --jwt-discovery-url URL
-scripts/ladon apply --phase root-config --jwt-discovery-url URL --apply
+scripts/sero apply --phase root-config --jwt-discovery-url URL
+scripts/sero apply --phase root-config --jwt-discovery-url URL --apply
 
 # Phase 10 per-team onboarding, scoped to the team namespace:
-scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
+scripts/sero apply --phase team-onboarding --cluster CLUSTER \
   --oidc-discovery-url URL --namespace TEAM --apply
 
 # Phase 9 the operator, then phase 10 one application and one of its secrets:
-scripts/ladon install-eso --apply
-scripts/ladon apply --phase app-onboarding --config deployment.yaml \
+scripts/sero install-eso --apply
+scripts/sero apply --phase app-onboarding --config deployment.yaml \
   --team TEAM --app APP --cluster CLUSTER --k8s-namespace NAMESPACE --apply
-scripts/ladon apply --phase sync --team TEAM --app APP \
+scripts/sero apply --phase sync --team TEAM --app APP \
   --path apps/APP/PURPOSE --k8s-namespace NAMESPACE --name NAME --apply
 ```
 
@@ -771,10 +771,10 @@ from `--team`). Auth inputs stay explicit flags. An explicit `--kv-mount` or
 
 ```
 # KV mount taken from deployment.kv_mount in the config:
-scripts/ladon plan --phase root-config --jwt-discovery-url URL --config deployment.yaml
+scripts/sero plan --phase root-config --jwt-discovery-url URL --config deployment.yaml
 
 # Team namespace resolved from the config's team list:
-scripts/ladon apply --phase team-onboarding --cluster CLUSTER \
+scripts/sero apply --phase team-onboarding --cluster CLUSTER \
   --oidc-discovery-url URL --config deployment.yaml --team TEAM --apply
 ```
 

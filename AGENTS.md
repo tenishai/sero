@@ -1,4 +1,4 @@
-# AGENTS.md — ladon
+# AGENTS.md — sero
 
 Instructions for AI coding agents working in this repo. Claude Code loads this via
 `CLAUDE.md` (`@AGENTS.md`); other AGENTS.md-aware tools read it directly.

@@ -8,9 +8,9 @@ overlay YAML. Nothing here reads a file or contacts a cluster.
 import pytest
 import yaml
 
-from ladon.config.seal import render_seal
-from ladon.config.seal_values import render_seal_values
-from ladon.config.teams import ConfigError
+from sero.config.seal import render_seal
+from sero.config.seal_values import render_seal_values
+from sero.config.teams import ConfigError
 
 BASE_HCL = """ui = true
 

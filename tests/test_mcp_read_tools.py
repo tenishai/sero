@@ -9,11 +9,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base
-from ladon.hygiene import mask
-from ladon.mcp.ports import SecretDetail, SecretListing, SecretPath
-from ladon.mcp.server import (
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base
+from sero.hygiene import mask
+from sero.mcp.ports import SecretDetail, SecretListing, SecretPath
+from sero.mcp.server import (
     AccessDeniedError,
     WrongEnvironment,
     get_secret_impl,
@@ -141,7 +141,7 @@ def test_build_server_registers_read_tools():
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    from ladon.mcp.server import build_server
+    from sero.mcp.server import build_server
 
     server = build_server(FakeReader(), sessionmaker(engine))
     tool_names = {t.name for t in server._tool_manager.list_tools()}
@@ -156,7 +156,7 @@ def test_build_server_with_writer_registers_write_tools():
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    from ladon.mcp.server import build_server
+    from sero.mcp.server import build_server
 
     class FakeWriter:
         def create_secret(self, *a, **k):  # pragma: no cover - registration only

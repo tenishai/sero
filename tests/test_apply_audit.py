@@ -2,14 +2,14 @@
 
 Everything here runs against the recording fake, so the audit is exercised
 against real response shapes without a live OpenBao. The fixtures build two
-kinds of namespace: one Ladon itself rendered (which must audit clean) and one
+kinds of namespace: one Sero itself rendered (which must audit clean) and one
 that has been widened by hand in the ways the sibling platform was, which must
 be reported.
 
 The last test in the file is the one that keeps the rest honest: it applies the
 real plans (root config, team onboarding, three application onboardings) to the
-fake and asserts that what Ladon writes audits with no findings at all. A check
-that fires on Ladon's own output is a check nobody will keep.
+fake and asserts that what Sero writes audits with no findings at all. A check
+that fires on Sero's own output is a check nobody will keep.
 
 No fixture carries a secret value: a policy body is a set of paths and
 capabilities, and a role is a set of bindings.
@@ -18,8 +18,8 @@ capabilities, and a role is a set of bindings.
 import pytest
 
 from fake_openbao import FakeOpenBao
-from ladon.apply import audit as audit_module
-from ladon.apply.audit import (
+from sero.apply import audit as audit_module
+from sero.apply.audit import (
     HIGH,
     LOW,
     MEDIUM,
@@ -29,12 +29,12 @@ from ladon.apply.audit import (
     audit_namespace,
     parse_policy,
 )
-from ladon.apply.executor import apply_plan
-from ladon.apply.plan import app_onboarding_plan, root_config_plan, team_onboarding_plan
-from ladon.config.apps import app_identity, eso_app_policy, eso_app_role
-from ladon.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
-from ladon.config.policies import baseline_team_policies, external_secrets_read
-from ladon.config.teams import Team
+from sero.apply.executor import apply_plan
+from sero.apply.plan import app_onboarding_plan, root_config_plan, team_onboarding_plan
+from sero.config.apps import app_identity, eso_app_policy, eso_app_role
+from sero.config.auth import jwt_auth, jwt_role, oidc_auth, oidc_role
+from sero.config.policies import baseline_team_policies, external_secrets_read
+from sero.config.teams import Team
 
 TEAM = "team-a"
 APP = "sample"
@@ -107,7 +107,7 @@ def build(*, policies=None, roles=None, mounts=None, auth_methods=None, namespac
 
 
 def clean_namespace(**overrides):
-    """A namespace exactly as Ladon's app onboarding leaves it."""
+    """A namespace exactly as Sero's app onboarding leaves it."""
     who = identity()
     role = eso_app_role(who)
     state = {
@@ -131,7 +131,7 @@ def find(report, code):
 # --- the parser ---------------------------------------------------------------
 
 
-def test_parses_the_policy_ladon_renders():
+def test_parses_the_policy_sero_renders():
     grants = parse_policy(eso_app_policy(identity()).hcl)
     assert [g.path for g in grants] == [
         "kv/data/apps/sample/*",
@@ -212,10 +212,10 @@ def test_an_unparsable_policy_the_audit_does_not_judge_is_medium():
     assert audit_module._unparsed_severity("eso-sample-readonly") == HIGH
 
 
-# --- a namespace Ladon rendered ------------------------------------------------
+# --- a namespace Sero rendered ------------------------------------------------
 
 
-def test_a_namespace_ladon_rendered_audits_clean():
+def test_a_namespace_sero_rendered_audits_clean():
     report = audit_namespace(clean_namespace(), NAMESPACE)
     assert report.findings == ()
     assert report.ok
@@ -342,7 +342,7 @@ def test_the_real_team_onboarding_role_pins_a_subject_and_audits_clean():
         "*",
         "system:serviceaccount:*:eso-team-a-sample-abc123",
         "system:serviceaccount:default:default",
-        "system:serviceaccount:ladon:default",
+        "system:serviceaccount:sero:default",
         "system:serviceaccount:kube-system:eso-team-a-sample-abc123",
     ],
 )
@@ -356,7 +356,7 @@ def test_a_subject_that_is_not_one_service_account_is_high(subject):
 def test_an_eso_role_bound_to_somebody_elses_service_account_is_high():
     # The audience alone proves nothing, and a subject that is not this role's
     # own service account means some other workload can take this role's grants.
-    report, _ = audit_role(bound_subject="system:serviceaccount:ladon:eso-team-a-other-999999")
+    report, _ = audit_role(bound_subject="system:serviceaccount:sero:eso-team-a-other-999999")
     finding = find(report, "subject-not-pinned")
     assert finding.severity == HIGH
     assert "own service account" in finding.detail
@@ -364,7 +364,7 @@ def test_an_eso_role_bound_to_somebody_elses_service_account_is_high():
 
 def test_an_eso_role_may_live_in_any_service_account_namespace():
     who = identity()
-    report, _ = audit_role(bound_subject=f"system:serviceaccount:platform-ladon:{who.name}")
+    report, _ = audit_role(bound_subject=f"system:serviceaccount:platform-sero:{who.name}")
     assert "subject-not-pinned" not in codes(report)
 
 
@@ -584,7 +584,7 @@ def app_policy_report(body, *, app=APP):
     return audit_namespace(build(policies={f"eso-{app}-readonly": body}), NAMESPACE)
 
 
-def test_the_app_policy_ladon_renders_audits_clean():
+def test_the_app_policy_sero_renders_audits_clean():
     who = identity()
     report = audit_namespace(build(policies={who.policy_name: eso_app_policy(who).hcl}), NAMESPACE)
     assert report.findings == ()
@@ -623,7 +623,7 @@ def test_a_glob_on_the_application_name_reaches_its_neighbours():
     finding = find(report, "cross-app-grant")
     assert finding.object == "eso-sample-readonly"
     assert "kv/data/apps/sample*" in finding.detail
-    # The neighbour's own policy, rendered by Ladon, is untouched by this.
+    # The neighbour's own policy, rendered by Sero, is untouched by this.
     assert [f.object for f in report.findings] == ["eso-sample-readonly"]
 
 
@@ -765,15 +765,15 @@ def test_a_read_that_fails_is_an_error_naming_the_namespace():
     assert NAMESPACE in str(exc.value)
 
 
-# --- what Ladon itself writes ---------------------------------------------------------
+# --- what Sero itself writes ---------------------------------------------------------
 
 
 def test_the_real_plans_audit_with_no_findings_at_all():
-    """Everything Ladon writes, applied and then audited.
+    """Everything Sero writes, applied and then audited.
 
     This is the check that keeps the rest of the file honest. Every rule above
-    is a rule about drift, and a rule that fires on Ladon's own output is not a
-    rule about drift: it is a bug, in the audit or in what Ladon renders. Root
+    is a rule about drift, and a rule that fires on Sero's own output is not a
+    rule about drift: it is a bug, in the audit or in what Sero renders. Root
     config, one team, and three applications in that team's namespace, applied
     through the real executor to the fake, must come back with nothing to say.
     """
@@ -786,7 +786,7 @@ def test_the_real_plans_audit_with_no_findings_at_all():
             jwt_auth(discovery_url=ISSUER),
             oidc_auth(
                 discovery_url=ISSUER,
-                client_id="ladon",
+                client_id="sero",
                 client_secret_ref="secret/oidc",
             ),
         ],

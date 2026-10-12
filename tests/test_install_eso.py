@@ -7,16 +7,16 @@ to a real cluster.
 
 import pytest
 
-from ladon.install import eso, helm
-from ladon.install.eso import (
+from sero.install import eso, helm
+from sero.install.eso import (
     ESO_CHART,
     ESO_CHART_VERSION,
     ESO_WEBHOOK_DEPLOYMENT,
     ESORelease,
     install_eso,
 )
-from ladon.install.helm import HelmError
-from ladon.install.k8s import ESOInstall, ESONotInstalledError, K8sError
+from sero.install.helm import HelmError
+from sero.install.k8s import ESOInstall, ESONotInstalledError, K8sError
 
 
 def patch_run(monkeypatch, fn):
@@ -194,7 +194,7 @@ def test_the_cluster_probes_are_the_defaults():
     # The defaults are the real kubectl probes; the tests inject their own.
     import inspect
 
-    from ladon.install.k8s import detect_eso, eso_api_version
+    from sero.install.k8s import detect_eso, eso_api_version
 
     parameters = inspect.signature(install_eso).parameters
     assert parameters["detect"].default is detect_eso

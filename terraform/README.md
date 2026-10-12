@@ -1,10 +1,10 @@
-# Terraform: Ladon's OpenBao substrate (D10)
+# Terraform: Sero's OpenBao substrate (D10)
 
 Terraform here owns only the cloud resources that are specific to running
 OpenBao, on a cluster that already exists. Cluster creation, networking, CIDR
-planning, and project/account setup are NOT Ladon's job: a separate foundation
+planning, and project/account setup are NOT Sero's job: a separate foundation
 (landing-zone) repo owns those and creates the cluster to best practices, the
-way an org-level platform repo does. Ladon, like a deploy platform that registers
+way an org-level platform repo does. Sero, like a deploy platform that registers
 an existing cluster, runs on top of what the foundation provides.
 
 So this layer is deliberately small. It produces the OpenBao-specific substrate
@@ -26,7 +26,7 @@ It does not install OpenBao (Helm, D3a) or configure it (SDK, D3b). See
 - **Multi-cloud, pluggable from the start.** Substrate pieces are organized as
   one module per cloud sharing a documented input/output contract (see
   [modules/unseal-key/README.md](modules/unseal-key/README.md)), so a deployment
-  picks a cloud without the rest of Ladon changing. GCP is implemented first;
+  picks a cloud without the rest of Sero changing. GCP is implemented first;
   AWS and Azure follow against the same contract.
 - **No secret material in state output.** Modules grant the OpenBao identity key
   use via that cloud's workload identity; they do not create or export keys.

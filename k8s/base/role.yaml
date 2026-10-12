@@ -1,21 +1,21 @@
-# What Ladon may do inside its own namespace.
+# What Sero may do inside its own namespace.
 #
 # Per D18a the per-app service accounts ESO authenticates as live here, in
-# Ladon's namespace, not the operator's: a namespace only the platform operator
+# Sero's namespace, not the operator's: a namespace only the platform operator
 # can write to gives the same protection without reaching into a namespace
 # another team owns. Creating them is why `serviceaccounts` is in this list.
 #
 # Secrets and ConfigMaps are namespaced here too, so onboarding writes land in
 # this namespace and nowhere else. `delete` is granted on service accounts
 # only: the lane's off-boarding call removes the account it created for an
-# application, and nothing else here is ever removed by Ladon.
+# application, and nothing else here is ever removed by Sero.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: ladon
-  namespace: ladon
+  name: sero
+  namespace: sero
   labels:
-    app.kubernetes.io/name: ladon
+    app.kubernetes.io/name: sero
 rules:
   - apiGroups: [""]
     resources:

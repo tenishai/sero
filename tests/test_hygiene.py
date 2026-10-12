@@ -2,7 +2,7 @@
 
 import pytest
 
-from ladon.hygiene import (
+from sero.hygiene import (
     PlaceholderSecretError,
     assert_not_placeholder,
     is_placeholder,

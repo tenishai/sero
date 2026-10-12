@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /*
- * Ladon UI theme: the single source of truth for palette, fonts, and radii.
+ * Sero UI theme: the single source of truth for palette, fonts, and radii.
  * Rebranding the look is editing THIS file (and text/identity in branding.ts).
  * Components reference these tokens (bg-surface, text-ink, text-accent, ...) and
  * never hardcode a color, so a rebrand never touches a component.

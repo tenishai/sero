@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from ladon.install import HelmError, HelmRelease, install, run
-from ladon.install.helm import OPENBAO_CHART, OPENBAO_CHART_VERSION
+from sero.install import HelmError, HelmRelease, install, run
+from sero.install.helm import OPENBAO_CHART, OPENBAO_CHART_VERSION
 
 
 def make_release():
     return HelmRelease(
-        name="ladon-openbao",
+        name="sero-openbao",
         namespace="openbao",
         values_files=[
             Path("deploy/openbao/values/values-base.yaml"),
@@ -73,7 +73,7 @@ def test_install_defaults_to_dry_run(monkeypatch):
         calls.append(list(argv))
         return None
 
-    monkeypatch.setattr("ladon.install.helm.run", fake_run)
+    monkeypatch.setattr("sero.install.helm.run", fake_run)
     install(make_release())
     # The third call is the upgrade; it must be a dry-run by default.
     assert "--dry-run" in calls[-1]
@@ -81,7 +81,7 @@ def test_install_defaults_to_dry_run(monkeypatch):
 
 def test_install_apply_runs_real_upgrade(monkeypatch):
     calls = []
-    monkeypatch.setattr("ladon.install.helm.run", lambda argv: calls.append(list(argv)))
+    monkeypatch.setattr("sero.install.helm.run", lambda argv: calls.append(list(argv)))
     install(make_release(), apply=True)
     assert "--dry-run" not in calls[-1]
     assert "upgrade" in calls[-1]

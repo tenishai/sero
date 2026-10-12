@@ -21,8 +21,8 @@
 # deliberate act by whoever owns that namespace rather than a name this
 # repository has to guess.
 #
-#   kubectl label namespace <proxy-namespace> ladon.dev/proxy=true
-#   kubectl label namespace <eso-namespace>   ladon.dev/eso=true
+#   kubectl label namespace <proxy-namespace> sero.dev/proxy=true
+#   kubectl label namespace <eso-namespace>   sero.dev/eso=true
 #
 # Without the first, the backend is unreachable. Without the second, every
 # ExternalSecret on the cluster fails to read from OpenBao.
@@ -30,7 +30,7 @@
 # A third label is optional and only needed where a machine caller uses the
 # service lane from a namespace of its own:
 #
-#   kubectl label namespace <caller-namespace> ladon.dev/caller=true
+#   kubectl label namespace <caller-namespace> sero.dev/caller=true
 #
 # And one rule needs no label at all: where the front door is the cloud
 # provider's external HTTPS load balancer, traffic arrives from that
@@ -64,10 +64,10 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: ladon-default-deny
-  namespace: ladon
+  name: sero-default-deny
+  namespace: sero
   labels:
-    app.kubernetes.io/name: ladon
+    app.kubernetes.io/name: sero
 spec:
   # An empty pod selector is every pod in the namespace.
   podSelector: {}
@@ -78,14 +78,14 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: ladon-backend
-  namespace: ladon
+  name: sero-backend
+  namespace: sero
   labels:
-    app.kubernetes.io/name: ladon
+    app.kubernetes.io/name: sero
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: ladon
+      app.kubernetes.io/name: sero
   policyTypes:
     - Ingress
     - Egress
@@ -96,12 +96,12 @@ spec:
     #
     # Both ports, because the two deploy paths bind different ones: the
     # standalone Deployment takes the image's default 8000, and gojira.yaml
-    # sets LADON_PORT to 8080 for the generated one. Drop whichever port your
+    # sets SERO_PORT to 8080 for the generated one. Drop whichever port your
     # deployment does not use.
     - from:
         - namespaceSelector:
             matchLabels:
-              ladon.dev/proxy: "true"
+              sero.dev/proxy: "true"
       ports:
         - protocol: TCP
           port: 8000
@@ -109,11 +109,11 @@ spec:
           port: 8080
     # The cloud load balancer, when the front door is the provider's own
     # external HTTPS load balancer with its identity-aware proxy in front
-    # (deploy/ladon/standalone/front-door/). Google sends both real traffic
+    # (deploy/sero/standalone/front-door/). Google sends both real traffic
     # and the backend service's health checks from two fixed ranges,
     # 130.211.0.0/22 and 35.191.0.0/16, and they arrive at the pod directly
     # through a container-native network endpoint group. They come from no
-    # namespace at all, so the `ladon.dev/proxy=true` rule above admits
+    # namespace at all, so the `sero.dev/proxy=true` rule above admits
     # nothing for this proxy and this rule is what lets the front door
     # reach the backend. Without it the backend service is permanently
     # UNHEALTHY and the load balancer answers 502.
@@ -135,14 +135,14 @@ spec:
     # This is how one is admitted: whoever owns the calling namespace labels
     # it, the same deliberate act as the proxy label.
     #
-    #   kubectl label namespace <caller-namespace> ladon.dev/caller=true
+    #   kubectl label namespace <caller-namespace> sero.dev/caller=true
     #
     # The label admits the namespace to the port; it grants no identity. A
     # machine caller still authenticates on the service lane's own terms.
     - from:
         - namespaceSelector:
             matchLabels:
-              ladon.dev/caller: "true"
+              sero.dev/caller: "true"
       ports:
         - protocol: TCP
           port: 8000
@@ -206,10 +206,10 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: ladon-openbao
-  namespace: ladon
+  name: sero-openbao
+  namespace: sero
   labels:
-    app.kubernetes.io/name: ladon
+    app.kubernetes.io/name: sero
 spec:
   podSelector:
     matchLabels:
@@ -226,7 +226,7 @@ spec:
         # The backend.
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: ladon
+              app.kubernetes.io/name: sero
         # Raft peer traffic between OpenBao replicas, so a later move off the
         # single-node shape (D13a) does not break the cluster the moment a
         # second replica appears.
@@ -239,7 +239,7 @@ spec:
         # matches it.
         - namespaceSelector:
             matchLabels:
-              ladon.dev/eso: "true"
+              sero.dev/eso: "true"
       ports:
         - protocol: TCP
           port: 8200

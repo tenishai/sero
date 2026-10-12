@@ -9,8 +9,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from ladon.datastore import repositories as repo
-from ladon.datastore.models import Base
+from sero.datastore import repositories as repo
+from sero.datastore.models import Base
 
 ADMIN = "admin@example.com"
 

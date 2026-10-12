@@ -34,13 +34,13 @@ testing.
 
 ## Supported versions
 
-ladon is pre-1.0. Security fixes go into the **latest release** only; older
+sero is pre-1.0. Security fixes go into the **latest release** only; older
 releases are not patched. If you're running an older version, upgrade to get
 fixes.
 
 ## Scope
 
-ladon is the secrets lane: it carries secrets from the vault to the clusters
+sero is the secrets lane: it carries secrets from the vault to the clusters
 and apps that need them, by namespace. In scope:
 
 - confidentiality: a secret value leaving the lane in the clear, in a log, an

@@ -1,8 +1,8 @@
 # OpenBao Helm values: opinionated, generic baseline.
 #
-# These are the defaults Ladon installs OpenBao with: HA on Integrated Storage
+# These are the defaults Sero installs OpenBao with: HA on Integrated Storage
 # (Raft), with auto-unseal and storage left to be set per deployment. They carry
-# no company-specific values. The Ladon tooling composes these with an overlay
+# no company-specific values. The Sero tooling composes these with an overlay
 # (for example values-dev.yaml) and deployment config before running
 # `helm upgrade --install` (see ../README.md).
 #
@@ -16,7 +16,7 @@ server:
     tag: "2.5.5"
     pullPolicy: IfNotPresent
 
-  # The built-in OpenBao UI is available to operators alongside the Ladon
+  # The built-in OpenBao UI is available to operators alongside the Sero
   # wrapper UI. It is enabled; expose it through your own ingress, not a
   # public LoadBalancer.
   ui:
@@ -30,7 +30,7 @@ server:
     raft:
       enabled: true
       setNodeId: true
-      # The server config is HCL. The Ladon tooling injects the seal stanza and
+      # The server config is HCL. The Sero tooling injects the seal stanza and
       # any deployment-specific values; the block below is the generic shape.
       config: |
         ui = true
@@ -48,9 +48,9 @@ server:
         }
 
         # Auto-unseal: set per deployment, and not by editing this file.
-        # `scripts/ladon seal-values --config <deployment-config.yaml>
+        # `scripts/sero seal-values --config <deployment-config.yaml>
         # --base-config <this file or an overlay>` renders one seal stanza from
-        # the deployment.kms config (see src/ladon/config/seal.py) into a values
+        # the deployment.kms config (see src/sero/config/seal.py) into a values
         # overlay you layer last; a Helm value is replaced rather than merged,
         # so that overlay re-emits this whole config with the stanza in it. The
         # provider is pluggable across clouds. Example shapes (do not commit
@@ -117,7 +117,7 @@ server:
   # Audit logging is enabled at the OpenBao layer by the config tooling, not
   # here; this only provisions the volume above.
 
-# The injector is not part of the baseline; Ladon syncs via ESO, not the
+# The injector is not part of the baseline; Sero syncs via ESO, not the
 # OpenBao agent injector.
 injector:
   enabled: false

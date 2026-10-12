@@ -4,7 +4,7 @@
  *
  * Revealing a secret value is the one action where plaintext reaches the browser.
  * Deployments differ in how much friction that should carry: none, a re-auth, or
- * a full identity-provider step-up. So the gate is an interface, and Ladon ships
+ * a full identity-provider step-up. So the gate is an interface, and Sero ships
  * an "always-allow" default (no extra step). A deployment plugs in a stricter
  * gate (re-auth prompt, OIDC popup) without touching the reveal UI.
  *

@@ -1,4 +1,4 @@
-# Ladon backend image.
+# Sero backend image.
 #
 # One long-running process (D14): it migrates the datastore, then serves the
 # API, the built UI, and the apply operations. It also shells out to `helm` and
@@ -11,7 +11,7 @@
 # each pin and the date it was verified.
 #
 # Build (from the repository root):
-#   docker build -t ladon:local .
+#   docker build -t sero:local .
 
 # --- Stage: build the UI -----------------------------------------------------
 # node 22-trixie-slim, see docs/versions.md.
@@ -106,21 +106,21 @@ COPY alembic.ini /app/alembic.ini
 # Only the CLI wrapper. The other scripts are lint and contract checks that run
 # in CI and on a laptop; shipping them puts code in the image that nothing in
 # the image runs.
-COPY scripts/ladon /app/scripts/ladon
-COPY --from=ui /ui/dist/ /srv/ladon/ui/
+COPY scripts/sero /app/scripts/sero
+COPY --from=ui /ui/dist/ /srv/sero/ui/
 
 # A fixed uid so a volume's ownership can be set once and stay right. The
-# deploy contract's fs_group matches it (see deploy/ladon/gojira.yaml).
-RUN groupadd --gid 10001 ladon \
- && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /app --shell /usr/sbin/nologin ladon
+# deploy contract's fs_group matches it (see deploy/sero/gojira.yaml).
+RUN groupadd --gid 10001 sero \
+ && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /app --shell /usr/sbin/nologin sero
 USER 10001:10001
 
 # The image lays the repository out under /app, so the two path variables that
 # default to a checkout's layout are set explicitly. helm and kubectl write
 # caches and config under HOME, which a read-only root filesystem does not
 # allow, so they are pointed at the writable scratch mount.
-ENV LADON_UI_DIST=/srv/ladon/ui \
-    LADON_MIGRATIONS_DIR=/app/migrations \
+ENV SERO_UI_DIST=/srv/sero/ui \
+    SERO_MIGRATIONS_DIR=/app/migrations \
     PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -131,4 +131,4 @@ ENV LADON_UI_DIST=/srv/ladon/ui \
     KUBECACHEDIR=/tmp/kube/cache
 
 EXPOSE 8000
-ENTRYPOINT ["python", "-m", "ladon.web"]
+ENTRYPOINT ["python", "-m", "sero.web"]
