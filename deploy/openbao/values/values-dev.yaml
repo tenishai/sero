@@ -9,6 +9,10 @@
 
 server:
   # Single node: no quorum, no anti-affinity needed. Fine for dev, never prod.
+  # Cleared explicitly: the base spreads replicas with a required pod
+  # anti-affinity, and a managed cluster may price that (GKE Autopilot refuses
+  # a pod with anti-affinity below 500m cpu, far above what dev requests).
+  affinity: ""
   ha:
     replicas: 1
     raft:

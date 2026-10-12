@@ -1,14 +1,16 @@
 # The deploy contract for the Ladon backend.
 #
 # The deployment platform's generator owns the Deployment and the Service; this
-# file is the input it reads and `k8s/base/` holds the manifests it preserves.
-# Everything here is a placeholder: replace `<cluster>` with the cluster the
-# platform registered, and keep the namespace and the service account matching
-# `k8s/base/`.
+# file, at the repository root where that platform looks for it, is the input
+# it reads, and `k8s/base/` holds the manifests it preserves. Keep the
+# namespace and the service account matching `k8s/base/`. The platform
+# regenerates this file on every provision, keeping the values below and
+# writing its own `environments:` from the registration, so the cluster is
+# not named here.
 #
-# A cluster where that platform is not in use runs `standalone/` instead, which
-# carries its own Deployment and Service over the same ConfigMap, Secret, and
-# PersistentVolumeClaim. See README.md in this directory.
+# A cluster where that platform is not in use runs `deploy/ladon/standalone/`
+# instead, which carries its own Deployment and Service over the same
+# ConfigMap, Secret, and PersistentVolumeClaim. See deploy/ladon/README.md.
 
 app: ladon
 # `gateway`, not `web`. The two differ in exactly the ways that matter here:
@@ -22,10 +24,17 @@ class: gateway
 
 environments:
   - name: dev
-    cluster: <cluster>
     namespace: ladon
 
 service_account: ladon
+
+# The ClusterRole in k8s/cluster/clusterrole.yaml, which an operator applies
+# once and allowlists. The platform refuses cluster-scoped kinds inside
+# k8s/base (an application must not grant itself cluster-wide access by
+# committing a file), and instead binds the pod's ServiceAccount to the
+# ClusterRoles named here. On the standalone path the operator applies
+# k8s/cluster/clusterrolebinding.yaml as well.
+cluster_roles: [ladon]
 
 env:
   # The generated workload's port. The image defaults to 8000; 8080 is what
