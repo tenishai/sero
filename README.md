@@ -27,10 +27,11 @@
 Sero deploys and operates [OpenBao](https://github.com/openbao/openbao) (the
 open-source fork of HashiCorp Vault) and syncs secrets out to where workloads
 need them. It is a platform you can deploy: brand-neutral defaults, customizable
-per deployment, 100% open source under AGPL-3.0-or-later.
+per deployment, open source under AGPL-3.0-or-later.
 
-Sero integrates and operates OpenBao. It is not a fork of OpenBao or Vault, and
-it never stores secret values.
+Sero integrates and operates OpenBao. It is not a fork of OpenBao or Vault. Its own
+datastore holds no secret values (`src/sero/datastore/models.py`): values live in OpenBao
+and in the targets External Secrets writes.
 
 ## How it works
 
@@ -40,17 +41,21 @@ it never stores secret values.
   mounts) through the OpenBao API, dry-run first, from a `sero` CLI or a
   deployment config file.
 - Sync secrets to targets with the [External Secrets Operator](https://github.com/external-secrets/external-secrets):
-  Kubernetes clusters, GCP Secret Manager, and AWS Secrets Manager.
+  Kubernetes clusters today. The GCP Secret Manager and AWS Secrets Manager stores are
+  rendered (`src/sero/config/eso.py`) but not yet applied end to end (see Status).
 - Give operators a web UI (secrets view, create/edit with a dry-run preview,
   namespace requests, admin) behind an identity-aware proxy, and agents an MCP
   tool surface (over stdio today; the OAuth 2.1 HTTP mount is on the roadmap).
-- Enforce secrets hygiene throughout: no secret value is ever logged, printed,
-  committed, or shown by default; reveal is explicit and audited.
+- Keep secret values out of the UI and the datastore by default: reveal is explicit and
+  audited (`src/sero/web/reveal.py`), and job errors pass through `redact_text`
+  (`src/sero/hygiene.py`) before they are stored. Some raw exception messages still skip
+  that redaction; closing them is on the list.
 
 ## Quickstart
 
-Boot the backend on a laptop with SQLite and no OpenBao, in about a minute. You need
-[uv](https://docs.astral.sh/uv/) (it fetches Python 3.14 for you) and Node 22 for the UI.
+Boot the backend on a laptop with SQLite and no OpenBao. You need
+[uv](https://docs.astral.sh/uv/) (it fetches Python 3.14 for you, `.python-version`) and Node 22
+for the UI.
 
 ```
 git clone https://github.com/tenishai/sero && cd sero
@@ -92,7 +97,8 @@ The architecture and the decisions behind it are in
 
 The apply layers run from a checkout through the `sero` CLI wrapper. Every
 command is a dry-run until `--apply` is passed, and every apply converges: a
-second run reports each object already current and writes nothing.
+second run reports each object already current and writes nothing
+(`tests/test_apply_converge.py`).
 
 ```
 # Put the External Secrets Operator on the cluster, or reuse the one already
@@ -108,14 +114,14 @@ scripts/sero apply --phase app-onboarding --config deployment.yaml \
 scripts/sero apply --phase sync --team TEAM --app APP \
   --path apps/APP/PURPOSE --name NAME --apply
 
-# Check that nothing has been widened since: every JWT role, the default
-# policy, and every per-application policy. Read-only; exits 3 on a high
-# finding, so a scheduled run can fail on it:
+# Check that nothing has been widened since: the JWT and OIDC roles, the
+# default policy, and each per-application policy (src/sero/apply/audit.py).
+# Read-only; exits 3 on a high finding, so a scheduled run can fail on it:
 scripts/sero audit --config deployment.yaml
 ```
 
 The OpenBao address and token come from the environment (`BAO_ADDR`/`VAULT_ADDR`
-and `BAO_TOKEN`/`VAULT_TOKEN`); the token is never logged. The full bring-up
+and `BAO_TOKEN`/`VAULT_TOKEN`). The full bring-up
 sequence, and the rest of the phases, are in
 [docs/deployment-order.md](docs/deployment-order.md).
 
@@ -124,8 +130,10 @@ sequence, and the rest of the phases, are in
 Working, on main: apply that converges (dry-run first, diff shown, nothing destroyed) for both
 OpenBao and cluster objects; teams as OpenBao namespaces with per-application identities; sync
 through the External Secrets Operator; the HTTP backend behind an identity-aware proxy, on
-SQLite (PostgreSQL with the `postgres` extra), with every denial audited; a machine lane for other services; the role
-audit. All of it proven live, end to end, on a shared development cluster.
+SQLite (PostgreSQL with the `postgres` extra), with denied requests audited
+(`src/sero/web/deps.py`, `src/sero/web/routes_secrets.py`); a machine lane for other
+services; the role audit. Each piece was proven live on a shared development cluster when
+it merged; [docs/status.md](docs/status.md) records what each proof covered.
 
 Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
 sync; reveal step-up not built (gate denies by default); no fleet / second cluster; one process, one replica (the job runner and
