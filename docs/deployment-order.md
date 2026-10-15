@@ -694,7 +694,7 @@ none of them on day one.
   └─ 1 substrate (cluster, KMS+grant, LB)
        └─ 2 OpenBao install
             ├─ 3 init + unseal (manual)
-            │     └─ 4 root config (namespaces, auth, KV)
+            │     └─ 4 root config (KV, policies, auth, teams)
             │          ├─ 5 observability
             │          └─ 6 ESO on platform cluster
             └─ 7 private connectivity

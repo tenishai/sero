@@ -25,4 +25,4 @@ INVARIANTS:
 - Every 401/429 is audited before answering.
 - Budgets are in-process: a second replica gets a second bucket (by design).
 CONSUMERS: the room (its client lives in its own repo, not checked here). Changing a route, body field, or status code breaks the room. Tests: tests/test_web_service_lane.py.
-STALE IN CODE: the unsync_secret docstring still says off-boarding is operator-only / not on the machine lane; #78 added DELETE /service/app. Trust the routes. (The module docstring was fixed by #80.)
+STALE IN CODE: the unsync_secret docstring still says off-boarding is operator-only / not on the machine lane; #78 added DELETE /service/app. Trust the routes. (The module docstring was fixed by #92.)
