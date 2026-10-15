@@ -71,10 +71,12 @@ root token beyond what the operator supplies for the next phase.
 
 With a reachable, unsealed OpenBao, apply the baseline root configuration in
 order: the KV v2 secret engine, then the policies (so roles can reference them),
-then the auth methods with their roles (the human operator OIDC method and the
-workload JWT method, per [baseline.md](baseline.md)), then a namespace for each
-team in the deployment config. This is the order `root_config_plan` in
-`src/sero/apply/plan.py` runs. AppRole is enabled here only if the deployment uses it.
+then the auth methods (the workload JWT method always, and the human operator
+OIDC method when `--oidc-discovery-url` is given, per [baseline.md](baseline.md)),
+then a namespace for each team in the deployment config. This is the order
+`root_config_plan` in `src/sero/apply/plan.py` runs. The root-config command
+mounts and configures the auth methods but writes no roles on them. sero does not
+render AppRole; enabling it is a manual step today.
 
 Prerequisite: phase 3 (initialized and unsealed, with a token that can configure
 the root namespace). This is the first phase rendered by the config layer

@@ -98,7 +98,7 @@ Optional, documented but not enabled by default:
 - **AppRole** for service-to-service automation that has no workload identity.
 
 A deployment that only needs operator and workload access runs with the two
-baseline methods; AppRole is turned on through configuration when needed.
+baseline methods. sero does not render AppRole; enabling it is a manual step today.
 Kubernetes auth is intentionally not in the baseline: the source treats it as
 legacy and is moving workloads to JWT, so Sero starts where that migration
 lands.
