@@ -1,11 +1,11 @@
 # Source review
 
-Ladon is rebuilt from two existing source repositories. They are read-only
-sources, not dependencies: Ladon owns a new, clean, generic implementation and
+Sero is rebuilt from two existing source repositories. They are read-only
+sources, not dependencies: Sero owns a new, clean, generic implementation and
 pulls the useful parts across, file by file, scrubbed of all company branding
 and slimmed to a generic baseline.
 
-This document records what those sources contain, the seams Ladon builds on, and
+This document records what those sources contain, the seams Sero builds on, and
 the scrub-and-generalize plan. It is the reference for the Phase 1 work in
 [../ROADMAP.md](../ROADMAP.md) and complements the architecture in
 [design.md](design.md).
@@ -14,11 +14,11 @@ Two mandates apply to everything brought over:
 
 1. **Scrub all company branding.** No company or product names, domains, cloud
    project or account IDs, region or cluster names, identity-provider org names,
-   or internal identifiers survive in Ladon. This document follows the same
+   or internal identifiers survive in Sero. This document follows the same
    rule: the scrub surface below is described as categories and placeholder
    patterns, never real values.
 2. **Generalize and slim down.** The sources are client-specific and sprawling.
-   Ladon keeps a small handful of generic namespaces, policies, and auth
+   Sero keeps a small handful of generic namespaces, policies, and auth
    methods, with everything deployment-specific driven by configuration.
 
 ## Source A: OpenBao infrastructure (Terraform on Kubernetes)
@@ -50,13 +50,13 @@ standby) on managed Kubernetes.
 
 - **Namespaces:** roughly three dozen team namespaces in the source, grouped
   into broad categories (operations, backend, frontend). This is client-specific
-  sprawl. Ladon's baseline keeps only a small handful of generic namespaces.
+  sprawl. Sero's baseline keeps only a small handful of generic namespaces.
 - **Policies:** about seven distinct policy types (a full-access team policy, a
   read-only variant, an external-secrets read policy, and a few operational
   roles for audit-log reading and sync). The shapes generalize well; the count
   and the team-specific bindings do not.
 - **Auth methods:** five in the source (OIDC via an identity provider,
-  Kubernetes, a JWT method for ESO, AppRole, and a root JWT method). Ladon's
+  Kubernetes, a JWT method for ESO, AppRole, and a root JWT method). Sero's
   baseline is JWT for workloads plus OIDC for operators, with AppRole as a
   documented optional addition and Kubernetes auth deliberately left out, since
   the source treats it as legacy and is migrating away from it (D6).
@@ -65,13 +65,13 @@ standby) on managed Kubernetes.
 ### The generic seam to build on
 
 The source has a newer canonical pattern that is the right foundation for
-Ladon's customization model:
+Sero's customization model:
 
 - A single declarative input file lists teams, and a reusable module creates,
   per team, the namespace plus its policy, OIDC role, identity-group bindings,
   and KV mount in one place.
 
-Ladon generalizes this: a parameterized config file (teams, environments,
+Sero generalizes this: a parameterized config file (teams, environments,
 identity-provider groups) drives a small set of reusable modules, with no
 hardcoded org structure.
 
@@ -94,13 +94,13 @@ provider locals, and the team module. The categories to parameterize:
 - Monitoring webhook and channel identifiers (make optional).
 
 No secret values are hardcoded in the source: sensitive data is read from a
-cloud secret store at apply time. Ladon preserves that property.
+cloud secret store at apply time. Sero preserves that property.
 
 ### External Secrets Operator note
 
 ESO is deployed from a different repository (via a GitOps controller there) and
 is mid-migration between major versions. In the source, the OpenBao clusters act
-as push hubs: ESO reads from OpenBao KV and pushes to cloud secret stores. Ladon
+as push hubs: ESO reads from OpenBao KV and pushes to cloud secret stores. Sero
 pins the ESO version itself when the sync layer lands (see
 [versions.md](versions.md)); the exact pin stays `tbd` until then.
 
@@ -126,7 +126,7 @@ Svelte UI, a relational datastore, and an agent (MCP) surface.
 
 ### Secrets hygiene already present (preserve)
 
-The source already does several things Ladon mandates, and these are worth
+The source already does several things Sero mandates, and these are worth
 carrying over rather than reinventing:
 
 - Listing reads metadata only; values are not returned by default.
@@ -140,7 +140,7 @@ carrying over rather than reinventing:
 
 Path conventions encode the sync target (a Kubernetes path shape, a cloud
 secret-manager path shape per provider, and a bare path for OpenBao-only). The
-backend renders the matching ESO resources per target. Ladon keeps the idea of
+backend renders the matching ESO resources per target. Sero keeps the idea of
 target-encoding path conventions, generalized and configurable rather than
 hardcoded.
 
@@ -160,7 +160,7 @@ make optional:
   plus optional overrides).
 - Product-name and brand strings in the UI (move to configuration).
 
-## The generic baseline Ladon will define
+## The generic baseline Sero will define
 
 Before building, Phase 1 produces a baseline design. The direction, from this
 review:

@@ -79,17 +79,17 @@ Languages and their toolchains. Populated once the language decision in
 | --- | --- | --- | --- | --- |
 | Python | 3.14.6 | python.org/downloads | 2026-06-17 | `requires-python >= 3.14`; `.python-version` pins 3.14. |
 | uv | 0.11.21 | github.com/astral-sh/uv/releases/latest | 2026-06-17 | Package and environment manager. |
-| ruff | 0.15.17 | pypi.org/project/ruff | 2026-06-17 | Lint and format. Pinned in pyproject dev group and uv.lock. |
-| pytest | 9.1.0 | pypi.org/project/pytest | 2026-06-17 | Test runner. Pinned in pyproject dev group and uv.lock. |
+| ruff | 0.16.10 | pypi.org/project/ruff | 2026-10-15 | Lint and format. Pinned in pyproject dev group and uv.lock. |
+| pytest | 9.1.1 | pypi.org/project/pytest | 2026-10-15 | Test runner. Pinned in pyproject dev group and uv.lock. |
 | PyYAML | 6.0.3 | pypi.org/project/PyYAML | 2026-06-17 | Runtime dependency: parse deployment config. Pinned in pyproject and uv.lock. |
 | hvac | 2.4.0 | pypi.org/project/hvac | 2026-06-22 | Runtime dependency: OpenBao API client for the SDK apply layer (D3b). The pure plan layer landed first; the client wrapper follows. Pinned in pyproject and uv.lock. |
 | SQLAlchemy | 2.0.51 | pypi.org/project/SQLAlchemy | 2026-07-06 | Runtime dependency: ORM/schema for the backend datastore (D11). Pinned in pyproject and uv.lock. |
 | psycopg (optional `postgres` extra) | 3.3.6 | pypi.org/project/psycopg | 2026-10-05 | Optional runtime dependency: the PostgreSQL driver for the backend datastore (D11), installed with `--extra postgres`. Pinned in pyproject and uv.lock. |
-| alembic | 1.18.5 | pypi.org/project/alembic | 2026-07-06 | Runtime dependency: datastore migrations (D11). Pinned in pyproject and uv.lock. |
-| mcp | 1.28.1 | pypi.org/project/mcp | 2026-07-06 | Runtime dependency: MCP server (FastMCP) for the agent surface (D12). v1.x is the recommended production line (2.0 is prerelease). Pinned in pyproject and uv.lock. |
-| PyJWT | 2.13.0 | pypi.org/project/PyJWT | 2026-07-06 | Runtime dependency: verify MCP OAuth 2.1 bearer access tokens (D12) and the proxy's signed identity assertion (D15). Declared with the `crypto` extra, which pulls `cryptography`: ES256 and RS256 verification needs it, and relying on another dependency to supply it would let the assertion path break silently. Also a transitive dep of mcp; pinned directly since Sero imports it. Pinned in pyproject and uv.lock. |
-| fastapi | 0.141.1 | pypi.org/project/fastapi | 2026-09-22 | Runtime dependency: the HTTP backend serving the UI's routes and the static UI (D14). Chosen over bare Starlette for request-body validation and the typed dependency injection the route gates use. Its Starlette `TestClient` (on the existing transitive httpx) is how the routes are tested, so no test dependency is added. Pinned in pyproject and uv.lock. |
-| uvicorn | 0.50.2 | pypi.org/project/uvicorn | 2026-09-22 | Runtime dependency: the ASGI server that runs the backend (`uvicorn --factory sero.web.app:build_default_app`) (D14). Pinned in pyproject and uv.lock. |
+| alembic | 1.20.0 | pypi.org/project/alembic | 2026-10-15 | Runtime dependency: datastore migrations (D11). Pinned in pyproject and uv.lock. |
+| mcp | 1.30.0 | pypi.org/project/mcp | 2026-10-15 | Runtime dependency: MCP server (FastMCP) for the agent surface (D12). v1.x is the recommended production line (2.0 is prerelease). Pinned in pyproject and uv.lock. |
+| PyJWT | 2.15.1 | pypi.org/project/PyJWT | 2026-10-15 | Runtime dependency: verify MCP OAuth 2.1 bearer access tokens (D12) and the proxy's signed identity assertion (D15). Declared with the `crypto` extra, which pulls `cryptography`: ES256 and RS256 verification needs it, and relying on another dependency to supply it would let the assertion path break silently. Also a transitive dep of mcp; pinned directly since Sero imports it. Pinned in pyproject and uv.lock. |
+| fastapi | 0.142.2 | pypi.org/project/fastapi | 2026-10-15 | Runtime dependency: the HTTP backend serving the UI's routes and the static UI (D14). Chosen over bare Starlette for request-body validation and the typed dependency injection the route gates use. Its Starlette `TestClient` (on the existing transitive httpx) is how the routes are tested, so no test dependency is added. Pinned in pyproject and uv.lock. |
+| uvicorn | 0.54.0 | pypi.org/project/uvicorn | 2026-10-15 | Runtime dependency: the ASGI server that runs the backend (`uvicorn --factory sero.web.app:build_default_app`) (D14). Pinned in pyproject and uv.lock. |
 
 ## Frontend (UI)
 
@@ -99,17 +99,17 @@ is dev tooling.
 
 | Package | Pinned version | Verified against | Date | Notes |
 | --- | --- | --- | --- | --- |
-| svelte | 5.56.4 | npmjs.com/package/svelte | 2026-07-06 | Svelte 5 (runes). |
-| vite | 8.1.3 | npmjs.com/package/vite | 2026-07-06 | Build tool and dev server. |
+| svelte | 5.57.2 | npmjs.com/package/svelte | 2026-10-15 | Svelte 5 (runes). |
+| vite | 8.3.3 | npmjs.com/package/vite | 2026-10-15 | Build tool and dev server. |
 | typescript | 6.0.3 | npmjs.com/package/typescript | 2026-07-06 | |
-| tailwindcss | 4.3.2 | npmjs.com/package/tailwindcss | 2026-07-06 | v4, configured in CSS (`ui/src/app.css`); no config file. |
-| @tailwindcss/vite | 4.3.2 | npmjs.com/package/@tailwindcss/vite | 2026-07-06 | Tailwind Vite plugin. |
-| @sveltejs/vite-plugin-svelte | 7.1.4 | npmjs.com/package/@sveltejs/vite-plugin-svelte | 2026-07-06 | |
-| svelte-check | 4.7.1 | npmjs.com/package/svelte-check | 2026-07-06 | Type-check in `npm run build`. |
+| tailwindcss | 4.3.3 | npmjs.com/package/tailwindcss | 2026-10-15 | v4, configured in CSS (`ui/src/app.css`); no config file. |
+| @tailwindcss/vite | 4.3.3 | npmjs.com/package/@tailwindcss/vite | 2026-10-15 | Tailwind Vite plugin. |
+| @sveltejs/vite-plugin-svelte | 7.3.1 | npmjs.com/package/@sveltejs/vite-plugin-svelte | 2026-10-15 | |
+| svelte-check | 4.7.6 | npmjs.com/package/svelte-check | 2026-10-15 | Type-check in `npm run build`. |
 | @tsconfig/svelte | 5.0.8 | npmjs.com/package/@tsconfig/svelte | 2026-07-06 | Base tsconfig. |
-| @types/node | 26.1.0 | npmjs.com/package/@types/node | 2026-07-07 | Types for the node:test API-client tests (run via Node type-stripping, no test framework). |
-| @playwright/test | 1.61.1 | npmjs.com/package/@playwright/test | 2026-07-07 | Render smoke test (e2e/): loads the app in a headless browser to catch render-time failures CI's build/type-check miss. |
-| @tanstack/svelte-query | 6.1.36 | npmjs.com/package/@tanstack/svelte-query | 2026-07-06 | The one runtime dependency: server-state/query layer. |
+| @types/node | 26.6.4 | npmjs.com/package/@types/node | 2026-10-15 | Types for the node:test API-client tests (run via Node type-stripping, no test framework). |
+| @playwright/test | 1.63.0 | npmjs.com/package/@playwright/test | 2026-10-15 | Render smoke test (e2e/): loads the app in a headless browser to catch render-time failures CI's build/type-check miss. |
+| @tanstack/svelte-query | 6.3.1 | npmjs.com/package/@tanstack/svelte-query | 2026-10-15 | The one runtime dependency: server-state/query layer. |
 
 ## Tooling and CLIs
 
@@ -128,14 +128,18 @@ when the CI skeleton lands.
 
 | Action | Pinned SHA | Tag at pin | Verified against | Date |
 | --- | --- | --- | --- | --- |
-| `actions/checkout` | `df4cb1c069e1874edd31b4311f1884172cec0e10` | v6.0.3 | github.com/actions/checkout/releases/latest | 2026-06-17 |
-| `Azure/setup-helm` | `dda3372f752e03dde6b3237bc9431cdc2f7a02a2` | v5.0.0 | github.com/Azure/setup-helm/releases/latest | 2026-06-17 |
-| `astral-sh/setup-uv` | `fac544c07dec837d0ccb6301d7b5580bf5edae39` | v8.2.0 | github.com/astral-sh/setup-uv/releases/latest | 2026-06-17 |
+| `actions/checkout` | `3d3c42e5aac5ba805825da76410c181273ba90b1` | v7.0.1 | github.com/actions/checkout/releases/latest | 2026-10-15 |
+| `Azure/setup-helm` | `9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310` | v5.0.1 | github.com/Azure/setup-helm/releases/latest | 2026-10-15 |
+| `astral-sh/setup-uv` | `c18668ad3cf93ea998bef934396af7bb5c839dc7` | v10.2.0 | github.com/astral-sh/setup-uv/releases/latest | 2026-10-15 |
 | `hashicorp/setup-terraform` | `dfe3c3f87815947d99a8997f908cb6525fc44e9e` | v4.0.1 | github.com/hashicorp/setup-terraform/releases/latest | 2026-06-23 |
-| `actions/setup-node` | `48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e` | v6.4.0 | github.com/actions/setup-node/releases/latest | 2026-07-06 |
-| `Azure/setup-kubectl` | `829323503d1be3d00ca8346e5391ca0b07a9ab0d` | v5.1.0 | github.com/Azure/setup-kubectl/releases/latest | 2026-09-22 |
+| `actions/setup-node` | `820762786026740c76f36085b0efc47a31fe5020` | v7.0.0 | github.com/actions/setup-node/releases/latest | 2026-10-15 |
+| `Azure/setup-kubectl` | `bda439f5f36b99b262ebdcd3613869bddb064c8e` | v5.2.0 | github.com/Azure/setup-kubectl/releases/latest | 2026-10-15 |
 | `google-github-actions/auth` | `7c6bc770dae815cd3e89ee6cdf493a5fab2cc093` | v3.0.0 | github.com/google-github-actions/auth/releases/latest | 2026-09-22 |
 | `google-github-actions/setup-gcloud` | `aa5489c8933f4cc7a4f7d45035b3b1440c9c10db` | v3.0.1 | github.com/google-github-actions/setup-gcloud/releases/latest | 2026-09-22 |
 
-The CI runner image is pinned too: workflows use `ubuntu-24.04`, never
-`ubuntu-latest`.
+The `google-github-actions/auth` and `google-github-actions/setup-gcloud` pins are
+recorded ahead of use: no workflow in `.github/workflows/` uses either today.
+
+The CI runner image: every `ci.yml` job runs on `ubuntu-24.04` unless the repository
+variable `CI_RUNS_ON` (or `CI_BUILD_RUNS_ON` for the image build) names another runner.
+`dco.yml` runs on `ubuntu-latest`.

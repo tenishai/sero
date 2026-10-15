@@ -321,7 +321,8 @@ kubectl apply -f k8s/cluster/clusterrolebinding.yaml
 kubectl apply -f deploy/sero/standalone/
 ```
 
-`scripts/validate-deploy.sh` checks both without applying anything. The bring-up
+`scripts/validate-deploy.sh` checks both without applying anything. It uses the
+current kubectl context unless `SERO_KUBE_CONTEXT` names another. The bring-up
 order, including the vault, the bootstrap Secret, and a first look through a
 port-forward, is in
 [docs/deployment-order.md](../../docs/deployment-order.md).

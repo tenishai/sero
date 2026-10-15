@@ -22,6 +22,8 @@ deployment:
   # with it off the reveal route answers 403 for everyone.
   reveal:
     enabled: false
+  # Not read by any code yet: the OIDC auth method's inputs are CLI flags
+  # (--oidc-discovery-url, --oidc-client-id, --oidc-client-secret-ref).
   oidc:
     discovery_url: https://id.example.com
     groups_claim: groups
@@ -147,7 +149,8 @@ teams:
     environments: [dev, prod]
     access: readonly
 
-# Sync targets. Disabled by default; enable per deployment.
+# Sync targets. Parsed into DeploymentConfig.sync_targets, but nothing acts on
+# them yet.
 sync_targets:
   kubernetes:
     enabled: true
