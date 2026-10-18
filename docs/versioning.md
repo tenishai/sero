@@ -28,7 +28,8 @@ A breaking change is signaled at commit time with Conventional Commits (`!` or a
 - Releases are cut from `main`. `main` is always releasable.
 - Each release is an **annotated, signed git tag** named `vMAJOR.MINOR.PATCH`
   (for example `v0.3.0`). Annotated so the tag carries a message and date;
-  signed so provenance is verifiable.
+  signed so provenance is verifiable. The first release, `v0.1.0`, is annotated but
+  not signed.
 - The tag points at the commit whose `CHANGELOG.md` has that version moved out of
   `Unreleased` into a dated section.
 

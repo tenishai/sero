@@ -1,6 +1,6 @@
 # Generic baseline and customization model
 
-This document defines the small, generic baseline Ladon ships and the
+This document defines the small, generic baseline Sero ships and the
 configuration model that customizes it per deployment. It is the design gate the
 project set before any feature or infrastructure code lands: build this, review
 it, then implement against it.
@@ -14,30 +14,30 @@ nothing company-specific hardcoded.
 
 The source deployment carries roughly three dozen team namespaces, five auth
 methods, and seven policy types, all wired to one organization's structure. That
-is the opposite of what Ladon wants. Ladon ships the smallest set that a clean
+is the opposite of what Sero wants. Sero ships the smallest set that a clean
 deployment needs and grows from configuration, so a new adopter can stand it up
-with almost nothing and add their own teams without editing Ladon itself.
+with almost nothing and add their own teams without editing Sero itself.
 
 ## Namespaces
 
-OpenBao's open-source build supports namespaces (added in the 2.3 line; Ladon
+OpenBao's open-source build supports namespaces (added in the 2.3 line; Sero
 pins a later release in [versions.md](versions.md)). A namespace has its own auth
 methods, secret engines, policies, and tokens, and tokens do not cross
-namespaces. This is the isolation primitive Ladon uses, the same model the source
+namespaces. This is the isolation primitive Sero uses, the same model the source
 relies on, and it is available without an enterprise license.
 
 The baseline namespaces are deliberately minimal:
 
 - **root** - the platform space. Holds platform-wide configuration: the audit
   devices, the operator OIDC method, and the cross-namespace read role that the
-  External Secrets Operator uses. Operators administer Ladon here.
+  External Secrets Operator uses. Operators administer Sero here.
 - **team namespaces** - created entirely from configuration. The baseline ships
   with zero hardcoded teams. A deployment lists its teams in config (see
-  [Customization model](#customization-model)) and Ladon creates a namespace per
+  [Customization model](#customization-model)) and Sero creates a namespace per
   team, each with the standard policy set, auth roles, and a KV mount.
 
 Creating the team namespaces is part of the root config step: for every team in
-the config, Ladon ensures `sys/namespaces/<namespace>` exists and then, inside
+the config, Sero ensures `sys/namespaces/<namespace>` exists and then, inside
 it, enables the KV v2 mount and writes the policies the team's configured
 access level grants (`team-readwrite`, or `team-readonly` for a team configured
 read-only) plus `external-secrets-read`, which every team needs to sync secrets
@@ -58,7 +58,7 @@ No operations/backend/frontend grouping, no team-specific names in the repo.
 
 ## Policies
 
-Ladon ships a few generic policy templates, each rendered per namespace from
+Sero ships a few generic policy templates, each rendered per namespace from
 parameters (the namespace path and the KV mount). The shapes are distilled from
 the source; the bindings come from config.
 
@@ -98,9 +98,9 @@ Optional, documented but not enabled by default:
 - **AppRole** for service-to-service automation that has no workload identity.
 
 A deployment that only needs operator and workload access runs with the two
-baseline methods; AppRole is turned on through configuration when needed.
+baseline methods. sero does not render AppRole; enabling it is a manual step today.
 Kubernetes auth is intentionally not in the baseline: the source treats it as
-legacy and is moving workloads to JWT, so Ladon starts where that migration
+legacy and is moving workloads to JWT, so Sero starts where that migration
 lands.
 
 ## Secret engine
@@ -128,10 +128,10 @@ Each application gets one path prefix inside its team's KV mount,
 - a JWT role `eso-<team>-<app>-<digest>` on the cluster's `jwt-<cluster>` mount,
   carrying only that policy, refusing the namespace's `default` policy, bound to
   the audience the store asks for, and bound by subject to one service account;
-- a `ServiceAccount eso-<team>-<app>-<digest>` in Ladon's own Kubernetes
+- a `ServiceAccount eso-<team>-<app>-<digest>` in Sero's own Kubernetes
   namespace (not the secrets operator's, which is shared), with token
   automounting off;
-- a `ClusterSecretStore ladon-<team>-<app>-<digest>` naming the team's OpenBao
+- a `ClusterSecretStore sero-<team>-<app>-<digest>` naming the team's OpenBao
   namespace, the JWT mount, the role, and that service account, and admitted
   into exactly one Kubernetes namespace by the API-server-set
   `kubernetes.io/metadata.name` label, which a namespace owner cannot forge.
@@ -163,7 +163,7 @@ policy still grants what it always granted, and the login still succeeds. The
 platform this baseline is drawn from ran that way for months, because nothing
 ever looked.
 
-`scripts/ladon audit` looks. It connects read-only, writes nothing, and reports
+`scripts/sero audit` looks. It connects read-only, writes nothing, and reports
 one finding per deviation. Each finding carries a severity (`high`, `medium`,
 `low`), a stable code, the object it is about, and a detail that names the path
 and the capability at issue. A policy body is never printed, and neither is a
@@ -191,7 +191,7 @@ Per namespace, it checks:
   A subject is required on every role, not only the `eso-` ones: the shared
   operator role with no subject is one identity that reads the whole namespace,
   and it is precisely the role a narrower check waves through. An `eso-` role
-  is held to two more rules, because it is the one Ladon renders and its shape
+  is held to two more rules, because it is the one Sero renders and its shape
   is known: it carries exactly its own `eso-<app>-readonly` policy and nothing
   beside it (`extra-policy`, high), and its subject is the service account of
   its own name, in any namespace (`subject-not-pinned`, high).
@@ -251,7 +251,7 @@ on a `WARNING` line, because otherwise "no findings" reads as "the deployment
 is clean" when no team namespace was looked at.
 
 Policy bodies are read with a strict reader of the `path "<p>" { capabilities =
-[...] }` block form Ladon renders, tolerating comments and blank lines. A body
+[...] }` block form Sero renders, tolerating comments and blank lines. A body
 it cannot read is reported as `unparsed-policy` rather than crashing the run
 or, worse, being partly understood and silently vouched for. That finding is
 high for `default` and for an `eso-<app>-readonly` policy, which are the two
@@ -261,7 +261,7 @@ and the audit never claimed to judge.
 
 ## Customization model
 
-A deployment is described by configuration, not by edits to Ladon. The
+A deployment is described by configuration, not by edits to Sero. The
 configuration has three parts:
 
 1. **Deployment settings** - the per-environment platform facts: cloud provider
@@ -272,7 +272,7 @@ configuration has three parts:
 2. **Teams** - a list, each entry naming a team, its namespace, the environments
    it exists in, its identity-provider groups, and which policy templates apply.
    This is the seam the source already moved toward (a declarative team list
-   feeding a reusable module); Ladon generalizes it. An empty list is valid: a
+   feeding a reusable module); Sero generalizes it. An empty list is valid: a
    deployment with no teams still has a working platform root.
 
 3. **Sync targets** - which of the supported targets (Kubernetes, and the cloud
@@ -290,7 +290,7 @@ independent lifecycle.
 
 ### A minimal deployment
 
-The smallest useful Ladon deployment:
+The smallest useful Sero deployment:
 
 - One environment.
 - OpenBao installed on Raft with KMS auto-unseal.

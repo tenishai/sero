@@ -70,13 +70,17 @@ root token beyond what the operator supplies for the next phase.
 ### 4. Platform root configuration (Config)
 
 With a reachable, unsealed OpenBao, apply the baseline root configuration in
-order: the platform namespaces, then the auth methods (the human operator OIDC
-method and the workload JWT method, per [baseline.md](baseline.md)), then the KV
-v2 secret engine. AppRole is enabled here only if the deployment uses it.
+order: the KV v2 secret engine, then the policies (so roles can reference them),
+then the auth methods (the workload JWT method always, and the human operator
+OIDC method when `--oidc-discovery-url` is given, per [baseline.md](baseline.md)),
+then a namespace for each team in the deployment config. This is the order
+`root_config_plan` in `src/sero/apply/plan.py` runs. The root-config command
+mounts and configures the auth methods but writes no roles on them. sero does not
+render AppRole; enabling it is a manual step today.
 
 Prerequisite: phase 3 (initialized and unsealed, with a token that can configure
 the root namespace). This is the first phase rendered by the config layer
-(policies, teams, auth) and applied through the SDK with a diff first.
+(KV, policies, auth, teams) and applied through the SDK with a diff first.
 
 ### 5. Observability (Substrate)
 
@@ -692,7 +696,7 @@ none of them on day one.
   └─ 1 substrate (cluster, KMS+grant, LB)
        └─ 2 OpenBao install
             ├─ 3 init + unseal (manual)
-            │     └─ 4 root config (namespaces, auth, KV)
+            │     └─ 4 root config (KV, policies, auth, teams)
             │          ├─ 5 observability
             │          └─ 6 ESO on platform cluster
             └─ 7 private connectivity

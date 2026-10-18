@@ -1,6 +1,6 @@
 ---
 card: repo-card:sero
-updated: 2026-10-05
+updated: 2026-10-15
 anchor: src/sero/web/app.py sha=bf60c3568431bbb36ed49bf331f704f4f73e6085
 ---
 <!-- pyproject.toml is deliberately not anchored: Dependabot moves its pins weekly and the
@@ -9,7 +9,7 @@ anchor: src/sero/web/app.py sha=bf60c3568431bbb36ed49bf331f704f4f73e6085
 # sero: repo card
 
 WHAT: secrets/vault control plane on OpenBao. Renders + converges OpenBao config (namespaces, policies, JWT/OIDC auth, KV v2) and per-app ESO identities on the cluster it runs on; serves an HTTP backend + Svelte UI for people and a machine lane for provisioners. Never stores secret values (datastore holds audit/jobs/requests/tokens only).
-STATE: main, pyproject `version = "0.1.0"` (optional `postgres` extra = psycopg, 2026-10-05) (bumped 2026-10-05 for the go-public tag), no git tags yet, CHANGELOG all under [Unreleased]. Dev-shape deployment proven live per README Status (unverified here). Active: machine lane (read/delete/unsync #74, implicit onboarding on sync #76, `DELETE /api/service/app` offboard #78), k8s managed-fields reads (#77), front door + NetworkPolicy (#72), KMS seal overlay (#71).
+STATE: main, pyproject `version = "0.1.0"` (optional `postgres` extra = psycopg, 2026-10-05) (bumped 2026-10-05 for the go-public tag), tagged `v0.1.0` 2026-10-12 (annotated, not signed; CHANGELOG `[0.1.0]`). Dev-shape deployment proven live per README Status (unverified here). Merged before the tag, all in 0.1.0: machine lane (read/delete/unsync #74, implicit onboarding on sync #76, `DELETE /api/service/app` offboard #78), k8s managed-fields reads (#77), front door + NetworkPolicy (#72), KMS seal overlay (#71).
 STACK: Python >=3.14, uv (`package = false`: tooling, not a distributable; no console script). FastAPI+uvicorn, hvac (OpenBao), SQLAlchemy+Alembic, pyjwt[crypto], mcp (FastMCP), PyYAML: all pinned exact. Shells out to `helm` and `kubectl` (pinned + checksummed in Dockerfile). UI: Svelte 5 + Vite in ui/, built into the image at /srv/sero/ui. Image: Dockerfile, digest-pinned bases, non-root uid 10001. The read-only root filesystem is set by the deployment manifest (deploy/sero/standalone/deployment.yaml), not by the image.
 ENTRY:
 - CLI `scripts/sero` → `python -m sero` → src/sero/apply/cli.py:main. Subcommands plan | apply (dry-run unless --apply) | install-eso | seal-values | audit; `--phase` ∈ root-config, team-onboarding, app-onboarding, sync (cli.py:234).

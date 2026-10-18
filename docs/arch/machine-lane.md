@@ -1,6 +1,6 @@
 ---
 card: arch-card:sero-machine-lane
-updated: 2026-10-05
+updated: 2026-10-15
 anchor: src/sero/web/service_lane.py sha=f4ec281969d63d71e1af15401503049049d778c1
 anchor: src/sero/web/settings.py sha=cd102cd7cc660d9be579b36d303ff3f6cb5b846c
 ---
@@ -25,4 +25,4 @@ INVARIANTS:
 - Every 401/429 is audited before answering.
 - Budgets are in-process: a second replica gets a second bucket (by design).
 CONSUMERS: the room (its client lives in its own repo, not checked here). Changing a route, body field, or status code breaks the room. Tests: tests/test_web_service_lane.py.
-STALE IN CODE: module docstring (service_lane.py:34-38) and unsync_secret docstring still say off-boarding is operator-only / not on the machine lane; #78 added DELETE /service/app. Trust the routes.
+STALE IN CODE: the unsync_secret docstring still says off-boarding is operator-only / not on the machine lane; #78 added DELETE /service/app. Trust the routes. (The module docstring was fixed by #92.)
