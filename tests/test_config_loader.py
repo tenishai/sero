@@ -92,3 +92,8 @@ def test_bad_identity_section_rejected():
 def test_bad_access_section_rejected():
     with pytest.raises(ConfigError, match="'access' must be a mapping"):
         load_deployment_config_text("access: not-a-mapping\n")
+
+
+def test_unknown_top_level_key_is_rejected():
+    with pytest.raises(ConfigError, match="unknown top-level key.*'deployments'"):
+        parse_deployment_config({"deployments": {"environment": "dev"}})

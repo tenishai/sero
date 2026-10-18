@@ -38,12 +38,26 @@ class DeploymentConfig:
     service_callers: list = field(default_factory=list)
 
 
+# The top-level sections this loader reads. A key outside this set is a setting
+# nobody has (a misspelling loads silently and does nothing), so it fails here.
+KNOWN_TOP_LEVEL_KEYS = frozenset(
+    {"deployment", "sync_targets", "identity", "access", "service_callers", "teams"}
+)
+
+
 def parse_deployment_config(data: object) -> DeploymentConfig:
     """Parse an already-loaded config mapping into a DeploymentConfig."""
     if data is None:
         return DeploymentConfig()
     if not isinstance(data, dict):
         raise ConfigError(f"top-level config must be a mapping, got {type(data).__name__}")
+
+    unknown = sorted(set(data) - KNOWN_TOP_LEVEL_KEYS)
+    if unknown:
+        raise ConfigError(
+            f"unknown top-level key(s) {', '.join(repr(k) for k in unknown)}; "
+            f"known: {', '.join(sorted(KNOWN_TOP_LEVEL_KEYS))}"
+        )
 
     settings = data.get("deployment") or {}
     if not isinstance(settings, dict):

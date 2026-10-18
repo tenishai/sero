@@ -10,6 +10,15 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Changed
+
+- The deployment config loader rejects unknown top-level keys instead of
+  dropping them; a misspelled section now fails at load time.
+- Releases are annotated tags, not signed ones; `docs/versioning.md` says so.
+- `docs/versions.md` follows the 2026-10-16 dependency bumps (#108, #109,
+  #110) and no longer lists the two `google-github-actions` pins no workflow
+  uses. A test keeps the Dockerfile's three Python base digests equal.
+
 ## [0.1.0] - 2026-10-12
 
 ### Changed

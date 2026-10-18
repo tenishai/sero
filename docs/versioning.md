@@ -26,10 +26,10 @@ A breaking change is signaled at commit time with Conventional Commits (`!` or a
 ## Tags and releases
 
 - Releases are cut from `main`. `main` is always releasable.
-- Each release is an **annotated, signed git tag** named `vMAJOR.MINOR.PATCH`
-  (for example `v0.3.0`). Annotated so the tag carries a message and date;
-  signed so provenance is verifiable. The first release, `v0.1.0`, is annotated but
-  not signed.
+- Each release is an **annotated git tag** named `vMAJOR.MINOR.PATCH` (for
+  example `v0.3.0`), so the tag carries a message and a date. Tags are not
+  signed: provenance is the GitHub release and the DCO sign-off on every
+  commit the tag reaches (decided 2026-10-18; `v0.1.0` was already unsigned).
 - The tag points at the commit whose `CHANGELOG.md` has that version moved out of
   `Unreleased` into a dated section.
 
