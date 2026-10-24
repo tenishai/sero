@@ -44,7 +44,7 @@ RUN uv export --frozen --no-dev -o requirements.txt
 # and their unpacked trees out of the shipped image.
 FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS tools
 
-ARG TARGETARCH
+ARG TARGETARCH=amd64
 # Pinned in docs/versions.md. Bumps are their own reviewed PR.
 ARG HELM_VERSION=4.2.1
 ARG KUBECTL_VERSION=1.37.0
