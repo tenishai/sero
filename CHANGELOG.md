@@ -10,6 +10,8 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-27
+
 ### Changed
 
 - The deployment config loader rejects unknown top-level keys instead of
@@ -935,3 +937,4 @@ Proven live on a shared development cluster, against the platform vault:
   well as the baseline and design documents.
 
 [Unreleased]: https://github.com/tenishai/ladon/commits/main
+[0.1.1]: https://github.com/tenishai/ladon/commits/main
