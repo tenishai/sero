@@ -10,6 +10,10 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Changed
+
+- The image carries the `postgres` extra (psycopg), so `SERO_DATABASE_URL` may name a PostgreSQL database without a rebuild. SQLite stays the default.
+
 ## [0.1.1] - 2026-10-27
 
 ### Changed
