@@ -10,6 +10,8 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-28
+
 ### Added
 
 - A release workflow: a `vX.Y.Z` tag builds the multi-arch image (linux/amd64, linux/arm64), publishes it to ghcr under the tag and the short sha, and records the digest on the GitHub release. No image is built on a push to main.
@@ -945,4 +947,5 @@ Proven live on a shared development cluster, against the platform vault:
   well as the baseline and design documents.
 
 [Unreleased]: https://github.com/tenishai/ladon/commits/main
+[0.1.2]: https://github.com/tenishai/ladon/commits/main
 [0.1.1]: https://github.com/tenishai/ladon/commits/main
