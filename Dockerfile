@@ -37,7 +37,7 @@ WORKDIR /lock
 COPY pyproject.toml uv.lock ./
 # --frozen refuses to re-resolve: the image carries exactly the lock, with the
 # hashes pip then verifies. --no-dev leaves the test and lint tooling out.
-RUN uv export --frozen --no-dev -o requirements.txt
+RUN uv export --frozen --no-dev --extra postgres -o requirements.txt
 
 # --- Stage: fetch the pinned cluster tools -----------------------------------
 # Downloading here rather than in the runtime stage keeps curl, the archives,
