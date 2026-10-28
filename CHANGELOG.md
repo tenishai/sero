@@ -10,6 +10,10 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- A release workflow: a `vX.Y.Z` tag builds the multi-arch image (linux/amd64, linux/arm64), publishes it to ghcr under the tag and the short sha, and records the digest on the GitHub release. No image is built on a push to main.
+
 ### Changed
 
 - The image carries the `postgres` extra (psycopg), so `SERO_DATABASE_URL` may name a PostgreSQL database without a rebuild. SQLite stays the default.
