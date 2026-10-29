@@ -58,6 +58,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
+          # Layers that did not change (apt, pip, npm) come from the last build instead of
+          # being rebuilt for both architectures; mode=max also caches the intermediate stages.
+          cache-from: type=registry,ref=ghcr.io/tenishai/sero:buildcache
+          cache-to: type=registry,ref=ghcr.io/tenishai/sero:buildcache,mode=max
           tags: |
             ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
             ${{ env.IMAGE }}:${{ steps.version.outputs.sha }}

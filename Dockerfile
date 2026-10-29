@@ -15,7 +15,7 @@
 
 # --- Stage: build the UI -----------------------------------------------------
 # node 22-trixie-slim, see docs/versions.md.
-FROM node:22-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 AS ui
+FROM --platform=$BUILDPLATFORM node:22-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 AS ui
 
 WORKDIR /ui
 # The manifests first, so a source-only change does not reinstall the tree.
@@ -26,7 +26,7 @@ RUN npm run build
 
 # --- Stage: resolve the locked dependency set --------------------------------
 # python 3.14-slim, see docs/versions.md. The same digest as the runtime stage.
-FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS deps
+FROM --platform=$BUILDPLATFORM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS deps
 
 # uv is a build-time tool only: the runtime installs from the exported
 # requirements with pip, so nothing in the shipped image depends on it.

@@ -10,6 +10,10 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Changed
+
+- **Faster release builds.** The UI build and the lockfile export run once on the build host instead of once per target architecture, and unchanged layers come from a registry cache (`ghcr.io/tenishai/sero:buildcache`). The image's contents do not change.
+
 ## [0.1.2] - 2026-10-28
 
 ### Added
