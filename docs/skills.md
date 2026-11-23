@@ -1,28 +1,8 @@
 # Skills
 
 Sero uses Claude Code skills to keep work consistent with the project's
-conventions. There are two kinds: marketplace skills (installed per machine, not
-committed) and project-local skills (committed to this repo).
-
-## Project-local skills (committed)
-
-These live in `.agents/skills/` and are exposed to Claude Code through symlinks
-in `.claude/skills/`. Committing them means every contributor and agent picks
-them up from a clean clone, with no extra install step.
-
-| Skill | Source | Use for |
-| --- | --- | --- |
-| `web-design-guidelines` | Vercel ([vercel-labs/web-interface-guidelines](https://github.com/vercel-labs/web-interface-guidelines)) | Reviewing the secrets UI and admin surface against Web Interface Guidelines (accessibility, UX, best practices). |
-
-Layout:
-
-```
-.agents/skills/web-design-guidelines/SKILL.md   # the real file, tracked in git
-.claude/skills/web-design-guidelines            # symlink -> ../../.agents/skills/web-design-guidelines
-```
-
-To add another project-local skill, create it under `.agents/skills/<name>/` and
-add a matching symlink under `.claude/skills/<name>`.
+conventions. They are installed per machine and not committed: this repository
+ships only its own work.
 
 ## Marketplace skills (installed per machine)
 
@@ -40,5 +20,9 @@ work each one covers:
 | `frontend-design` | Building or reshaping the secrets UI and admin surface. |
 | `web-artifacts-builder` | Multi-component UI artifacts. |
 
-The project-local `web-design-guidelines` skill above is the committed
-counterpart used for UI review.
+For UI review, Vercel's `web-design-guidelines` skill checks the secrets UI and admin
+surface against the Web Interface Guidelines (accessibility, UX, best practices):
+
+```
+npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-guidelines --global
+```
