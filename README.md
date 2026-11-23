@@ -1,55 +1,29 @@
-<h1 align="center">Sero</h1>
+# Sero
 
-<p align="center">
-  <strong>Open-source secrets and vault management, built on OpenBao.</strong>
-</p>
+Sero runs [OpenBao](https://github.com/openbao/openbao) for you and syncs its secrets to where workloads read them.
 
-<p align="center">
-  <a href="https://github.com/tenishai/sero/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tenishai/sero/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-yellow.svg">
-</p>
+[![CI](https://github.com/tenishai/sero/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tenishai/sero/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tenishai/sero)](https://github.com/tenishai/sero/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
-<p align="center">
-  <a href="#overview">Overview</a> |
-  <a href="#how-it-works">How it works</a> |
-  <a href="#quickstart">Quickstart</a> |
-  <a href="#stack">Stack</a> |
-  <a href="#running">Running</a> |
-  <a href="#status">Status</a> |
-  <a href="#docs">Docs</a>
-</p>
-
----
+![One secret in the Sero UI: keys listed, values masked, reveal on demand](docs/img/secret.png)
 
 ## Overview
 
-Sero deploys and operates [OpenBao](https://github.com/openbao/openbao) (the
-open-source fork of HashiCorp Vault) and syncs secrets out to where workloads
-need them. It is a platform you can deploy: brand-neutral defaults, customizable
-per deployment, open source under MIT.
+Sero deploys and operates OpenBao (the open-source fork of HashiCorp Vault) and syncs
+secrets out to the Kubernetes Secrets workloads already read. Teams get a namespace each,
+applications get an identity each, operators get a web UI, and agents get a tool surface.
 
-Sero integrates and operates OpenBao. It is not a fork of OpenBao or Vault. Its own
-datastore holds no secret values (`src/sero/datastore/models.py`): values live in OpenBao
-and in the targets External Secrets writes.
+Sero integrates OpenBao; it is not a fork of OpenBao or Vault. Its own datastore holds no
+secret values: values live in OpenBao and in the targets External Secrets writes.
 
-## How it works
-
-- Provision and operate OpenBao across environments via pinned Helm installs,
-  with cloud-KMS auto-unseal (GCP, AWS, or Azure) or Shamir.
-- Render and apply configuration (namespaces, policies, JWT and OIDC auth, KV
-  mounts) through the OpenBao API, dry-run first, from a `sero` CLI or a
-  deployment config file.
-- Sync secrets to targets with the [External Secrets Operator](https://github.com/external-secrets/external-secrets):
-  Kubernetes clusters today. The GCP Secret Manager and AWS Secrets Manager stores are
-  rendered (`src/sero/config/eso.py`) but not yet applied end to end (see Status).
-- Give operators a web UI (secrets view, create/edit with a dry-run preview,
-  namespace requests, admin) behind an identity-aware proxy, and agents an MCP
-  tool surface (over stdio today; the OAuth 2.1 HTTP mount is on the roadmap).
-- Keep secret values out of the UI and the datastore by default: reveal is explicit and
-  audited (`src/sero/web/reveal.py`), and job errors pass through `redact_text`
-  (`src/sero/hygiene.py`) before they are stored. Some raw exception messages still skip
-  that redaction; closing them is on the list.
+Sero is the secrets member of the tenish family of open-source platform and agent
+projects, each usable on its own: [gojira](https://github.com/tenishai/gojira) deploys,
+[kobo](https://github.com/tenishai/kobo) is where people build agents,
+[noto](https://github.com/tenishai/noto) observes, [bab](https://github.com/tenishai/bab)
+decides what an agent may do, and [liminal](https://github.com/tenishai/liminal) is the
+gateway agents reach tools through.
 
 ## Quickstart
 
@@ -80,94 +54,59 @@ with Helm.
 
 Tests: `uv run pytest` for the backend and `cd ui && npm test` for the UI, the same gates CI runs.
 
-## Stack
+## How it works
 
-OpenBao on Integrated Storage (Raft) with cloud-KMS auto-unseal; a pinned Helm
-install; configuration and runtime driven through the OpenBao API; the External
-Secrets Operator for sync; a Python apply/agent backend on a SQLite datastore
-(PostgreSQL with the `postgres` extra); and a Svelte 5 web UI that rebrands from two files.
-Terraform provides only the OpenBao-specific substrate (the auto-unseal key);
-creating the cluster is a separate concern (see
-[Part of a larger platform](#part-of-a-larger-platform)).
-The architecture and the decisions behind it are in
-[docs/design.md](docs/design.md); every pinned version is in
+- **Install.** OpenBao from a pinned Helm chart, on Integrated Storage (Raft), unsealed by
+  a cloud KMS key (GCP, AWS or Azure) or Shamir. Terraform creates only that key; the
+  cluster is someone else's to create.
+- **Configure.** Namespaces, policies, JWT and OIDC auth and KV mounts are rendered and
+  applied through the OpenBao API by the `sero` CLI. Every command is a dry run until
+  `--apply`, and a second apply writes nothing.
+- **Sync.** The [External Secrets Operator](https://github.com/external-secrets/external-secrets)
+  copies a path into a Kubernetes Secret.
+- **Use.** A Svelte web UI behind an identity-aware proxy (list, create and edit with a
+  dry-run preview, namespace requests, admin), and MCP tools for agents over stdio.
+- **Hygiene.** Values are masked by default; a reveal is explicit and audited, and job
+  errors are redacted before they are stored.
+
+The commands, in the order a new deployment runs them, are in
+[docs/deployment-order.md](docs/deployment-order.md). The architecture and its decisions
+are in [docs/design.md](docs/design.md); every pinned version is in
 [docs/versions.md](docs/versions.md).
-
-## Running
-
-The apply layers run from a checkout through the `sero` CLI wrapper. Every
-command is a dry-run until `--apply` is passed, and every apply converges: a
-second run reports each object already current and writes nothing
-(`tests/test_apply_converge.py`).
-
-```
-# Put the External Secrets Operator on the cluster, or reuse the one already
-# running on it:
-scripts/sero install-eso --apply
-
-# Onboard one application: its OpenBao policy and role, then its service
-# account and secret store on the cluster, in one command:
-scripts/sero apply --phase app-onboarding --config deployment.yaml \
-  --team TEAM --app APP --cluster CLUSTER --k8s-namespace NAMESPACE --apply
-
-# Sync one path into the Kubernetes Secret a workload already reads:
-scripts/sero apply --phase sync --team TEAM --app APP \
-  --path apps/APP/PURPOSE --name NAME --apply
-
-# Check that nothing has been widened since: the JWT and OIDC roles, the
-# default policy, and each per-application policy (src/sero/apply/audit.py).
-# Read-only; exits 3 on a high finding, so a scheduled run can fail on it:
-scripts/sero audit --config deployment.yaml
-```
-
-The OpenBao address and token come from the environment (`BAO_ADDR`/`VAULT_ADDR`
-and `BAO_TOKEN`/`VAULT_TOKEN`). The full bring-up
-sequence, and the rest of the phases, are in
-[docs/deployment-order.md](docs/deployment-order.md).
 
 ## Status
 
-Working, on main: apply that converges (dry-run first, diff shown, nothing destroyed) for both
-OpenBao and cluster objects; teams as OpenBao namespaces with per-application identities; sync
-through the External Secrets Operator; the HTTP backend behind an identity-aware proxy, on
-SQLite (PostgreSQL with the `postgres` extra), with denied requests audited
-(`src/sero/web/deps.py`, `src/sero/web/routes_secrets.py`); a machine lane for other
-services; the role audit. Each piece was proven live on a shared development cluster when
-it merged; [docs/status.md](docs/status.md) records what each proof covered.
+Alpha, and running in our own development cluster.
 
-Not yet: no OAuth 2.1 server / MCP mount over HTTP; no cloud secret-manager
-sync; reveal step-up not built (gate denies by default); no fleet / second cluster; one process, one replica (the job runner and
-the allow list are per process); no image build in CI, images are built by
-hand from a clean export of a commit and tagged with its short sha.
+Working: apply that converges for OpenBao and cluster objects; teams as namespaces with
+per-application identities; sync to Kubernetes through External Secrets; the HTTP backend
+on SQLite or PostgreSQL with denied requests audited; a machine lane for other services;
+a read-only audit of roles and policies; released images, checked before they publish.
 
-The full list, with the PR for each piece and what the live proof covered, is in
-[docs/status.md](docs/status.md); the phased plan is [ROADMAP.md](ROADMAP.md).
+Not yet: MCP over HTTP with OAuth 2.1; sync to cloud secret managers (rendered, not
+applied end to end); step-up before a reveal (the gate denies by default); more than one
+cluster; more than one replica.
 
-## Docs
+[docs/status.md](docs/status.md) lists each piece with its pull request and what its live
+proof covered; [ROADMAP.md](ROADMAP.md) is the plan.
 
-- [docs/status.md](docs/status.md) - what is merged, by PR, and the live proof
-- [CHANGELOG.md](CHANGELOG.md) - what shipped
-- [ARCHITECTURE.md](ARCHITECTURE.md) - the repo card and its seams under docs/arch/
-- [CONTRIBUTING.md](CONTRIBUTING.md) - how we work
-- [docs/design.md](docs/design.md) - architecture and decisions
-- [docs/versioning.md](docs/versioning.md) - SemVer, tags, changelog
-- [docs/testing.md](docs/testing.md) - testing philosophy
-- [docs/versions.md](docs/versions.md) - pinned versions
-- [docs/deployment-order.md](docs/deployment-order.md) - bring-up sequence and the apply flow
-- [docs/backend.md](docs/backend.md) - the HTTP backend: running it, its environment, identity
-- [ui/README.md](ui/README.md) - the web UI and how to rebrand it
-- [ROADMAP.md](ROADMAP.md) - phased plan
+## Documentation
 
-## Part of a larger platform
+- [docs/design.md](docs/design.md): architecture and decisions
+- [docs/deployment-order.md](docs/deployment-order.md): bring-up sequence and the apply flow
+- [docs/backend.md](docs/backend.md): the HTTP backend, its environment and identity
+- [ui/README.md](ui/README.md): the web UI and how to rebrand it
+- [docs/status.md](docs/status.md) and [ROADMAP.md](ROADMAP.md): what is built and what is next
+- [ARCHITECTURE.md](ARCHITECTURE.md): a map of the code, for people and coding agents
+- [RELEASING.md](RELEASING.md), [docs/versioning.md](docs/versioning.md), [docs/versions.md](docs/versions.md): releases and pins
+- [docs/testing.md](docs/testing.md): how we test
+- [SECURITY.md](SECURITY.md): how to report a vulnerability
 
-Sero is the secrets member of the tenish family of open-source platform and agent projects;
-each is usable on its own. [gojira](https://github.com/tenishai/gojira) is the deploy platform,
-with the same run-on-a-cluster-someone-else-created stance; [daedalus](https://github.com/tenishai/daedalus)
-the agent kit and runtime; [cabal](https://github.com/tenishai/cabal) orchestration and the A2A
-broker; [liminal](https://github.com/tenishai/liminal) the MCP gateway that fronts surfaces like
-sero's; [techne](https://github.com/tenishai/techne) agent memory. Sero's place: it holds the secrets. Operators reach it through the UI,
-workloads through External Secrets, agents through its MCP tools, with the same hygiene rules
-on every path.
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the setup,
+the checks CI runs and the sign-off every commit needs; the
+[Code of Conduct](CODE_OF_CONDUCT.md) applies to everyone taking part.
 
 ## How this was built
 
