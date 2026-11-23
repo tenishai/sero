@@ -4,7 +4,7 @@ version = "0.1.2"
 description = "Open-source secrets and vault management built on OpenBao"
 requires-python = ">=3.14"
 authors = [{ name = "tenish" }]
-license = "AGPL-3.0-or-later"
+license = "MIT"
 # Runtime dependencies, pinned exactly. Bumps are their own reviewed PR.
 dependencies = [
   "PyYAML==6.0.3",
