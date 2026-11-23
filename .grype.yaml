@@ -1,0 +1,14 @@
+# What the release scan does not block on (the release still lists it).
+# Go modules are compiled into tools this image downloads ready-built (helm, kubectl).
+# A finding there is fixed by that tool's next release, not by a change here, so the
+# gate covers what this repository decides: the OS packages, Python and its packages.
+ignore:
+  - package:
+      type: go-module
+  # CPython 3.14.10 is what python:3.14-slim ships today; the fix is 3.14.11, which has
+  # no official image yet (checked 2026-11-23). Remove this, and move the base image
+  # digest in the Dockerfile, when python:3.14.11-slim exists.
+  - vulnerability: CVE-2026-119170
+    package:
+      name: python
+      version: 3.14.10

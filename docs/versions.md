@@ -62,7 +62,7 @@ unreviewed dependency bump.
 
 | Image | Pinned tag | Digest | Verified against | Date |
 | --- | --- | --- | --- | --- |
-| python (backend runtime) | 3.14-slim | `sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2` | `docker buildx imagetools inspect python:3.14-slim` (hub.docker.com/_/python; 3.14.7-slim-trixie) | 2026-09-22 |
+| python (backend runtime) | 3.14-slim | `sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f` | `docker buildx imagetools inspect python:3.14-slim` (hub.docker.com/_/python; 3.14.10-slim-trixie) | 2026-11-23 |
 | node (UI build stage) | 22-trixie-slim | `sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6` | `docker buildx imagetools inspect node:22-trixie-slim` (hub.docker.com/_/node) | 2026-09-22 |
 
 The node stage is a builder: it produces `ui/dist` and is not part of the
