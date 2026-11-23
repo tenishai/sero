@@ -1,6 +1,6 @@
 ---
 card: repo-card:sero
-updated: 2026-10-15
+updated: 2026-11-23
 anchor: src/sero/web/app.py sha=bf60c3568431bbb36ed49bf331f704f4f73e6085
 ---
 <!-- pyproject.toml is deliberately not anchored: Dependabot moves its pins weekly and the
@@ -27,7 +27,7 @@ SEAMS → card:
 - (uncarded) audit.py `AuditRecorder`: failure rows in their own transaction so a rollback can't erase them; shared by web + MCP (web/audit.py re-exports).
 - (uncarded) hygiene.py: mask, redact, placeholder refusal, `WriteRefused` base; web/jobs.py JobRunner (one job per kind, daemon threads, `recover_interrupted` at boot); web/reveal.py RevealGate (DenyGate default; step-up not built); apply/audit.py (over-broad role/policy finder, exit 3 on serious).
 DEPS: no Python imports of sibling repos. Called by the room, over /api/service/{secrets,sync,app} (the caller's code lives in its own repo, not checked here). gojira.yaml = deploy contract for gojira (class `gateway`). README names liminal as the intended MCP front: aspirational, nothing wires it.
-HEALTH: tests/test_*.py, `uv run pytest` (fakes: tests/fake_openbao.py, fake_cluster.py, fake_secrets.py, fake_assertion.py; no live OpenBao/cluster in tests). UI: Node's built-in test runner (`npm test` runs `node --experimental-strip-types --test`) + Playwright smoke. CI .github/workflows/ci.yml on PR + push main: conventions lint (scripts/lint-conventions.sh), helm render + offline kustomize validate, terraform validate, ruff check + format --check + pytest, docker build + /healthz smoke, UI build/test/e2e. No image build in CI: images are built by hand from a clean export of a commit and tagged with its short sha (see README). Runners from `vars.CI_RUNS_ON`; the image smoke job reads `vars.CI_BUILD_RUNS_ON`. No branch protection: CI reports, never blocks.
+HEALTH: tests/test_*.py, `uv run pytest` (fakes: tests/fake_openbao.py, fake_cluster.py, fake_secrets.py, fake_assertion.py; no live OpenBao/cluster in tests). UI: Node's built-in test runner (`npm test` runs `node --experimental-strip-types --test`) + Playwright smoke. CI .github/workflows/ci.yml on PR + push main: conventions lint (scripts/lint-conventions.sh), helm render + offline kustomize validate, terraform validate, ruff check + format --check + pytest, docker build + /healthz smoke, UI build/test/e2e. No image build in CI: images are built by hand from a clean export of a commit and tagged with its short sha (see README). Every job runs on a GitHub-hosted runner, and the last job, `ci`, needs all the others: it is the one check the branch rules require, with `dco` (tests/test_ci_workflows.py).
 GOTCHAS:
 - sero is SECRETS, NOT observability (that is the observability platform).
 - Datastore "PostgreSQL" (docs/design.md D11) is not installable from the lock: uv.lock has no psycopg/any PG driver. Every shipped deploy uses `sqlite:////data/sero.db` on a RWO PVC → one replica, one process (gojira.yaml `class: gateway`).

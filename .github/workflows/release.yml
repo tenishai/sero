@@ -25,8 +25,7 @@ env:
 jobs:
   image:
     name: multi-arch image
-    # The build runner (dind) when the repo names one, else the CI runner, else GitHub's.
-    runs-on: ${{ fromJSON(vars.CI_BUILD_RUNS_ON || vars.CI_RUNS_ON || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
