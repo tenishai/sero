@@ -41,7 +41,7 @@ jobs:
       # actions/checkout v6.0.3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # Azure/setup-helm v5.0.0
-      - uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
+      - uses: Azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e
         with:
           # Pinned Helm version, see docs/versions.md.
           version: v4.2.1
@@ -89,7 +89,7 @@ jobs:
       # actions/checkout v6.0.3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # astral-sh/setup-uv v8.2.0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           # Pinned uv version, see docs/versions.md.
           version: "0.11.21"
