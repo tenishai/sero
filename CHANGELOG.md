@@ -13,6 +13,7 @@ point of view, not a list of commit subjects.
 ### Changed
 
 - **Licence: MIT.** The project moves from AGPL-3.0-or-later to MIT, with the agreement of every contributor (tenishai/agora discussion 69). Releases already published keep the licence they shipped under.
+- **CI runs on GitHub-hosted runners, behind one `ci` check.** Every job names a hosted image, so a pull request from a fork gets the same checks as one from a branch; the fork guards and the runner variables (`CI_RUNS_ON`, `CI_BUILD_RUNS_ON`) are gone. A last job, `ci`, needs every other job and is the one check the branch rules require, with `dco` (tenishai/agora discussion 71).
 
 - **Faster release builds.** The UI build and the lockfile export run once on the build host instead of once per target architecture, and unchanged layers come from a registry cache (`ghcr.io/tenishai/sero:buildcache`). The image's contents do not change.
 

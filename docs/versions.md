@@ -136,6 +136,5 @@ when the CI skeleton lands.
 | `Azure/setup-kubectl` | `bda439f5f36b99b262ebdcd3613869bddb064c8e` | v5.2.0 | github.com/Azure/setup-kubectl/releases/latest | 2026-10-15 |
 
 
-The CI runner image: every `ci.yml` job runs on `ubuntu-24.04` unless the repository
-variable `CI_RUNS_ON` (or `CI_BUILD_RUNS_ON` for the image build) names another runner.
-`dco.yml` runs on `ubuntu-latest`.
+The CI runner image: every `ci.yml` job runs on GitHub-hosted `ubuntu-24.04`; the `ci`
+summary job and `dco.yml` run on `ubuntu-latest`. No job runs on a self-hosted runner.

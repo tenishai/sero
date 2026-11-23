@@ -21,10 +21,7 @@ permissions:
 jobs:
   conventions:
     name: conventions lint
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-24.04"') }}
-    # A self-hosted runner must never run a fork's code: this repository's own pull
-    # requests and pushes only. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
     steps:
       # actions/checkout v6.0.3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -33,10 +30,7 @@ jobs:
 
   helm-validate:
     name: helm and deploy validate
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-24.04"') }}
-    # A self-hosted runner must never run a fork's code: this repository's own pull
-    # requests and pushes only. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
     steps:
       # actions/checkout v6.0.3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -63,10 +57,7 @@ jobs:
 
   terraform-validate:
     name: terraform validate
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-24.04"') }}
-    # A self-hosted runner must never run a fork's code: this repository's own pull
-    # requests and pushes only. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
     steps:
       # actions/checkout v6.0.3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -81,10 +72,7 @@ jobs:
 
   python:
     name: python lint and test
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-24.04"') }}
-    # A self-hosted runner must never run a fork's code: this repository's own pull
-    # requests and pushes only. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
     steps:
       # actions/checkout v6.0.3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -108,8 +96,7 @@ jobs:
 
   image-smoke:
     name: image smoke
-    runs-on: ${{ fromJSON(vars.CI_BUILD_RUNS_ON || '"ubuntu-24.04"') }}
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
     steps:
       # actions/checkout v6.0.3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -159,10 +146,7 @@ jobs:
 
   ui:
     name: ui build
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-24.04"') }}
-    # A self-hosted runner must never run a fork's code: this repository's own pull
-    # requests and pushes only. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ui
@@ -183,3 +167,19 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Smoke test (render)
         run: npm run test:e2e
+
+  # The one check the branch rules require: it passes only when every job above passed.
+  # A skipped or cancelled job fails it, so nothing merges on a job that did not run.
+  ci:
+    name: ci
+    if: ${{ always() }}
+    needs: [conventions, helm-validate, terraform-validate, python, image-smoke, ui]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            [ "$r" = "success" ] || { echo "a job did not pass: $RESULTS"; exit 1; }
+          done
