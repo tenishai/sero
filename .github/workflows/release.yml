@@ -1,45 +1,59 @@
-# The release image: built when a release is cut, and only then (agora issue 58).
-# A push of a vX.Y.Z tag builds the multi-arch image, publishes it to ghcr under
-# that tag and the short commit sha, and writes the digest onto the GitHub release.
-# workflow_dispatch rebuilds an existing tag (first use: the releases cut before
-# this workflow existed). No image is built on a push to main or on a schedule;
-# installs copy the published image by digest into their own registry.
+# The release: what a pushed vX.Y.Z tag turns into, and nothing else builds an image
+# (agora issue 58). In order, and each step has to pass for the next to run:
+#
+#   1. the whole of ci.yml, on the tagged commit
+#   2. the tag names the version the project declares
+#   3. the image, built for this machine: it starts, its Python licences are ones we can
+#      ship, and it has no high or critical vulnerability that has a fix (.grype.yaml
+#      says what that scan leaves out, and why)
+#   4. the multi-arch image, published to ghcr under the tag and the short commit sha,
+#      with an SBOM and build provenance attached
+#   5. the GitHub release: notes from CHANGELOG.md, the SBOM and its checksum as files,
+#      the image digest in the text (sero is run from its image, so there is no wheel)
+#
+# To build a tag again, run this workflow from that tag:
+#   gh workflow run release.yml --ref vX.Y.Z
+# RELEASING.md is the person's side of this.
 name: release
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "An existing release tag (vX.Y.Z) to build the image for"
-        required: true
 permissions:
-  contents: write
-  packages: write
+  contents: read
 concurrency:
-  group: release-${{ github.repository }}-${{ inputs.tag || github.ref_name }}
+  group: release-${{ github.repository }}-${{ github.ref_name }}
   cancel-in-progress: false
 env:
   IMAGE: ghcr.io/${{ github.repository }}
-  PYPROJECT: pyproject.toml
+  PACKAGE_DIR: .  # where pyproject.toml lives
 jobs:
-  image:
-    name: multi-arch image
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: release
+    needs: checks
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ inputs.tag || github.ref }}
 
       - name: The tag names the version the project declares
         id: version
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$tag is not a vX.Y.Z tag"; exit 1;; esac
-          declared="$(sed -nE 's/^version = "([^"]+)"/\1/p' "$PYPROJECT" | head -1)"
-          [ "${tag#v}" = "$declared" ] || { echo "::error::tag $tag but $PYPROJECT declares $declared"; exit 1; }
+          tag="$GITHUB_REF_NAME"
+          case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$tag is not a vX.Y.Z tag; run this workflow from a release tag"; exit 1;; esac
+          declared="$(sed -nE 's/^version = "([^"]+)"/\1/p' "$PACKAGE_DIR/pyproject.toml" | head -1)"
+          [ "${tag#v}" = "$declared" ] || { echo "::error::tag $tag but pyproject.toml declares $declared"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$declared" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "day=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
@@ -49,37 +63,78 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish
+      - name: Build the image for this machine
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: candidate:release
+          # The day goes in so the OS package upgrade runs again instead of coming out of the cache.
+          build-args: APT_REFRESH=${{ steps.version.outputs.day }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+
+      - name: The image starts
+        run: docker run --rm --entrypoint python candidate:release -m sero --help
+
+      - name: Python licences we can ship
+        run: docker run --rm -i --entrypoint python candidate:release - < scripts/check_licences.py
+
+      - name: No high or critical vulnerability that has a fix
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+        with:
+          image: candidate:release
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+
+      - name: SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          image: candidate:release
+          format: spdx-json
+          output-file: dist/${{ github.event.repository.name }}-${{ steps.version.outputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Build and publish, both architectures
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          provenance: false
-          # Layers that did not change (apt, pip, npm) come from the last build instead of
-          # being rebuilt for both architectures; mode=max also caches the intermediate stages.
-          cache-from: type=registry,ref=ghcr.io/tenishai/sero:buildcache
-          cache-to: type=registry,ref=ghcr.io/tenishai/sero:buildcache,mode=max
+          sbom: true
+          provenance: mode=max
+          build-args: APT_REFRESH=${{ steps.version.outputs.day }}
+          # Layers that did not change (pip, npm) come from the last build instead of being
+          # rebuilt for both architectures; mode=max also caches the intermediate stages.
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
           tags: |
             ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
             ${{ env.IMAGE }}:${{ steps.version.outputs.sha }}
 
-      - name: Record the digest on the release
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+      - name: The GitHub release
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
           SHA: ${{ steps.version.outputs.sha }}
           DIGEST: ${{ steps.build.outputs.digest }}
-        with:
-          script: |
-            const { TAG, SHA, DIGEST, IMAGE } = process.env;
-            const line = `Image: \`${IMAGE}@${DIGEST}\` (tags \`${TAG}\`, \`${SHA}\`; linux/amd64, linux/arm64)`;
-            core.summary.addRaw(line).write();
-            const { owner, repo } = context.repo;
-            let release;
-            try { release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag: TAG })).data; }
-            catch (e) { core.notice(`no GitHub release for ${TAG}; digest recorded in the job summary only`); return; }
-            const body = release.body || "";
-            if (body.includes(DIGEST)) return;
-            await github.rest.repos.updateRelease({ owner, repo, release_id: release.id, body: `${body}\n\n${line}`.trim() });
+        run: |
+          line="Image: \`${IMAGE}@${DIGEST}\` (tags \`${TAG}\`, \`${SHA}\`; linux/amd64, linux/arm64)"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # Notes are this version's section of the changelog.
+            awk -v v="$VERSION" '/^## \[/{on = index($0, "## [" v "]") == 1; next} on' CHANGELOG.md > notes.md
+            [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          gh release view "$TAG" --json body --jq .body > body.md
+          grep -qF "$DIGEST" body.md || { printf '\n\n%s\n' "$line" >> body.md; gh release edit "$TAG" --notes-file body.md; }

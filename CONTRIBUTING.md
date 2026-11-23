@@ -141,6 +141,10 @@ Every diff goes through build, then review, then revise:
 Reviews look for correctness first, then simplicity, reuse, and efficiency.
 Coverage theater and speculative generality are not improvements.
 
+## Releases
+
+Maintainers cut releases; [RELEASING.md](RELEASING.md) says how, and what stops one.
+
 ## Developer Certificate of Origin
 
 Sero uses the [Developer Certificate of Origin](https://developercertificate.org/)

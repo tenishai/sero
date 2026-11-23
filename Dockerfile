@@ -26,7 +26,7 @@ RUN npm run build
 
 # --- Stage: resolve the locked dependency set --------------------------------
 # python 3.14-slim, see docs/versions.md. The same digest as the runtime stage.
-FROM --platform=$BUILDPLATFORM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS deps
+FROM --platform=$BUILDPLATFORM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS deps
 
 # uv is a build-time tool only: the runtime installs from the exported
 # requirements with pip, so nothing in the shipped image depends on it.
@@ -42,7 +42,7 @@ RUN uv export --frozen --no-dev --extra postgres -o requirements.txt
 # --- Stage: fetch the pinned cluster tools -----------------------------------
 # Downloading here rather than in the runtime stage keeps curl, the archives,
 # and their unpacked trees out of the shipped image.
-FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS tools
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS tools
 
 ARG TARGETARCH=amd64
 # Pinned in docs/versions.md. Bumps are their own reviewed PR.
@@ -81,12 +81,16 @@ RUN set -eux; \
     /out/kubectl version --client
 
 # --- Stage: the runtime ------------------------------------------------------
-FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS runtime
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS runtime
 
 # A base image is only as fresh as the day it was built, and a stale base ships
 # every CVE patched since. Upgrade at build time so the image is current as of
 # its own build, not as of the base's.
-RUN apt-get update \
+# The release passes the day as APT_REFRESH, so this layer runs again on every
+# release instead of coming out of the build cache with last month's packages.
+ARG APT_REFRESH=
+RUN echo "apt refresh: ${APT_REFRESH}" \
+ && apt-get update \
  && apt-get -y upgrade \
  && rm -rf /var/lib/apt/lists/*
 
