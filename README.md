@@ -165,8 +165,7 @@ each is usable on its own. [gojira](https://github.com/tenishai/gojira) is the d
 with the same run-on-a-cluster-someone-else-created stance; [daedalus](https://github.com/tenishai/daedalus)
 the agent kit and runtime; [cabal](https://github.com/tenishai/cabal) orchestration and the A2A
 broker; [liminal](https://github.com/tenishai/liminal) the MCP gateway that fronts surfaces like
-sero's; [techne](https://github.com/tenishai/techne) agent memory; [agents](https://github.com/tenishai/agents)
-the fleet definitions. Sero's place: it holds the secrets. Operators reach it through the UI,
+sero's; [techne](https://github.com/tenishai/techne) agent memory. Sero's place: it holds the secrets. Operators reach it through the UI,
 workloads through External Secrets, agents through its MCP tools, with the same hygiene rules
 on every path.
 
