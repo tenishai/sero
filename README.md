@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/tenishai/sero/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tenishai/sero/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-yellow.svg">
 </p>
 
@@ -27,7 +27,7 @@
 Sero deploys and operates [OpenBao](https://github.com/openbao/openbao) (the
 open-source fork of HashiCorp Vault) and syncs secrets out to where workloads
 need them. It is a platform you can deploy: brand-neutral defaults, customizable
-per deployment, open source under AGPL-3.0-or-later.
+per deployment, open source under MIT.
 
 Sero integrates and operates OpenBao. It is not a fork of OpenBao or Vault. Its own
 datastore holds no secret values (`src/sero/datastore/models.py`): values live in OpenBao
@@ -182,4 +182,4 @@ have had AI help.
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE). Copyright (C) 2026 tenish and the sero contributors
+[MIT](LICENSE). Copyright (C) 2026 tenish and the sero contributors

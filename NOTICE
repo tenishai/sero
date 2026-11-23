@@ -4,9 +4,8 @@ Copyright (C) 2026 tenish and the sero contributors
 This product includes software developed by tenish and the sero contributors
 (https://github.com/tenishai/sero).
 
-Licensed under the GNU Affero General Public License, version 3 or (at
-your option) any later version. See the LICENSE file for the full license
-text.
+sero is licensed under the MIT License.
+See the LICENSE file for the full license text.
 
 Sero integrates and operates third-party open-source software,
 including OpenBao (https://github.com/openbao/openbao) and the

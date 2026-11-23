@@ -12,6 +12,8 @@ point of view, not a list of commit subjects.
 
 ### Changed
 
+- **Licence: MIT.** The project moves from AGPL-3.0-or-later to MIT, with the agreement of every contributor (tenishai/agora discussion 69). Releases already published keep the licence they shipped under.
+
 - **Faster release builds.** The UI build and the lockfile export run once on the build host instead of once per target architecture, and unchanged layers come from a registry cache (`ghcr.io/tenishai/sero:buildcache`). The image's contents do not change.
 
 ## [0.1.2] - 2026-10-28
