@@ -10,22 +10,22 @@ dependencies = [
   "PyYAML==6.0.3",
   "hvac==2.4.0",
   "SQLAlchemy==2.0.51",
-  "alembic==1.20.0",
+  "alembic==1.20.1",
   "mcp==1.30.0",
   "pyjwt[crypto]==2.15.1",
-  "fastapi==0.143.0",
+  "fastapi==0.162.0",
   "uvicorn==0.54.0",
 ]
 
 [project.optional-dependencies]
 # PostgreSQL driver for a shared datastore (D11). SQLite needs nothing extra.
-postgres = ["psycopg[binary]==3.3.6"]
+postgres = ["psycopg[binary]==3.3.7"]
 
 [dependency-groups]
 # Dev tooling, pinned exactly. Bumps are their own reviewed PR.
 dev = [
-  "ruff==0.17.0",
-  "pytest==9.1.1",
+  "ruff==0.17.3",
+  "pytest==9.2.0",
 ]
 
 [tool.uv]
