@@ -30,7 +30,8 @@ KNOWN: dict[str, str] = {}
 def licence_of(dist: metadata.Distribution) -> str:
     meta = dist.metadata
     found = [meta.get("License-Expression") or ""]
-    found += [c.split("::")[-1].strip() for c in meta.get_all("Classifier") or [] if c.startswith("License ::")]
+    classifiers = meta.get_all("Classifier") or []
+    found += [c.split("::")[-1].strip() for c in classifiers if c.startswith("License ::")]
     text = (meta.get("License") or "").strip()
     if text and len(text) < 120:  # longer is a pasted licence text, not a name
         found.append(text)
