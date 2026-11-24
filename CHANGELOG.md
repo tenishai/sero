@@ -10,6 +10,14 @@ point of view, not a list of commit subjects.
 
 ## [Unreleased]
 
+### Removed
+
+- **The dated spec and plan under `docs/specs/` and `docs/plans/` are no longer in the tree.** They were working notes. The decisions the spec recorded (D13 to D18) now sit in `docs/design.md` with the earlier ones; the files are in the history, last at [v0.1.3](https://github.com/tenishai/sero/tree/v0.1.3/docs).
+
+### Changed
+
+- **`.gitignore` opens with a block shared by every tenish repo** (keys, env files, local databases, Terraform state, editor folders), with this repo's own lines under it.
+
 ## [0.1.3] - 2026-11-23
 
 ### Changed
@@ -276,7 +284,7 @@ OpenBao it operates. Proven, in one place:
   not only the CLI.
 
 See the README's Status section for what this does and does not yet cover,
-and [docs/plans/2026-09-22-platform-vault.md](docs/plans/2026-09-22-platform-vault.md)
+and [docs/plans/2026-09-22-platform-vault.md](https://github.com/tenishai/sero/blob/v0.1.3/docs/plans/2026-09-22-platform-vault.md)
 for the task-by-task record.
 
 ### Added

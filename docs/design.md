@@ -53,6 +53,27 @@ Each decision records the choice and the reason. Versions are pinned in
 | D11 | Backend datastore | PostgreSQL | The backend needs durable state that is not secret material: audit log, MCP token families, step-up reveal grants, and namespace-request workflow. None of it is secret values. PostgreSQL is the conventional, portable choice. |
 | D12 | Agent / MCP surface | MCP server exposing selected operations | Selected OpenBao operations are exposed as MCP tools (OAuth 2.1), with secrets-hygiene behavior baked in (dry-run, names only, refuse placeholders). This is how Sero fits the agent ecosystem; built with the mcp-builder skill. |
 
+### Decisions from the platform vault stage (2026-09-22)
+
+Recorded as they were decided, when the project was still named Ladon, so the names in
+these rows are the names of that day. [ARCHITECTURE.md](../ARCHITECTURE.md) has the names
+the code uses now.
+
+| # | Decision | Choice | Why |
+| --- | --- | --- | --- |
+| D13 | Which OpenBao | Ladon owns a dedicated OpenBao for the platform it serves. It never configures an OpenBao another tool manages. | The plans here write mounts, roles and policies by fixed names. Two writers converging the same names with no shared ownership model silently undo each other. A dedicated instance turns every gap in this repo into a bug found on its own vault, not an outage on someone else's. |
+| D13a | Dev shape | Single node, Raft, Shamir unseal, one small pod, in namespace `ladon` on the platform cluster. KMS auto-unseal and HA come when an environment needs them, by configuration. | Lighter weight is the brief. Nothing in the consumer contract depends on HA. |
+| D14 | The service | One long-running process (FastAPI): the backend API, the built UI, and later the MCP surface, deployed as a `web` workload. Every apply operation (root config, team onboarding, app onboarding, ESO install) is an authenticated endpoint that runs as a tracked background job. | The deploy platform has no one-shot job class, apply operations exceed a load balancer's timeout, and an endpoint gives every operation an audit row for free. The CLI stays for operators and tests. |
+| D15 | Human identity | A trusted proxy header (name configurable, default `x-goog-authenticated-user-email`) is the identity. Namespace membership comes from a `GroupSource` interface; the first implementation is a mapping in the deployment config (`groups:` email or group -> namespaces, plus an `admins:` list). A directory-backed source can replace it without touching callers. | The proxy in front of the platform already authenticates people. A directory sync is the heaviest part of the sibling and is not needed to serve six apps. |
+| D16 | Machine callers | A separate lane: an OIDC ID token from a configured issuer, a dedicated audience, an allow-list of subjects, and an `acting_email` naming the human on whose behalf the call is made. The lane can only write inside namespaces the deployment config pins to that subject. | The assembly room writes secrets on a person's behalf. Machines must not use the human lane, and a machine must not be able to reach every namespace because it can reach one. |
+| D17 | Scoping | One OpenBao namespace per owning group. One path prefix per app: `kv/apps/<app>/<purpose>`. One ESO identity per app: policy `eso-<app>-readonly` on that prefix plus token-self grants, JWT role `eso-<group>-<app>` with `bound_subject` pinned to a dedicated service account in the ESO namespace and `token_no_default_policy` on, a `ClusterSecretStore` `ladon-<group>-<app>` with `namespace: <group>` and a selector on the Kubernetes namespace's immutable `kubernetes.io/metadata.name` label, and `ExternalSecret`s whose `target.name` is the Secret name the consumer already uses. | Each line is a lesson the sibling paid for: the namespace field is what makes JWT login route to the team; the immutable label is what a rogue namespace cannot forge; the no-default flag is what stops a widened default policy from making every scoped identity decorative; the team-qualified identity name is what stops one group's ESO identity from authenticating as another's; keeping the Secret name is what keeps every consumer untouched. |
+| D18 | Cluster access | The backend manages the cluster it runs on, through its own service account and RBAC, applying manifests with `kubectl apply --server-side --field-manager=ladon`. Other clusters are out of scope for this stage. | `kubectl` is already required for the install layer; a second client library for the same job is weight. One cluster is the brief. |
+| D18a | ESO on a shared cluster | ESO is cluster-scoped and singular. If an operator is already installed, Ladon reuses it: it records the version, probes the CRD API version, and skips its own install. Ladon's stores are named `ladon-<group>-<app>` and never touch stores it did not create. The per-app service accounts live in Ladon's own namespace, not the operator's, and the JWT role's `bound_subject` names that namespace. | Two operators fight over one set of CRDs. A dedicated service-account namespace that only the platform operator can write to gives the same protection the sibling got from the operator's namespace, without writing into a namespace another team owns. |
+
+Superseded: the "dry-run is a diff" promise in D3 above becomes true; the
+`plan` command remains a pure render and `apply` without `--apply` connects and
+diffs.
+
 ### Considered alternatives
 
 - **GitOps apply model (ArgoCD or Flux).** Declarative and drift-resistant, and

@@ -22,7 +22,7 @@ SEAMS → card:
 - apply-phases   src/sero/apply/cli.py:run_phase + executor.py (render→plan→diff→write→verify) → docs/arch/apply-phases.md
 - cluster-apply  src/sero/install/k8s.py        (SSA under field manager `sero`, ownership gate) → docs/arch/cluster-apply.md
 - caller-identity src/sero/web/identity.py + assertion.py (proxy header vs signed assertion)     → docs/arch/caller-identity.md
-- (uncarded) config/, pure renderers: teams.py `Team`, policies.py, auth.py, apps.py (D17 in docs/specs/2026-09-22-platform-vault-design.md: per-app identity naming `eso-<team>-<app>-<digest>` / `sero-<team>-<app>-<digest>`; MUST stay stable, offboard re-derives names from it), eso.py, seal.py/seal_values.py (KMS auto-unseal overlay), loader.py `DeploymentConfig`.
+- (uncarded) config/, pure renderers: teams.py `Team`, policies.py, auth.py, apps.py (D17 in docs/design.md: per-app identity naming `eso-<team>-<app>-<digest>` / `sero-<team>-<app>-<digest>`; MUST stay stable, offboard re-derives names from it), eso.py, seal.py/seal_values.py (KMS auto-unseal overlay), loader.py `DeploymentConfig`.
 - (uncarded) datastore/: models.py tables tool_call_log, mcp_refresh_tokens, mcp_allow_list, namespace_requests, jobs, reveal_flows, reveal_grants; repositories.py; engine.py reads SERO_DATABASE_URL (unset → datastore None). migrations/.
 - (uncarded) audit.py `AuditRecorder`: failure rows in their own transaction so a rollback can't erase them; shared by web + MCP (web/audit.py re-exports).
 - (uncarded) hygiene.py: mask, redact, placeholder refusal, `WriteRefused` base; web/jobs.py JobRunner (one job per kind, daemon threads, `recover_interrupted` at boot); web/reveal.py RevealGate (DenyGate default; step-up not built); apply/audit.py (over-broad role/policy finder, exit 3 on serious).
@@ -35,4 +35,4 @@ GOTCHAS:
 - One deployment = one OpenBao = one environment (`deployment.environment`); `env` on a request is a label that is checked, never a selector (mcp/server.py:require_environment).
 - OpenBao token comes only from env (BAO_TOKEN/VAULT_TOKEN via apply/client.py TokenAuth.from_env), never config. Config YAML via SERO_CONFIG (path) or SERO_CONFIG_YAML (inline); gojira path must NOT set SERO_CONFIG.
 - mcp/server.py `*_impl`/`*_write` functions are the shared write logic for ALL surfaces (web routes and machine lane import them); "mcp" in the path does not mean MCP-only.
-RELATED DOCS: docs/design.md (D1 to D12 decisions), docs/backend.md (env, identity trust boundary), docs/deployment-order.md, docs/specs/2026-09-22-platform-vault-design.md (D13 to D18 decisions), docs/plans/2026-09-22-platform-vault.md, deploy/sero/README.md, docs/testing.md, docs/versions.md.
+RELATED DOCS: docs/design.md (D1 to D18 decisions), docs/backend.md (env, identity trust boundary), docs/deployment-order.md, deploy/sero/README.md, docs/testing.md, docs/versions.md.
