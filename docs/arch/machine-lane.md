@@ -4,7 +4,7 @@ updated: 2026-10-15
 anchor: src/sero/web/service_lane.py sha=f4ec281969d63d71e1af15401503049049d778c1
 anchor: src/sero/web/settings.py sha=cd102cd7cc660d9be579b36d303ff3f6cb5b846c
 ---
-# machine-lane: /api/service/*, a provisioner writing on a person's behalf (D16 in docs/specs/2026-09-22-platform-vault-design.md)
+# machine-lane: /api/service/*, a provisioner writing on a person's behalf (D16 in docs/design.md)
 
 WHAT / SEAM: FastAPI router in web/service_lane.py, mounted under /api (web/app.py). Auth = OIDC ID token (`Authorization: Bearer`), verified per configured `ServiceCaller` (web/settings.py:101; parsed by parse_service_callers). `ServiceLane.authenticate` → caller; `ServiceLane.allow` → per-caller `TokenBucket` (separate read and write budgets). `ClusterSync` dataclass holds the cluster collaborators (converge/remove/read/list_kind/onboard=apply.cli.run_phase) so tests inject a fake cluster.
 API (all bodies carry required `acting_email`; writes are dry-run unless `apply: true`):

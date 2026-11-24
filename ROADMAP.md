@@ -6,10 +6,8 @@ deliberately incremental: each phase is releasable and builds on the last.
 Foundations first, quality over velocity.
 
 **2026-09-22:** the platform-vault program proved a dev-shape deployment live
-on a shared development cluster. See
-[docs/specs/2026-09-22-platform-vault-design.md](docs/specs/2026-09-22-platform-vault-design.md)
-and [docs/plans/2026-09-22-platform-vault.md](docs/plans/2026-09-22-platform-vault.md)
-for what ran, and the README's Status section for what is proven versus not
+on a shared development cluster. See the decisions it added (D13 to D18 in
+[docs/design.md](docs/design.md)) and the README's Status section for what is proven versus not
 yet built. The checkboxes below are ticked only for what that program proved.
 
 ## Phase 0: Foundations

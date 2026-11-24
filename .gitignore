@@ -1,13 +1,56 @@
-# Sero .gitignore
-# Secrets hygiene is a first-class rule. Sero never stores secret values.
-# The patterns below are a safety net, not a substitute for the CI check
-# that no secret material is committed. Do not rely on this alone.
+# --- Shared block: the same in every tenish repo. Repo-specific lines go below it. ---
 
-# --- Secret material (never commit) ---
+# Secrets and credentials
+.env
+.env.*
+!.env.example
 *.pem
 *.key
 *.p12
 *.pfx
+kubeconfig
+*.kubeconfig
+service-account*.json
+*credentials.json
+
+# Local state
+*.db
+*.sqlite
+*.sqlite3
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.example.tfvars
+.terraform/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/*
+*.swp
+
+# Assistants and scratch
+.claude/settings.local.json
+CLAUDE.local.md
+*.local.md
+*.local.yaml
+scratch*.txt
+
+# --- This repo ---
+# --- Secret material (never commit) ---
 *.jks
 *.keystore
 *.crt
@@ -15,20 +58,11 @@
 *.der
 id_rsa
 id_ed25519
-*.kubeconfig
-kubeconfig
 *-credentials.json
 *_credentials.json
 credentials.json
-service-account*.json
 sa-*.json
-*.tfvars
-!example.tfvars
-!*.example.tfvars
 *.auto.tfvars
-.env
-.env.*
-!.env.example
 *.unseal
 *.unseal-keys
 unseal-keys*
@@ -39,10 +73,7 @@ bao-token*
 .vault-token
 
 # --- Terraform ---
-.terraform/
 .terraform.lock.hcl
-*.tfstate
-*.tfstate.*
 crash.log
 override.tf
 override.tf.json
@@ -54,40 +85,18 @@ charts/*.tgz
 */charts/*.tgz
 .helm/
 
-# --- Language runtimes / build (placeholders for when code lands) ---
 # Node / TypeScript
-node_modules/
 dist/
 build/
 *.tsbuildinfo
 .npm/
 .pnpm-store/
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
-*.egg-info/
 # Go
 bin/
 vendor/
 
 # --- Editors / OS ---
-.DS_Store
 Thumbs.db
-*.swp
 *.swo
-.idea/
-.vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json.example
-
-# --- Local agent / tooling state ---
-.claude/settings.local.json
-
-# Local scratch
-scratch*.txt
-CLAUDE.local.md
