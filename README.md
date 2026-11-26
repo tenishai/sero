@@ -9,6 +9,15 @@ Sero runs [OpenBao](https://github.com/openbao/openbao) for you and syncs its se
 
 ![One secret in the Sero UI: keys listed, values masked, reveal on demand](docs/img/secret.png)
 
+## Two ways to run it
+
+- **Try it on a laptop.** The [Quickstart](#quickstart) boots the backend and the UI with
+  SQLite and no OpenBao, to look around.
+- **Run it on a cluster.** Sero installs on its own:
+  [docs/deployment-order.md](docs/deployment-order.md) has the commands in order. It sits
+  beside the tenish suite, which [stack](https://github.com/tenishai/stack) brings up on
+  [gojira](https://github.com/tenishai/gojira); stack does not install sero.
+
 ## Overview
 
 Sero deploys and operates OpenBao (the open-source fork of HashiCorp Vault) and syncs
@@ -17,16 +26,6 @@ applications get an identity each, operators get a web UI, and agents get a tool
 
 Sero integrates OpenBao; it is not a fork of OpenBao or Vault. Its own datastore holds no
 secret values: values live in OpenBao and in the targets External Secrets writes.
-
-Sero is the secrets member of the tenish family of open-source platform and agent
-projects, each usable on its own: [gojira](https://github.com/tenishai/gojira) deploys,
-[kobo](https://github.com/tenishai/kobo) is where people build agents,
-[noto](https://github.com/tenishai/noto) observes, [bab](https://github.com/tenishai/bab)
-decides what an agent may do, and [liminal](https://github.com/tenishai/liminal) is the
-gateway agents reach tools through.
-
-To run the whole suite on a cluster, start at [stack](https://github.com/tenishai/stack), which brings the other parts up from
-one file in dependency order. Sero is installed on its own, as the Quickstart below shows.
 
 ## Quickstart
 
@@ -56,6 +55,19 @@ identity (`/api/me` answers 401) and has no OpenBao to reach. The laptop section
 with Helm.
 
 Tests: `uv run pytest` for the backend and `cd ui && npm test` for the UI, the same gates CI runs.
+
+## Where it fits
+
+Sero is the secrets member of the tenish family of open-source platform and agent
+projects, each usable on its own.
+
+| Part | What it does |
+|---|---|
+| [gojira](https://github.com/tenishai/gojira) | deploys the workloads that read the secrets sero syncs |
+| [kobo](https://github.com/tenishai/kobo) | where people build agents |
+| [bab](https://github.com/tenishai/bab) | decides what an agent may do |
+| [liminal](https://github.com/tenishai/liminal) | the gateway agents reach tools through |
+| [noto](https://github.com/tenishai/noto) | observes |
 
 ## How it works
 
