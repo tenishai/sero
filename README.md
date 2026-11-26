@@ -25,6 +25,9 @@ projects, each usable on its own: [gojira](https://github.com/tenishai/gojira) d
 decides what an agent may do, and [liminal](https://github.com/tenishai/liminal) is the
 gateway agents reach tools through.
 
+To run the whole suite on a cluster, start at [stack](https://github.com/tenishai/stack), which brings the other parts up from
+one file in dependency order. Sero is installed on its own, as the Quickstart below shows.
+
 ## Quickstart
 
 Boot the backend on a laptop with SQLite and no OpenBao. You need
